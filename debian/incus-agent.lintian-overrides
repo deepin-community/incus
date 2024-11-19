@@ -1,0 +1,17 @@
+# Ignore error about statically-linked incus-agent binary; see README.source for details
+incus-agent: statically-linked-binary
+
+# The service file depends on activation via udev rule
+incus-agent: systemd-service-file-missing-install-key
+
+# Flagged spelling errors come from other golang packages
+incus-agent: spelling-error-in-binary
+
+# incus-agent binary is installed under /usr/libexec/incus/
+incus-agent: spare-manual-page
+
+# Silence an experimental tag
+incus-agent: systemd-service-file-missing-hardening-features
+
+# Ignore error about long field length
+incus-agent: field-too-long

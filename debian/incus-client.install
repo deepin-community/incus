@@ -1,0 +1,4 @@
+usr/bin/incus
+completions/incus usr/share/bash-completion/completions/
+completions/incus.fish usr/share/fish/vendor_completions.d/
+completions/_incus usr/share/zsh/vendor-completions/

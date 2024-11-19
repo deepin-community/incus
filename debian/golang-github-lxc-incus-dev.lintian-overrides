@@ -1,0 +1,5 @@
+# Ignore warnings about scripts that aren't used directly in the -dev package
+golang-github-lxc-incus-dev: script-not-executable
+
+# Ignore warnings about README files included in source within the -dev packages
+golang-github-lxc-incus-dev: package-contains-documentation-outside-usr-share-doc

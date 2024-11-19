@@ -1,4 +1,63 @@
 #!/usr/bin/make -f
 
+include /usr/share/dpkg/pkg-info.mk
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+# Don't build binaries we don't ship
+# NOTE -- incus-agent is listed here, as it is compiled as a statically-linked binary below
+export DH_GOLANG_EXCLUDES := deps dev_incus-client generate sysinfo test/mini-oidc test/tls2jwt incus-agent
+
+# Include various test and other support files
+export DH_GOLANG_INSTALL_EXTRA := test/ shared/subprocess/testscript/ internal/server/instance/drivers/agent-loader/ internal/server/metadata/configuration.json
+
 %:
-	dh $@
+	dh $@ --builddirectory=_build --buildsystem=golang --with=golang
+
+override_dh_auto_build:
+	# Build almost everything with dynamic linking
+	CGO_LDFLAGS_ALLOW="-Wl,-z,now" dh_auto_build
+
+	# Build incus-agent as a statically-linked binary
+	CGO_LDFLAGS_ALLOW="-Wl,-z,now" CGO_ENABLED=0 DH_GOLANG_BUILDPKG="github.com/lxc/incus/cmd/incus-agent" DH_GOLANG_EXCLUDES="" dh_auto_build
+
+	# Generate the man pages
+	mkdir man1/
+	TZ=UTC HOME="~" _build/bin/incus manpage man1/
+	TZ=UTC HOME="~" _build/bin/incusd manpage man1/
+	TZ=UTC HOME="~" help2man _build/bin/fuidshift -n "uid/gid shifter" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/fuidshift.1
+	TZ=UTC HOME="~" help2man _build/bin/lxc-to-incus -n "Convert LXC containers to Incus" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/lxc-to-incus.1
+	TZ=UTC HOME="~" help2man _build/bin/lxd-to-incus -n "Convert LXD containers to Incus" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/lxd-to-incus.1
+	TZ=UTC HOME="~" help2man _build/bin/incus-agent -n "Incus virtual machine guest agent" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-agent.1
+	TZ=UTC HOME="~" help2man _build/bin/incus-benchmark -n "Incus benchmark" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-benchmark.1
+	TZ=UTC HOME="~" help2man _build/bin/incus-migrate -n "Incus physical to instance migration tool" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-migrate.1
+	TZ=UTC HOME="~" help2man _build/bin/incus-simplestreams -n "Maintain an Incus-compatible simplestreams tree" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-simplestreams.1
+	TZ=UTC HOME="~" help2man _build/bin/incus-user -n "Incus user project daemon" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-user.1
+
+	# Generate shell completions
+	mkdir completions/
+	_build/bin/incus completion bash > completions/incus
+	_build/bin/incus completion fish > completions/incus.fish
+	_build/bin/incus completion zsh > completions/_incus
+
+override_dh_auto_test:
+	CGO_LDFLAGS_ALLOW="-Wl,-z,now" dh_auto_test
+
+override_dh_auto_install:
+	DH_GOLANG_EXCLUDES="" dh_auto_install
+
+	# Don't package python script
+	find ./debian -name import-busybox -delete
+
+	# Need to rename various config files here, as dh_install cannot rename files
+	install -Dpm 0644 debian/incus.dnsmasq debian/tmp/etc/dnsmasq.d-available/incus
+	install -Dpm 0644 debian/incus.logrotate debian/tmp/etc/logrotate.d/incus
+	install -Dpm 0644 debian/incus.sysctl debian/tmp/etc/sysctl.d/10-incus-inotify.conf
+
+override_dh_install:
+	dh_install
+	dh_installsysusers
+
+override_dh_installsystemd:
+	# Handle start / restart manually in incus.postinst
+	dh_installsystemd --no-stop-on-upgrade --no-restart-after-upgrade --no-start

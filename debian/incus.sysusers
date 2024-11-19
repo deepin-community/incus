@@ -1,0 +1,3 @@
+# Setup two groups as described at https://linuxcontainers.org/incus/docs/main/packaging/
+g incus - -
+g incus-admin - -

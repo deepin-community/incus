@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+# Package removal
+if [ "$1" = "remove" ]; then
+    # dnsmasq config handling
+    if [ -L /etc/dnsmasq.d/incus ]; then
+        echo "Removing incus dnsmasq configuration"
+        rm -f /etc/dnsmasq.d/incus 2>/dev/null || true
+
+        # Try to restart a potential system wide dnsmasq
+        invoke-rc.d dnsmasq restart 2>/dev/null || true
+    fi
+fi
+
+# Purge
+if [ "$1" = "purge" ]; then
+    # clean all the things
+    rm --one-file-system -Rf /var/cache/incus /var/lib/incus /var/log/incus || true
+fi
+
+exit 0

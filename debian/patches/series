@@ -1,0 +1,3 @@
+001-skip-TestConvertNetworkConfig.patch
+002-adjust-import-paths.patch
+0003-Compile-against-go-criu-v7.patch
