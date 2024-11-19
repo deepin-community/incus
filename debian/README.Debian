@@ -1,0 +1,103 @@
+Incus initialization
+====================
+
+If you wish to migrate existing containers or VMs from LXD, please refer to the next
+section. Otherwise, after installing Incus you must perform an initial configuration:
+
+    sudo incus admin init
+
+Migrating from LXD
+==================
+
+Incus includes a tool named `lxd-to-incus` which can be used to convert an existing
+LXD installation into an Incus one.
+
+For this to work properly, you should install Incus but not initialize it. Instead,
+make sure that both `incus info` and `lxc info` both work properly, then run
+`lxd-to-incus` to migrate your data.
+
+This process transfers the entire database and all storage from LXD to Incus,
+resulting in an identical setup after the migration.
+
+For further information, please visit https://linuxcontainers.org/incus/docs/main/howto/server_migrate_lxd/
+
+WARNING: This should be considered a destructive action from LXD's perspective.
+Afterwards the LXD daemon may not properly start, and running `lxc list` will be
+empty. It is recommend that the LXD packages be purged as part of running
+`lxd-to-incus`, or by hand immediately following the migration.
+
+Configuration
+=============
+
+Incus's default bridge networking requires the dnsmasq-base package to be
+installed. If you chose to install Incus without its recommended packages and
+intend to use the default bridge, you must first install dnsmasq-base for
+networking to work correctly.
+
+If you wish to allow non-root users to interact with Incus via the local Unix
+socket, you must add them to the incus group:
+
+    sudo usermod -aG incus <username>
+
+Access via the incus group grants restricted access to Incus, allowing members to run
+most commands, except `incus admin`. For the vast majority of use cases, this is the
+preferred setup.
+
+Alternatively, if you wish to allow non-root users full administrative access to
+Incus via the local Unix socket, you must add them to the incus-admin group:
+
+    sudo usermod -aG incus-admin <username>
+
+From the upstream documentation (https://linuxcontainers.org/incus/docs/main/security/),
+be aware that local access to Incus through the Unix socket via the incus-admin group
+always grants full access to Incus. This includes the ability to attach file system
+paths or devices to any instance as well as tweak the security features on any
+instance. Therefore, you should only give access to users who would be trusted with
+root access to the host.
+
+Storage backends
+================
+
+Incus supports several storage backends. When installing, Incus will suggest the
+necessary packages to enable all storage backends, but in brief:
+
+  * btrfs requires the btrfs-progs package
+  * ceph/cephfs require the ceph-common package
+  * lvm requires the lvm2 package
+  * zfs requires the zfsutils-linux package
+
+After installing one or more of those additional packages, be sure to restart
+the Incus service so it picks up the additional storage backend(s).
+
+Virtual machines
+================
+
+Incus optionally can create virtual machine instances utilizing QEMU. To enable
+this capability, on the host system install the desired qemu-system-<arch>
+package(s) and the incus-agent package. Then, restart the Incus service. You
+will now be able to create virtual machine instances by passing the `--vm` flag
+in your creation command.
+
+Known issues
+============
+
+  * Running Incus and Docker on the same host can cause connectivity issues. A
+common reason for these issues is that Docker sets the FORWARD policy to DROP,
+which prevents Incus from forwarding traffic and thus causes the instances to lose
+network connectivity. There are two different ways you can fix this:
+
+    - As outlined in bug #865975, message 91, you can add `net.ipv4.ip_forward=1`
+      to /etc/sysctl.conf which will create a FORWARD policy that docker can
+      use. Docker then won't set the FORWARD chain to DROP when it starts up.
+
+    - Alternately, you can use the following command to explicitly allow
+      network traffic from your network bridge to your external network
+      interface:
+      `iptables -I DOCKER-USER -i <network_bridge> -o <external_interface> -j ACCEPT`
+      (from the upstream Incus documentation at
+       https://linuxcontainers.org/incus/docs/main/howto/network_bridge_firewalld/)
+
+  * If the apparmor package is not installed on the host system, containers
+will fail to start unless their configuration is modified to include
+`lxc.apparmor.profile=unconfined`; this has been reported upstream at
+https://github.com/lxc/lxc/issues/4150.

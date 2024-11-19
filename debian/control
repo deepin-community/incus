@@ -1,15 +1,244 @@
-Source: template-repository
-Section: unknown
+Source: incus
+Maintainer: Debian Go Packaging Team <team+pkg-go@tracker.debian.org>
+Uploaders: Free Ekanayaka <freee@debian.org>, Mathias Gibbens <gibmat@debian.org>
+Section: admin
+Testsuite: autopkgtest-pkg-go
 Priority: optional
-Maintainer: Tsic404 <liuheng@deepin.org>
-Build-Depends: debhelper (>= 11)
-Standards-Version: 4.1.3
-Homepage: https://github.com/deepin-community/template-repository
-#Vcs-Browser: https://salsa.debian.org/debian/deepin-community-template-repository
-#Vcs-Git: https://salsa.debian.org/debian/deepin-community-template-repository.git
+Build-Depends: debhelper-compat (= 13),
+               dh-golang,
+               golang-any (>= 2:1.22~),
+               golang-github-armon-go-proxyproto-dev,
+               golang-github-cenkalti-backoff-dev,
+               golang-github-checkpoint-restore-go-criu-dev (>= 7),
+               golang-github-cowsql-go-cowsql-dev,
+               golang-github-digitalocean-go-qemu-dev,
+               golang-github-digitalocean-go-smbios-dev,
+               golang-github-dustinkirkland-golang-petname-dev,
+               golang-github-flosch-pongo2.v4-dev,
+               golang-github-fvbommel-sortorder-dev,
+               golang-github-go-chi-chi-dev,
+               golang-github-go-jose-go-jose-dev,
+               golang-github-go-logr-logr-dev,
+               golang-github-golang-jwt-jwt-v5-dev,
+               golang-github-golang-protobuf-1-5-dev,
+               golang-github-google-gopacket-dev,
+               golang-github-google-uuid-dev,
+               golang-github-gorilla-mux-dev,
+               golang-github-gorilla-websocket-dev,
+               golang-github-gosexy-gettext-dev,
+               golang-github-j-keck-arping-dev,
+               golang-github-jaypipes-pcidb-dev,
+               golang-github-jochenvg-go-udev-dev,
+               golang-github-kballard-go-shellquote-dev,
+               golang-github-mattn-go-colorable-dev,
+               golang-github-mattn-go-sqlite3-dev,
+               golang-github-mdlayher-ndp-dev,
+               golang-github-mdlayher-netx-dev,
+               golang-github-mdlayher-vsock-dev,
+               golang-github-miekg-dns-dev,
+               golang-github-minio-minio-go-v7-dev,
+               golang-github-mitchellh-mapstructure-dev,
+               golang-github-olekukonko-tablewriter-dev,
+               golang-github-openfga-go-sdk-dev (>= 0.6.0),
+               golang-github-osrg-gobgp-dev (>= 3.10.0),
+               golang-github-ovn-org-libovsdb-dev,
+               golang-github-pierrec-lz4-dev (>= 4.1.18),
+               golang-github-pkg-sftp-dev,
+               golang-github-pkg-xattr-dev,
+               golang-github-rican7-retry-dev,
+               golang-github-robfig-cron-dev,
+               golang-github-sirupsen-logrus-dev,
+               golang-github-spf13-cobra-dev,
+               golang-github-stretchr-testify-dev,
+               golang-github-vishvananda-netlink-dev,
+               golang-github-xenolf-lego-dev,
+               golang-github-zitadel-oidc-dev (>= 3.0),
+               golang-gocapability-dev,
+               golang-golang-x-crypto-dev,
+               golang-golang-x-exp-dev,
+               golang-golang-x-oauth2-dev,
+               golang-golang-x-sync-dev,
+               golang-golang-x-sys-dev,
+               golang-golang-x-term-dev,
+               golang-golang-x-text-dev,
+               golang-google-protobuf-dev,
+               golang-gopkg-lxc-go-lxc.v2-dev,
+               golang-gopkg-tomb.v2-dev,
+               golang-gopkg-yaml.v2-dev,
+               golang-k8s-utils-dev,
+               golang-starlark-dev,
+               help2man,
+               libacl1-dev,
+               libcap-dev
+Build-Conflicts: golang-github-golang-protobuf-1-3-dev
+Standards-Version: 4.7.0
+Vcs-Browser: https://salsa.debian.org/go-team/packages/incus
+Vcs-Git: https://salsa.debian.org/go-team/packages/incus.git
+Homepage: https://linuxcontainers.org/incus/
+Rules-Requires-Root: no
+XS-Go-Import-Path: github.com/lxc/incus
 
-Package: template-repository
+Package: golang-github-lxc-incus-dev
+Architecture: all
+Multi-Arch: foreign
+Section: golang
+Depends: golang-github-armon-go-proxyproto-dev,
+         golang-github-cenkalti-backoff-dev,
+         golang-github-checkpoint-restore-go-criu-dev (>= 7),
+         golang-github-cowsql-go-cowsql-dev,
+         golang-github-digitalocean-go-qemu-dev,
+         golang-github-digitalocean-go-smbios-dev,
+         golang-github-dustinkirkland-golang-petname-dev,
+         golang-github-flosch-pongo2.v4-dev,
+         golang-github-fvbommel-sortorder-dev,
+         golang-github-go-chi-chi-dev,
+         golang-github-go-jose-go-jose-dev,
+         golang-github-go-logr-logr-dev,
+         golang-github-golang-jwt-jwt-v5-dev,
+         golang-github-golang-protobuf-1-5-dev,
+         golang-github-google-gopacket-dev,
+         golang-github-google-uuid-dev,
+         golang-github-gorilla-mux-dev,
+         golang-github-gorilla-websocket-dev,
+         golang-github-gosexy-gettext-dev,
+         golang-github-j-keck-arping-dev,
+         golang-github-jaypipes-pcidb-dev,
+         golang-github-jochenvg-go-udev-dev,
+         golang-github-kballard-go-shellquote-dev,
+         golang-github-mattn-go-colorable-dev,
+         golang-github-mattn-go-sqlite3-dev,
+         golang-github-mdlayher-ndp-dev,
+         golang-github-mdlayher-netx-dev,
+         golang-github-mdlayher-vsock-dev,
+         golang-github-miekg-dns-dev,
+         golang-github-minio-minio-go-v7-dev,
+         golang-github-mitchellh-mapstructure-dev,
+         golang-github-olekukonko-tablewriter-dev,
+         golang-github-openfga-go-sdk-dev (>= 0.6.0),
+         golang-github-osrg-gobgp-dev (>= 3.10.0),
+         golang-github-ovn-org-libovsdb-dev,
+         golang-github-pierrec-lz4-dev (>= 4.1.18),
+         golang-github-pkg-sftp-dev,
+         golang-github-pkg-xattr-dev,
+         golang-github-rican7-retry-dev,
+         golang-github-robfig-cron-dev,
+         golang-github-sirupsen-logrus-dev,
+         golang-github-spf13-cobra-dev,
+         golang-github-stretchr-testify-dev,
+         golang-github-vishvananda-netlink-dev,
+         golang-github-xenolf-lego-dev,
+         golang-github-zitadel-oidc-dev (>= 3.0),
+         golang-gocapability-dev,
+         golang-golang-x-crypto-dev,
+         golang-golang-x-exp-dev,
+         golang-golang-x-oauth2-dev,
+         golang-golang-x-sync-dev,
+         golang-golang-x-sys-dev,
+         golang-golang-x-term-dev,
+         golang-golang-x-text-dev,
+         golang-google-protobuf-dev,
+         golang-gopkg-lxc-go-lxc.v2-dev,
+         golang-gopkg-tomb.v2-dev,
+         golang-gopkg-yaml.v2-dev,
+         golang-k8s-utils-dev,
+         golang-starlark-dev,
+         ${misc:Depends}
+Description: Powerful system container and virtual machine manager - library
+ Incus is a next generation system container and virtual machine manager.
+ It offers a unified user experience around full Linux systems running
+ inside containers or virtual machines.
+ .
+ This package contains the Incus source code for use in building other
+ Debian packages -- normal users should not directly use this package in
+ their regular development workflow. Rather, they should use `go get`.
+
+Package: incus
+Architecture: linux-any
+Depends: ${misc:Depends},
+         ${shlibs:Depends},
+         attr,
+         ca-certificates,
+         liblxc-common,
+         lxcfs,
+         incus-client (= ${binary:Version}),
+         iproute2,
+         nftables | iptables,
+         rsync,
+         squashfs-tools,
+         uidmap,
+         xz-utils
+Recommends: apparmor, dnsmasq-base, incus-agent, minio-client
+# First line of suggested packages will enable additional Incus storage backends
+Suggests: btrfs-progs, ceph-common, lvm2, zfsutils-linux,
+          incus-tools, gdisk
+Built-Using: ${misc:Built-Using}
+Description: Powerful system container and virtual machine manager - daemon
+ Incus is a next generation system container and virtual machine manager.
+ It offers a unified user experience around full Linux systems running
+ inside containers or virtual machines.
+ .
+ It's image based with pre-made images available for a wide number of
+ Linux distributions and is built around a very powerful, yet pretty
+ simple, REST API.
+ .
+ This package contains the Incus daemon.
+
+Package: incus-client
+# The incus binary doesn't depend on liblxc1, so it can be built for any architecture
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: <insert up to 60 chars description>
- <insert long description, indented with spaces>
+Depends: ${misc:Depends},
+         ${shlibs:Depends}
+Suggests: bash-completion
+Built-Using: ${misc:Built-Using}
+Description: Powerful system container and virtual machine manager - client
+ Incus is a next generation system container and virtual machine manager.
+ It offers a unified user experience around full Linux systems running
+ inside containers or virtual machines.
+ .
+ A REST API is offered by Incus to remotely manage containers over the network,
+ using an image based work-flow and with support for live migration.
+ .
+ This package contains the Incus command line client.
+
+Package: incus-tools
+Architecture: linux-any
+Depends: ${misc:Depends},
+         ${shlibs:Depends}
+Built-Using: ${misc:Built-Using}
+# lxd-tools also ships a `fuidshift` binary; we expect src:lxd to only provide bin:golang-github-canonical-lxd-dev after the trixie release, so just use a simple Conflicts here
+Conflicts: lxd-tools
+Description: Powerful system container and virtual machine manager - extra tools
+ Incus is a next generation system container and virtual machine manager.
+ It offers a unified user experience around full Linux systems running
+ inside containers or virtual machines.
+ .
+ This package contains extra tools provided with Incus.
+  - fuidshift - A tool to map/unmap filesystem uids/gids
+  - lxc-to-incus - A tool to migrate LXC containers to Incus
+  - lxd-to-incus - A tool to migrate LXD containers to Incus
+  - incus-benchmark - A benchmarking tool for Incus
+  - incus-simplestreams - Maintain an Incus-compatible simplestreams tree
+
+Package: incus-migrate
+Architecture: linux-any
+Depends: ${misc:Depends},
+         ${shlibs:Depends},
+         rsync
+Built-Using: ${misc:Built-Using}
+Description: Incus physical to instance migration tool
+ This tool lets you turn any Linux filesystem (including your current one)
+ into a Incus instance on a remote Incus host.
+ .
+ It will setup a clean mount tree made of the root filesystem and any
+ additional mount you list, then transfer this through Incus's migration
+ API to create a new instance from it.
+
+Package: incus-agent
+Architecture: linux-any
+Depends: ${misc:Depends}
+Built-Using: ${misc:Built-Using}
+Description: Incus guest agent
+ This package provides an agent to run inside Incus virtual machine guests.
+ .
+ It has to be installed on the Incus host if you want to allow agent
+ injection capability when creating a virtual machine.

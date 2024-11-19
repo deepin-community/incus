@@ -1,0 +1,91 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    # Configure dnsmasq
+    if [ -f /etc/dnsmasq.d-available/incus ] && [ ! -e /etc/dnsmasq.d/incus ]; then
+        echo "Setting up incus dnsmasq configuration."
+        mkdir -p /etc/dnsmasq.d
+        ln -s /etc/dnsmasq.d-available/incus /etc/dnsmasq.d/incus
+
+        # Try to restart a potential system wide dnsmasq
+        invoke-rc.d dnsmasq restart 2>/dev/null || true
+    fi
+
+    # On initial installation (incus-admin group not yet created), setup idmaps.
+    # Ranges follow suggestions from https://linuxcontainers.org/incus/docs/main/installing/
+    if ! getent group incus-admin >/dev/null; then
+        # Run in a sub-shell to avoid messing with the script arguments.
+        (
+            if ! grep "root:" /etc/subuid >/dev/null; then
+                # UID allocation
+                NEXT_UID=999999
+                while read line; do
+                    OLD_IFS=$IFS
+                    IFS=":"
+                    set -- $line
+                    IFS=$OLD_IFS
+
+                    [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] && continue
+
+                    LAST=$(($2+$3))
+                    [ "$LAST" -gt "$NEXT_UID" ] && NEXT_UID=$LAST
+                done < /etc/subuid
+                usermod --add-subuids $((NEXT_UID+1))-$((NEXT_UID+1000000000)) root
+            else
+                echo "A subuid range is already defined for the root user; please verify that it has a range of at least 1,000,000,000 uids"
+            fi
+
+            if ! grep "root:" /etc/subgid >/dev/null; then
+                # GID allocation
+                NEXT_GID=999999
+                while read line; do
+                    OLD_IFS=$IFS
+                    IFS=":"
+                    set -- $line
+                    IFS=$OLD_IFS
+
+                    [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] && continue
+
+                    LAST=$(($2+$3))
+                    [ "$LAST" -gt "$NEXT_GID" ] && NEXT_GID=$LAST
+                done < /etc/subgid
+                usermod --add-subgids $((NEXT_GID+1))-$((NEXT_GID+1000000000)) root
+            else
+                echo "A subgid range is already defined for the root user; please verify that it has a range of at least 1,000,000,000 gids"
+            fi
+        )
+    fi
+fi
+
+#DEBHELPER#
+
+# Handle services start / restart manually, dh_installsystemd won't allow
+# restarting incus.service and incus-user.service on upgrades but not incus-startup.service
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null || true
+        if [ -n "$2" ]; then
+            _dh_action=restart
+        else
+            _dh_action=start
+        fi
+        deb-systemd-invoke $_dh_action 'incus.service' 'incus.socket' 'incus-user.service' 'incus-user.socket' >/dev/null || true
+
+        # Only start 'incus-startup', don't restart it on upgrades
+        deb-systemd-invoke start 'incus-startup.service' >/dev/null || true
+    fi
+fi
+
+# Print the install message
+if [ "$1" = "configure" ] && [ -z "$2" ]; then
+    echo ""
+    echo "Incus has been installed. You must run \`sudo incus admin init\` to"
+    echo "perform the initial configuration of Incus."
+    echo "Be sure to add user(s) to either the 'incus-admin' group for full"
+    echo "administrative access or the 'incus' group for restricted access,"
+    echo "then have them logout and back in to properly setup their access."
+    echo ""
+fi
+
+exit 0

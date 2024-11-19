@@ -1,5 +1,115 @@
-template-repository (1.0-1) unstable; urgency=medium
+incus (6.0.2-1) unstable; urgency=medium
 
-  * Initial release
+  * New upstream release
+    - Rebase d/p/002-adjust-import-paths.patch
+  * d/control:
+    - Bump minimum required version of golang-any to 1.22 per go.mod
+    - Set minimum required version of golang-github-openfga-go-sdk
 
- -- Tsic404 <liuheng@deepin.org>  Sat, 28 Jan 2023 13:46:49 +0800
+ -- Mathias Gibbens <gibmat@debian.org>  Thu, 19 Sep 2024 03:05:28 +0000
+
+incus (6.0.1-3) unstable; urgency=medium
+
+  * Team upload.
+  * Upload to unstable
+
+ -- Reinhard Tartler <siretart@tauware.de>  Sat, 17 Aug 2024 07:21:34 -0400
+
+incus (6.0.1-2) experimental; urgency=medium
+
+  * Team upload.
+  * Compile against go-criu v7, Closes: #1078217
+
+ -- Reinhard Tartler <siretart@tauware.de>  Thu, 08 Aug 2024 19:01:26 -0400
+
+incus (6.0.1-1) unstable; urgency=medium
+
+  * New upstream release
+    - Rebase d/p/002-adjust-import-paths.patch
+  * d/control:
+    - Update Build-Depends and Depends
+    - Add minio-client to the list of incus' Recommended packages
+  * Update d/watch for upstream's LTS tagging convention
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sat, 29 Jun 2024 02:08:43 +0000
+
+incus (6.0.0-1) unstable; urgency=medium
+
+  * New upstream release
+    - Ship shell completions for bash, fish, and zsh
+  * d/control:
+    - Update minimum major version of golang-github-zitadel-oidc
+    - Update Standards-Version to 4.7.0 (no changes needed)
+
+ -- Mathias Gibbens <gibmat@debian.org>  Thu, 11 Apr 2024 01:01:17 +0000
+
+incus (0.7-1) unstable; urgency=medium
+
+  * New upstream release
+    - Update Build-Depends and Depends
+    - Package incus-simplestreams in bin:incus-tools
+    - Don't build tls2jwt test binary
+  * Sync incus-agent scripts with upstream (See #1064213)
+
+ -- Mathias Gibbens <gibmat@debian.org>  Tue, 26 Mar 2024 23:03:26 +0000
+
+incus (0.6-2) unstable; urgency=medium
+
+  * Fix incus-agent injection if $PATH is set in /etc/environment
+    (Closes: #1065174)
+  * d/control:
+    - Add Depends on iproute2 (Closes: #1064852)
+    - Suggest bash-completion in incus-client
+    - Set minimum version of golang to aid backporting
+  * d/rules:
+    - Remove unneeded override of dh_installinit
+  * Don't print install message on upgrades
+
+ -- Mathias Gibbens <gibmat@debian.org>  Wed, 06 Mar 2024 02:48:38 +0000
+
+incus (0.6-1) unstable; urgency=medium
+
+  * New upstream release
+    - Update Build-Depends and Depends
+
+ -- Mathias Gibbens <gibmat@debian.org>  Thu, 22 Feb 2024 23:24:32 +0000
+
+incus (0.5.1-3) unstable; urgency=medium
+
+  * Source-only upload for migration
+  * Drop lintian overrides for removed tag
+    package-supports-alternative-init-but-no-init.d-script
+
+ -- Mathias Gibbens <gibmat@debian.org>  Mon, 12 Feb 2024 10:34:51 +0000
+
+incus (0.5.1-2) unstable; urgency=medium
+
+  * Add a golang-github-lxc-incus-dev package
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sat, 03 Feb 2024 14:34:36 +0000
+
+incus (0.5.1-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Mathias Gibbens <gibmat@debian.org>  Mon, 29 Jan 2024 20:31:42 +0000
+
+incus (0.5-1) unstable; urgency=medium
+
+  * New upstream release:
+    - Drop patches applied upstream
+    - Drop patch that disabled Loki integration and update d/README.debian
+    - Update Build-Depends and Depends
+  * Update years in d/copyright
+  * d/rules:
+    - Update list of files and directories set in DH_GOLANG_INSTALL_EXTRA
+    - Set HOME environment variable for all manpage generation commands
+  * Rename d/README.debian -> d/README.Debian
+
+ -- Mathias Gibbens <gibmat@debian.org>  Fri, 26 Jan 2024 01:06:09 +0000
+
+incus (0.4-1) unstable; urgency=medium
+
+  * Initial release (Closes: #1042989)
+
+ -- Mathias Gibbens <gibmat@debian.org>  Fri, 12 Jan 2024 17:21:36 +0000
