@@ -10,17 +10,19 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/linux"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
+	"github.com/lxc/incus/v6/shared/logger"
 )
 
-var mu sync.RWMutex
-var connections uint64
-var transactions uint64
+var (
+	mu           sync.RWMutex
+	connections  uint64
+	transactions uint64
+)
 
 var projectNames []string
 
@@ -43,25 +45,26 @@ func (c *cmdDaemon) Run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("This must be run as root")
 	}
 
-	// Setup logger.
-	log.SetFormatter(&log.TextFormatter{
-		FullTimestamp: true,
-	})
-	log.SetLevel(log.InfoLevel)
-	log.SetOutput(os.Stdout)
-
 	// Create storage.
-	err := os.MkdirAll(internalUtil.VarPath("users"), 0700)
+	err := os.MkdirAll(internalUtil.VarPath("users"), 0o700)
 	if err != nil && !os.IsExist(err) {
 		return fmt.Errorf("Couldn't create storage: %w", err)
 	}
 
 	// Connect.
-	log.Debug("Connecting to the daemon")
+	logger.Debug("Connecting to the daemon")
 	client, err := incus.ConnectIncusUnix("", nil)
 	if err != nil {
 		return fmt.Errorf("Unable to connect to the daemon: %w", err)
 	}
+
+	cinfo, err := client.GetConnectionInfo()
+	if err != nil {
+		return fmt.Errorf("Failed to obtain connection info: %w", err)
+	}
+
+	// Keep track of the socket path we used to successfully connect to the server
+	serverUnixPath := cinfo.SocketPath
 
 	// Validate the configuration.
 	ok, err := serverIsConfigured(client)
@@ -70,7 +73,7 @@ func (c *cmdDaemon) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	if !ok {
-		log.Info("Performing initial configuration")
+		logger.Info("Performing initial configuration")
 		err = serverInitialConfiguration(client)
 		if err != nil {
 			return fmt.Errorf("Failed to apply initial configuration: %w", err)
@@ -149,7 +152,7 @@ func (c *cmdDaemon) Run(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("Unable to setup unix socket: %w", err)
 		}
 
-		err = os.Chmod(unixPath, 0660)
+		err = os.Chmod(unixPath, 0o660)
 		if err != nil {
 			return fmt.Errorf("Unable to set socket permissions: %w", err)
 		}
@@ -177,16 +180,16 @@ func (c *cmdDaemon) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Start accepting requests.
-	log.Info("Starting up the server")
+	logger.Info("Starting up the server")
 
 	for {
 		// Accept new connection.
 		conn, err := listener.AcceptUnix()
 		if err != nil {
-			log.Error("Failed to accept new connection: %w", err)
+			logger.Errorf("Failed to accept new connection: %v", err)
 			continue
 		}
 
-		go proxyConnection(conn)
+		go proxyConnection(conn, serverUnixPath)
 	}
 }

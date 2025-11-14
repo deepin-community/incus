@@ -2,23 +2,23 @@ From: Mathias Gibbens <gibmat@debian.org>
 Description: Adjust import paths to reflect Debian packaging
 Forwarded: not-needed
 diff --git a/cmd/incusd/daemon.go b/cmd/incusd/daemon.go
-index e6a4e2a5d..8aad5e1d8 100644
+index ab4793aaf..475ac9e7b 100644
 --- a/cmd/incusd/daemon.go
 +++ b/cmd/incusd/daemon.go
-@@ -24,7 +24,7 @@ import (
+@@ -23,7 +23,7 @@ import (
  	dqliteClient "github.com/cowsql/go-cowsql/client"
  	"github.com/cowsql/go-cowsql/driver"
  	"github.com/gorilla/mux"
 -	liblxc "github.com/lxc/go-lxc"
 +	liblxc "gopkg.in/lxc/go-lxc.v2"
  	"golang.org/x/sys/unix"
+ 	yaml "gopkg.in/yaml.v2"
  
- 	internalIO "github.com/lxc/incus/v6/internal/io"
 diff --git a/cmd/incusd/instance_console.go b/cmd/incusd/instance_console.go
-index 5025aa416..02e6c02fc 100644
+index ea6c084ce..12638bb6b 100644
 --- a/cmd/incusd/instance_console.go
 +++ b/cmd/incusd/instance_console.go
-@@ -15,7 +15,7 @@ import (
+@@ -17,7 +17,7 @@ import (
  
  	"github.com/gorilla/mux"
  	"github.com/gorilla/websocket"
@@ -54,7 +54,7 @@ index 1f0ee6cba..79d999571 100644
  )
  
 diff --git a/cmd/incusd/main_forkstart.go b/cmd/incusd/main_forkstart.go
-index adfaca0cd..fdd4c644e 100644
+index 6ef639a15..e249d0185 100644
 --- a/cmd/incusd/main_forkstart.go
 +++ b/cmd/incusd/main_forkstart.go
 @@ -4,7 +4,7 @@ import (
@@ -66,8 +66,21 @@ index adfaca0cd..fdd4c644e 100644
  	"github.com/spf13/cobra"
  	"golang.org/x/sys/unix"
  
+diff --git a/cmd/incusd/storage_volumes_snapshot.go b/cmd/incusd/storage_volumes_snapshot.go
+index aab210856..3dd10acbb 100644
+--- a/cmd/incusd/storage_volumes_snapshot.go
++++ b/cmd/incusd/storage_volumes_snapshot.go
+@@ -12,7 +12,7 @@ import (
+ 	"sync"
+ 	"time"
+ 
+-	"github.com/flosch/pongo2/v6"
++	"github.com/flosch/pongo2"
+ 	"github.com/gorilla/mux"
+ 
+ 	internalInstance "github.com/lxc/incus/v6/internal/instance"
 diff --git a/cmd/lxc-to-incus/main_migrate.go b/cmd/lxc-to-incus/main_migrate.go
-index 0ecbc457c..019de3d2b 100644
+index d2ed12956..410557b94 100644
 --- a/cmd/lxc-to-incus/main_migrate.go
 +++ b/cmd/lxc-to-incus/main_migrate.go
 @@ -9,7 +9,7 @@ import (
@@ -78,9 +91,9 @@ index 0ecbc457c..019de3d2b 100644
 +	liblxc "gopkg.in/lxc/go-lxc.v2"
  	"github.com/spf13/cobra"
  
- 	"github.com/lxc/incus/v6/client"
+ 	incus "github.com/lxc/incus/v6/client"
 diff --git a/cmd/lxc-to-incus/main_migrate_test.go b/cmd/lxc-to-incus/main_migrate_test.go
-index d3783b998..33a732fd3 100644
+index 425283ba2..f0e3696ff 100644
 --- a/cmd/lxc-to-incus/main_migrate_test.go
 +++ b/cmd/lxc-to-incus/main_migrate_test.go
 @@ -6,7 +6,7 @@ import (
@@ -106,7 +119,7 @@ index 1d0752de5..320ea1852 100644
  
  func networkGet(container *liblxc.Container, index int, configKey string) map[string]string {
 diff --git a/internal/server/device/proxy.go b/internal/server/device/proxy.go
-index c008882b1..2741c25c1 100644
+index b8edd4551..e3ae01e13 100644
 --- a/internal/server/device/proxy.go
 +++ b/internal/server/device/proxy.go
 @@ -12,7 +12,7 @@ import (
@@ -119,10 +132,15 @@ index c008882b1..2741c25c1 100644
  	"github.com/lxc/incus/v6/internal/linux"
  	"github.com/lxc/incus/v6/internal/server/apparmor"
 diff --git a/internal/server/instance/drivers/driver_lxc.go b/internal/server/instance/drivers/driver_lxc.go
-index 9bd4ef491..80b8f6335 100644
+index 84f607bd9..183ea2ec7 100644
 --- a/internal/server/instance/drivers/driver_lxc.go
 +++ b/internal/server/instance/drivers/driver_lxc.go
-@@ -30,7 +30,7 @@ import (
+@@ -26,11 +26,11 @@ import (
+ 	"time"
+ 
+ 	"github.com/checkpoint-restore/go-criu/v6/crit"
+-	"github.com/flosch/pongo2/v6"
++	"github.com/flosch/pongo2"
  	"github.com/google/uuid"
  	"github.com/gorilla/websocket"
  	"github.com/kballard/go-shellquote"
@@ -131,8 +149,21 @@ index 9bd4ef491..80b8f6335 100644
  	"github.com/pkg/sftp"
  	"golang.org/x/sync/errgroup"
  	"golang.org/x/sys/unix"
+diff --git a/internal/server/instance/drivers/driver_qemu.go b/internal/server/instance/drivers/driver_qemu.go
+index e230acd61..bf4add56c 100644
+--- a/internal/server/instance/drivers/driver_qemu.go
++++ b/internal/server/instance/drivers/driver_qemu.go
+@@ -29,7 +29,7 @@ import (
+ 	"time"
+ 	"unsafe"
+ 
+-	"github.com/flosch/pongo2/v6"
++	"github.com/flosch/pongo2"
+ 	"github.com/google/uuid"
+ 	"github.com/gorilla/websocket"
+ 	"github.com/kballard/go-shellquote"
 diff --git a/internal/server/instance/instance_interface.go b/internal/server/instance/instance_interface.go
-index 6fa0b6b03..41b84b8ab 100644
+index faecb05d4..d4f792e08 100644
 --- a/internal/server/instance/instance_interface.go
 +++ b/internal/server/instance/instance_interface.go
 @@ -8,7 +8,7 @@ import (
@@ -145,20 +176,36 @@ index 6fa0b6b03..41b84b8ab 100644
  	"google.golang.org/protobuf/proto"
  
 diff --git a/internal/server/instance/instance_utils.go b/internal/server/instance/instance_utils.go
-index 77c6fca50..fe6e75c9e 100644
+index fe4a9b8ee..faec663e3 100644
 --- a/internal/server/instance/instance_utils.go
 +++ b/internal/server/instance/instance_utils.go
-@@ -17,7 +17,7 @@ import (
+@@ -15,9 +15,9 @@ import (
+ 	"strings"
+ 	"time"
  
- 	"github.com/flosch/pongo2"
+-	"github.com/flosch/pongo2/v6"
++	"github.com/flosch/pongo2"
  	"github.com/google/uuid"
 -	liblxc "github.com/lxc/go-lxc"
 +	liblxc "gopkg.in/lxc/go-lxc.v2"
  
- 	"github.com/lxc/incus/v6/client"
+ 	incus "github.com/lxc/incus/v6/client"
  	"github.com/lxc/incus/v6/internal/instance"
+diff --git a/internal/server/network/driver_ovn.go b/internal/server/network/driver_ovn.go
+index 7e1982053..8a4fdc3b4 100644
+--- a/internal/server/network/driver_ovn.go
++++ b/internal/server/network/driver_ovn.go
+@@ -15,7 +15,7 @@ import (
+ 	"strings"
+ 	"time"
+ 
+-	"github.com/flosch/pongo2/v6"
++	"github.com/flosch/pongo2"
+ 	"github.com/mdlayher/netx/eui64"
+ 	ovsClient "github.com/ovn-org/libovsdb/client"
+ 	ovsdbModel "github.com/ovn-org/libovsdb/model"
 diff --git a/internal/server/seccomp/seccomp.go b/internal/server/seccomp/seccomp.go
-index 504904b2d..d16824758 100644
+index 4d727b130..6470067ab 100644
 --- a/internal/server/seccomp/seccomp.go
 +++ b/internal/server/seccomp/seccomp.go
 @@ -464,7 +464,7 @@ import (
@@ -170,3 +217,16 @@ index 504904b2d..d16824758 100644
  	"golang.org/x/sys/unix"
  
  	"github.com/lxc/incus/v6/internal/linux"
+diff --git a/internal/util/template.go b/internal/util/template.go
+index e790133e7..48f967e8b 100644
+--- a/internal/util/template.go
++++ b/internal/util/template.go
+@@ -3,7 +3,7 @@ package util
+ import (
+ 	"strings"
+ 
+-	"github.com/flosch/pongo2/v6"
++	"github.com/flosch/pongo2"
+ )
+ 
+ // RenderTemplate renders a pongo2 template.

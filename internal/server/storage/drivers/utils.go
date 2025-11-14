@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 
@@ -36,7 +38,7 @@ func wipeDirectory(path string) error {
 	// List all entries.
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 
@@ -47,7 +49,7 @@ func wipeDirectory(path string) error {
 	for _, entry := range entries {
 		entryPath := filepath.Join(path, entry.Name())
 		err := os.RemoveAll(entryPath)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("Failed removing %q: %w", entryPath, err)
 		}
 	}
@@ -268,7 +270,7 @@ func createParentSnapshotDirIfMissing(poolName string, volType VolumeType, volNa
 
 	// If it's missing, create it.
 	if !util.PathExists(snapshotsPath) {
-		err := os.Mkdir(snapshotsPath, 0700)
+		err := os.Mkdir(snapshotsPath, 0o700)
 		if err != nil {
 			return fmt.Errorf("Failed to create parent snapshot directory %q: %w", snapshotsPath, err)
 		}
@@ -293,7 +295,7 @@ func deleteParentSnapshotDirIfEmpty(poolName string, volType VolumeType, volName
 
 		if isEmpty {
 			err := os.Remove(snapshotsPath)
-			if err != nil && !os.IsNotExist(err) {
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("Failed to remove '%s': %w", snapshotsPath, err)
 			}
 		}
@@ -305,7 +307,7 @@ func deleteParentSnapshotDirIfEmpty(poolName string, volType VolumeType, volName
 // ensureSparseFile creates a sparse empty file at specified location with specified size.
 // If the path already exists, the file is truncated to the requested size.
 func ensureSparseFile(filePath string, sizeBytes int64) error {
-	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0600)
+	f, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return fmt.Errorf("Failed to open %s: %w", filePath, err)
 	}
@@ -385,6 +387,29 @@ func ensureVolumeBlockFile(vol Volume, path string, sizeBytes int64, allowUnsafe
 	}
 
 	return false, nil
+}
+
+// enlargeVolumeBlockFile enlarges the raw block file for a volume to the specified size.
+func enlargeVolumeBlockFile(path string, volSize int64) error {
+	if linux.IsBlockdevPath(path) {
+		return nil
+	}
+
+	actualSize, err := BlockDiskSizeBytes(path)
+	if err != nil {
+		return err
+	}
+
+	if volSize < actualSize {
+		return fmt.Errorf("Block volumes cannot be shrunk: %w", ErrCannotBeShrunk)
+	}
+
+	err = ensureSparseFile(path, volSize)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // mkfsOptions represents options for filesystem creation.
@@ -514,21 +539,20 @@ func growFileSystem(fsType string, devPath string, vol Volume) error {
 	}
 
 	return vol.MountTask(func(mountPath string, op *operations.Operation) error {
-		var msg string
 		var err error
 		switch fsType {
 		case "ext4":
-			msg, err = subprocess.TryRunCommand("resize2fs", devPath)
+			_, err = subprocess.TryRunCommand("resize2fs", devPath)
 		case "xfs":
-			msg, err = subprocess.TryRunCommand("xfs_growfs", mountPath)
+			_, err = subprocess.TryRunCommand("xfs_growfs", mountPath)
 		case "btrfs":
-			msg, err = subprocess.TryRunCommand("btrfs", "filesystem", "resize", "max", mountPath)
+			_, err = subprocess.TryRunCommand("btrfs", "filesystem", "resize", "max", mountPath)
 		default:
 			return fmt.Errorf("Unrecognised filesystem type %q", fsType)
 		}
 
 		if err != nil {
-			return fmt.Errorf("Could not grow underlying %q filesystem for %q: %s", fsType, devPath, msg)
+			return fmt.Errorf("Could not grow underlying %q filesystem for %q: %w", fsType, devPath, err)
 		}
 
 		return nil
@@ -797,6 +821,26 @@ func BlockDiskSizeBytes(blockDiskPath string) (int64, error) {
 	return fi.Size(), nil
 }
 
+// GetPhysicalBlockSize returns the physical block size for the device.
+func GetPhysicalBlockSize(blockDiskPath string) (int, error) {
+	// Open the block device.
+	f, err := os.Open(blockDiskPath)
+	if err != nil {
+		return -1, err
+	}
+
+	defer func() { _ = f.Close() }()
+
+	// Query the physical block size.
+	var res int32
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(f.Fd()), unix.BLKPBSZGET, uintptr(unsafe.Pointer(&res)))
+	if errno != 0 {
+		return -1, fmt.Errorf("Failed to BLKPBSZGET: %w", unix.Errno(errno))
+	}
+
+	return int(res), nil
+}
+
 // OperationLockName returns the storage specific lock name to use with locking package.
 func OperationLockName(operationName string, poolName string, volType VolumeType, contentType ContentType, volName string) string {
 	return fmt.Sprintf("%s/%s/%s/%s/%s", operationName, poolName, volType, contentType, volName)
@@ -841,6 +885,16 @@ func loopDeviceSetup(sourcePath string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// loopDeviceSetupAlign creates a forced 512-byte aligned loop device.
+func loopDeviceSetupAlign(sourcePath string) (string, error) {
+	out, err := subprocess.RunCommand("losetup", "-b", "512", "--find", "--nooverlap", "--show", sourcePath)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(out), nil
+}
+
 // loopFileAutoDetach enables auto detach mode for a loop device.
 func loopDeviceAutoDetach(loopDevPath string) error {
 	_, err := subprocess.RunCommand("losetup", "--detach", loopDevPath)
@@ -864,7 +918,7 @@ func wipeBlockHeaders(path string) error {
 	defer fdZero.Close()
 
 	// Open the target disk.
-	fdDisk, err := os.OpenFile(path, os.O_RDWR, 0600)
+	fdDisk, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}

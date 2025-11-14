@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/ioprogress"
+	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/osarch"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
@@ -27,6 +31,21 @@ type ociInfo struct {
 	LayersData   []struct {
 		Size int64 `json:"Size"`
 	} `json:"LayersData"`
+}
+
+// Get the proxy host value.
+func (r *ProtocolOCI) getProxyHost() (*url.URL, error) {
+	req, err := http.NewRequest("GET", r.httpHost, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	proxy, err := r.http.Transport.(*http.Transport).Proxy(req)
+	if err != nil {
+		return nil, err
+	}
+
+	return proxy, nil
 }
 
 // Image handling functions
@@ -55,6 +74,11 @@ func (r *ProtocolOCI) GetImagesWithFilter(filters []string) ([]api.Image, error)
 func (r *ProtocolOCI) GetImage(fingerprint string) (*api.Image, string, error) {
 	info, ok := r.cache[fingerprint]
 	if !ok {
+		_, err := exec.LookPath("skopeo")
+		if err != nil {
+			return nil, "", fmt.Errorf("OCI container handling requires \"skopeo\" be present on the system")
+		}
+
 		return nil, "", fmt.Errorf("Image not found")
 	}
 
@@ -65,6 +89,7 @@ func (r *ProtocolOCI) GetImage(fingerprint string) (*api.Image, string, error) {
 				"architecture": info.Architecture,
 				"type":         "oci",
 				"description":  fmt.Sprintf("%s (OCI)", info.Name),
+				"id":           info.Alias,
 			},
 		},
 		Aliases: []api.ImageAlias{{
@@ -91,8 +116,28 @@ func (r *ProtocolOCI) GetImage(fingerprint string) (*api.Image, string, error) {
 func (r *ProtocolOCI) GetImageFile(fingerprint string, req ImageFileRequest) (*ImageFileResponse, error) {
 	ctx := context.Background()
 
+	// Get proxy details.
+	proxy, err := r.getProxyHost()
+	if err != nil {
+		return nil, err
+	}
+
+	var env []string
+	if proxy != nil {
+		env = []string{
+			fmt.Sprintf("HTTPS_PROXY=%s", proxy),
+			fmt.Sprintf("HTTP_PROXY=%s", proxy),
+		}
+	}
+
+	// Get the cached entry.
 	info, ok := r.cache[fingerprint]
 	if !ok {
+		_, err := exec.LookPath("skopeo")
+		if err != nil {
+			return nil, fmt.Errorf("OCI container handling requires \"skopeo\" be present on the system")
+		}
+
 		return nil, fmt.Errorf("Image not found")
 	}
 
@@ -105,6 +150,11 @@ func (r *ProtocolOCI) GetImageFile(fingerprint string, req ImageFileRequest) (*I
 		return nil, fmt.Errorf("OCI image export currently requires root access")
 	}
 
+	_, err = exec.LookPath("umoci")
+	if err != nil {
+		return nil, fmt.Errorf("OCI container handling requires \"umoci\" be present on the system")
+	}
+
 	// Get some temporary storage.
 	ociPath, err := os.MkdirTemp("", "incus-oci-")
 	if err != nil {
@@ -113,12 +163,12 @@ func (r *ProtocolOCI) GetImageFile(fingerprint string, req ImageFileRequest) (*I
 
 	defer func() { _ = os.RemoveAll(ociPath) }()
 
-	err = os.Mkdir(filepath.Join(ociPath, "oci"), 0700)
+	err = os.Mkdir(filepath.Join(ociPath, "oci"), 0o700)
 	if err != nil {
 		return nil, err
 	}
 
-	err = os.Mkdir(filepath.Join(ociPath, "image"), 0700)
+	err = os.Mkdir(filepath.Join(ociPath, "image"), 0o700)
 	if err != nil {
 		return nil, err
 	}
@@ -128,13 +178,18 @@ func (r *ProtocolOCI) GetImageFile(fingerprint string, req ImageFileRequest) (*I
 		req.ProgressHandler(ioprogress.ProgressData{Text: "Retrieving OCI image from registry"})
 	}
 
-	_, err = subprocess.RunCommand(
+	stdout, _, err := subprocess.RunCommandSplit(
+		ctx,
+		env,
+		nil,
 		"skopeo",
 		"--insecure-policy",
 		"copy",
-		fmt.Sprintf("%s/%s", strings.Replace(r.httpHost, "https://", "docker://", -1), info.Alias),
+		"--remove-signatures",
+		fmt.Sprintf("%s/%s", strings.Replace(r.httpHost, "https://", "docker://", 1), info.Alias),
 		fmt.Sprintf("oci:%s:latest", filepath.Join(ociPath, "oci")))
 	if err != nil {
+		logger.Debug("Error copying remote image to local", logger.Ctx{"image": info.Alias, "stdout": stdout, "stderr": err})
 		return nil, err
 	}
 
@@ -143,13 +198,14 @@ func (r *ProtocolOCI) GetImageFile(fingerprint string, req ImageFileRequest) (*I
 		req.ProgressHandler(ioprogress.ProgressData{Text: "Unpacking the OCI image"})
 	}
 
-	_, err = subprocess.RunCommand(
+	stdout, err = subprocess.RunCommand(
 		"umoci",
 		"unpack",
 		"--keep-dirlinks",
 		"--image", filepath.Join(ociPath, "oci"),
 		filepath.Join(ociPath, "image"))
 	if err != nil {
+		logger.Debug("Error unpacking OCI image", logger.Ctx{"image": filepath.Join(ociPath, "oci"), "stdout": stdout, "stderr": err})
 		return nil, err
 	}
 
@@ -168,7 +224,7 @@ func (r *ProtocolOCI) GetImageFile(fingerprint string, req ImageFileRequest) (*I
 		return nil, err
 	}
 
-	err = os.WriteFile(filepath.Join(ociPath, "image", "metadata.yaml"), data, 0644)
+	err = os.WriteFile(filepath.Join(ociPath, "image", "metadata.yaml"), data, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -285,9 +341,30 @@ func (r *ProtocolOCI) GetImageAliasNames() ([]string, error) {
 
 // GetImageAlias returns an existing alias as an ImageAliasesEntry struct.
 func (r *ProtocolOCI) GetImageAlias(name string) (*api.ImageAliasesEntry, string, error) {
-	// Get the image information from skopeo.
-	stdout, err := subprocess.RunCommand("skopeo", "inspect", fmt.Sprintf("%s/%s", strings.Replace(r.httpHost, "https://", "docker://", -1), name))
+	// Get proxy details.
+	proxy, err := r.getProxyHost()
 	if err != nil {
+		return nil, "", err
+	}
+
+	var env []string
+	if proxy != nil {
+		env = []string{
+			fmt.Sprintf("HTTPS_PROXY=%s", proxy),
+			fmt.Sprintf("HTTP_PROXY=%s", proxy),
+		}
+	}
+
+	// Get the image information from skopeo.
+	stdout, _, err := subprocess.RunCommandSplit(
+		context.TODO(),
+		env,
+		nil,
+		"skopeo",
+		"inspect",
+		fmt.Sprintf("%s/%s", strings.Replace(r.httpHost, "https://", "docker://", 1), name))
+	if err != nil {
+		logger.Debug("Error getting image alias", logger.Ctx{"name": name, "stdout": stdout, "stderr": err})
 		return nil, "", err
 	}
 
@@ -299,7 +376,7 @@ func (r *ProtocolOCI) GetImageAlias(name string) (*api.ImageAliasesEntry, string
 	}
 
 	info.Alias = name
-	info.Digest = strings.Replace(info.Digest, "sha256:", "", -1)
+	info.Digest = strings.Replace(info.Digest, "sha256:", "", 1)
 
 	archID, err := osarch.ArchitectureId(info.Architecture)
 	if err != nil {

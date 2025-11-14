@@ -5,10 +5,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"math/big"
 	"net"
-	"os"
 
 	"github.com/mdlayher/netx/eui64"
 
@@ -200,7 +200,8 @@ func (t *Transaction) getDHCPFreeIPv4(usedIPs map[[4]byte]dnsmasq.DHCPAllocation
 	if len(dhcpRanges) <= 0 {
 		dhcpRanges = append(dhcpRanges, iprange.Range{
 			Start: GetIP(subnet, 1).To4(),
-			End:   GetIP(subnet, -2).To4()},
+			End:   GetIP(subnet, -2).To4(),
+		},
 		)
 	}
 
@@ -289,7 +290,8 @@ func (t *Transaction) getDHCPFreeIPv6(usedIPs map[[16]byte]dnsmasq.DHCPAllocatio
 	if len(dhcpRanges) <= 0 {
 		dhcpRanges = append(dhcpRanges, iprange.Range{
 			Start: GetIP(subnet, 1).To16(),
-			End:   GetIP(subnet, -1).To16()},
+			End:   GetIP(subnet, -1).To16(),
+		},
 		)
 	}
 
@@ -346,7 +348,7 @@ func AllocateTask(opts *Options, f func(*Transaction) error) error {
 	// Read current static IP allocation configured from dnsmasq host config (if exists).
 	deviceStaticFileName := dnsmasq.StaticAllocationFileName(opts.ProjectName, opts.HostName, opts.DeviceName)
 	t.currentDHCPMAC, t.currentDHCPv4, t.currentDHCPv6, err = dnsmasq.DHCPStaticAllocation(opts.Network.Name(), deviceStaticFileName)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 

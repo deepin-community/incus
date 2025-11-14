@@ -1,0 +1,44 @@
+From b718c9348ce73f2526ffb50fe7b2eca6019caf7b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?St=C3=A9phane=20Graber?= <stgraber@stgraber.org>
+Date: Fri, 4 Apr 2025 16:19:11 -0400
+Subject: [PATCH] incus-agent: Retry mounts to avoid kernel races
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Closes #1881
+
+Signed-off-by: Stéphane Graber <stgraber@stgraber.org>
+---
+ cmd/incus-agent/events.go | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/cmd/incus-agent/events.go b/cmd/incus-agent/events.go
+index 139d9d57243..1a18d17a339 100644
+--- a/cmd/incus-agent/events.go
++++ b/cmd/incus-agent/events.go
+@@ -5,6 +5,7 @@ import (
+ 	"fmt"
+ 	"net/http"
+ 	"strings"
++	"time"
+ 
+ 	"github.com/lxc/incus/v6/internal/server/events"
+ 	"github.com/lxc/incus/v6/internal/server/response"
+@@ -147,7 +148,15 @@ func eventsProcess(event api.Event) {
+ 	// Attempt to perform the mount.
+ 	mntSource := fmt.Sprintf("incus_%s", e.Name)
+ 
+-	err = tryMountShared(mntSource, e.Config["path"], "virtiofs", nil)
++	for i := 0; i < 20; i++ {
++		time.Sleep(500 * time.Millisecond)
++
++		err = tryMountShared(mntSource, e.Config["path"], "virtiofs", nil)
++		if err == nil {
++			break
++		}
++	}
++
+ 	if err != nil {
+ 		logger.Infof("Failed to mount hotplug %q (Type: %q) to %q", mntSource, "virtiofs", e.Config["path"])
+ 		return

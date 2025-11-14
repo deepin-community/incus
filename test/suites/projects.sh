@@ -60,12 +60,18 @@ test_projects_crud() {
 
   incus project switch default
 
+  # Create a project with a description
+  incus project create baz --description "Test description"
+  incus project list | grep -q -F 'Test description'
+  incus project show baz | grep -q -F 'description: Test description'
+
   # Delete the projects
   incus project delete foo
   incus project delete bar
+  incus project delete baz
 
   # We're back to the default project
-  incus project list | grep -q "default (current)"
+  [ "$(incus project get-current)" = "default" ]
 }
 
 # Use containers in a project.
@@ -723,8 +729,8 @@ test_projects_limits() {
   ! incus project set p1 limits.disk 1GiB || false
 
   # Set a disk limit on the default profile and also on instance c2
-  incus profile device set default root size=100MiB
-  incus config device add c2 root disk path="/" pool="${pool}" size=50MiB
+  incus profile device set default root size=200MiB
+  incus config device add c2 root disk path="/" pool="${pool}" size=150MiB
 
   if [ "${INCUS_BACKEND}" = "lvm" ]; then
     # Can't set the project's disk limit because not all volumes have
@@ -741,30 +747,30 @@ test_projects_limits() {
   incus storage volume create "${pool}" v1
 
   # Set a size on the custom volume.
-  incus storage volume set "${pool}" v1 size 50MiB
+  incus storage volume set "${pool}" v1 size 150MiB
 
   # Can't set the project's disk limit below the current aggregate count.
-  ! incus project set p1 limits.disk 190MiB || false
+  ! incus project set p1 limits.disk 490MiB || false
 
   # Set the project's disk limit
-  incus project set p1 limits.disk 250MiB
+  incus project set p1 limits.disk 550MiB
 
   # Can't update the project's disk limit below the current aggregate count.
-  ! incus project set p1 limits.disk 190MiB || false
+  ! incus project set p1 limits.disk 490MiB || false
 
   # Changing profile or instance root device size or volume size above the
   # aggregate project's limit is not possible.
-  ! incus profile device set default root size=160MiB || false
-  ! incus config device set c2 root size 110MiB || false
-  ! incus storage volume set "${pool}" v1 size 110MiB || false
+  ! incus profile device set default root size=300MiB || false
+  ! incus config device set c2 root size 250MiB || false
+  ! incus storage volume set "${pool}" v1 size 250MiB || false
 
   # Can't create a custom volume without specifying a size.
   ! incus storage volume create "${pool}" v2 || false
 
   # Disk limits can be updated if they stay within limits.
-  incus project set p1 limits.disk 204900KiB
-  incus profile device set default root size=90MiB
-  incus config device set c2 root size 60MiB
+  incus project set p1 limits.disk 540MiB
+  incus profile device set default root size=190MiB
+  incus config device set c2 root size 200MiB
 
   # Can't upload an image if that would exceed the current quota.
   ! deps/import-busybox --project p1 --template start --alias otherimage || false
@@ -797,7 +803,7 @@ test_projects_limits() {
     # Relax all constraints except the disk limits, which won't be enough for the
     # image to be downloaded.
     incus profile device set default root size=500KiB
-    incus project set p1 limits.disk 111MiB
+    incus project set p1 limits.disk 351MiB
     incus project unset p1 limits.containers
     incus project unset p1 limits.cpu
     incus project unset p1 limits.memory
@@ -1067,7 +1073,7 @@ test_projects_usage() {
     limits.cpu=1 \
     limits.memory=512MiB \
     limits.processes=20
-  incus profile device set default root size=3GiB --project test-usage
+  incus profile device set default root size=300MiB --project test-usage
 
   # Spin up a container
   deps/import-busybox --project test-usage --alias testimage
@@ -1076,7 +1082,7 @@ test_projects_usage() {
 
   incus project info test-usage --format csv | grep -q "CONTAINERS,UNLIMITED,1"
   incus project info test-usage --format csv | grep -q "CPU,5,1"
-  incus project info test-usage --format csv | grep -q "DISK,10.00GiB,3.00GiB"
+  incus project info test-usage --format csv | grep -q "DISK,10.00GiB,300.00MiB"
   incus project info test-usage --format csv | grep -q "INSTANCES,UNLIMITED,1"
   incus project info test-usage --format csv | grep -q "MEMORY,1.00GiB,512.00MiB"
   incus project info test-usage --format csv | grep -q "NETWORKS,3,0"

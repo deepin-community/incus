@@ -12,7 +12,7 @@ import (
 	liblxc "github.com/lxc/go-lxc"
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/shared/api"
@@ -165,8 +165,7 @@ func validateConfig(conf []string, container *liblxc.Container) error {
 	return nil
 }
 
-func convertContainer(d incus.InstanceServer, container *liblxc.Container, storage string,
-	dryRun bool, rsyncArgs string, debug bool) error {
+func convertContainer(d incus.InstanceServer, container *liblxc.Container, storage string, dryRun bool, rsyncArgs string, debug bool) error {
 	// Don't migrate running containers
 	if container.Running() {
 		return fmt.Errorf("Only stopped containers can be migrated")
@@ -337,8 +336,7 @@ func convertContainer(d incus.InstanceServer, container *liblxc.Container, stora
 	if value != nil {
 		for _, cap := range strings.Split(value[0], " ") {
 			// Ignore capabilities that are dropped in containers by default.
-			if slices.Contains([]string{"mac_admin", "mac_override", "sys_module",
-				"sys_time"}, cap) {
+			if slices.Contains([]string{"mac_admin", "mac_override", "sys_module", "sys_time"}, cap) {
 				continue
 			}
 

@@ -1,7 +1,7 @@
 package config
 
 import (
-	"github.com/lxc/incus/v6/internal/revert"
+	"github.com/lxc/incus/v6/shared/revert"
 )
 
 // MountOwnerShiftNone do not use owner shifting.
@@ -66,6 +66,7 @@ type RunConfig struct {
 	TPMDevice        []RunConfigItem  // TPM device configuration settings.
 	PCIDevice        []RunConfigItem  // PCI device configuration settings.
 	Revert           revert.Hook      // Revert setup of device on post-setup error.
+	UseUSBBus        bool             // Whether to use a USB bus for the device.
 }
 
 // NICConfigDir shared constant used to indicate where NIC config is stored.

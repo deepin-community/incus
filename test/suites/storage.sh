@@ -14,11 +14,14 @@ test_storage() {
   local storage_pool storage_volume
   storage_pool="incustest-$(basename "${INCUS_DIR}")-pool"
   storage_volume="${storage_pool}-vol"
-  incus storage create "$storage_pool" "$incus_backend"
-  incus storage show "$storage_pool" | sed 's/^description:.*/description: foo/' | incus storage edit "$storage_pool"
+  incus storage create "$storage_pool" "$incus_backend" --description foo
   incus storage show "$storage_pool" | grep -q 'description: foo'
+  incus storage show "$storage_pool" | sed 's/^description:.*/description: bar/' | incus storage edit "$storage_pool"
+  incus storage show "$storage_pool" | grep -q 'description: bar'
 
-  incus storage volume create "$storage_pool" "$storage_volume"
+  # Create a storage volume with a description
+  incus storage volume create "$storage_pool" "$storage_volume" --description foo
+  incus storage volume show "$storage_pool" "$storage_volume" | grep -q 'description: foo'
 
   # Test setting description on a storage volume
   incus storage volume show "$storage_pool" "$storage_volume" | sed 's/^description:.*/description: bar/' | incus storage volume edit "$storage_pool" "$storage_volume"
@@ -760,13 +763,13 @@ test_storage() {
   )
 
   # Test applying quota (expected size ranges are in KiB and have an allowable range to account for allocation variations).
-  QUOTA1="20MiB"
-  rootMinKiB1="13800"
-  rootMaxKiB1="23000"
+  QUOTA1="400MiB"
+  rootMinKiB1="320000"
+  rootMaxKiB1="450000"
 
-  QUOTA2="25MiB"
-  rootMinKiB2="18900"
-  rootMaxKiB2="28000"
+  QUOTA2="800MiB"
+  rootMinKiB2="720000"
+  rootMaxKiB2="850000"
 
   if [ "$incus_backend" != "dir" ]; then
     incus launch testimage quota1

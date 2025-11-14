@@ -1,15 +1,16 @@
 package device
 
 import (
+	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
 	"github.com/lxc/incus/v6/internal/server/network"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -41,6 +42,7 @@ func (d *nicP2P) validateConfig(instConf instance.ConfigReader) error {
 		"ipv4.routes",
 		"ipv6.routes",
 		"boot.priority",
+		"io.bus",
 	}
 
 	err := d.config.Validate(nicValidationRules([]string{}, optionalFields, instConf))
@@ -117,7 +119,7 @@ func (d *nicP2P) Start() (*deviceConfig.RunConfig, error) {
 
 	// Attempt to disable router advertisement acceptance.
 	err = localUtil.SysctlSet(fmt.Sprintf("net/ipv6/conf/%s/accept_ra", saveData["host_name"]), "0")
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 
@@ -148,6 +150,10 @@ func (d *nicP2P) Start() (*deviceConfig.RunConfig, error) {
 		{Key: "flags", Value: "up"},
 		{Key: "link", Value: peerName},
 		{Key: "hwaddr", Value: d.config["hwaddr"]},
+	}
+
+	if d.config["io.bus"] == "usb" {
+		runConf.UseUSBBus = true
 	}
 
 	if d.inst.Type() == instancetype.VM {

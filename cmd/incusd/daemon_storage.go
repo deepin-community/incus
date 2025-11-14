@@ -111,6 +111,15 @@ func daemonStorageMount(s *state.State) error {
 			return fmt.Errorf("Failed to mount storage volume %q: %w", source, err)
 		}
 
+		// Ensure we have the correct symlink in place.
+		volStorageName := project.StorageVolume(api.ProjectDefaultName, volumeName)
+
+		_ = os.RemoveAll(internalUtil.VarPath(storageType))
+		err = os.Symlink(internalUtil.VarPath("storage-pools", poolName, "custom", volStorageName), internalUtil.VarPath(storageType))
+		if err != nil {
+			return fmt.Errorf("Failed to set up symlink for %q: %w", storageType, err)
+		}
+
 		return nil
 	}
 
@@ -283,7 +292,7 @@ func daemonStorageMove(s *state.State, storageType string, target string) error 
 		}
 
 		// Re-create as a directory.
-		err = os.MkdirAll(destPath, 0700)
+		err = os.MkdirAll(destPath, 0o700)
 		if err != nil {
 			return fmt.Errorf("Failed to create directory %q: %w", destPath, err)
 		}
@@ -331,7 +340,7 @@ func daemonStorageMove(s *state.State, storageType string, target string) error 
 	mountpoint := storageDrivers.GetVolumeMountPath(poolName, storageDrivers.VolumeTypeCustom, volStorageName)
 	destPath = mountpoint
 
-	err = os.Chmod(mountpoint, 0700)
+	err = os.Chmod(mountpoint, 0o700)
 	if err != nil {
 		return fmt.Errorf("Failed to set permissions on %q: %w", mountpoint, err)
 	}

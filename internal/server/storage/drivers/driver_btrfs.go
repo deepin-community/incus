@@ -1,7 +1,9 @@
 package drivers
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,22 +13,24 @@ import (
 
 	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
 
-var btrfsVersion string
-var btrfsLoaded bool
-var btrfsPropertyForce bool
+var (
+	btrfsVersion       string
+	btrfsLoaded        bool
+	btrfsPropertyForce bool
+)
 
 type btrfs struct {
 	common
@@ -236,7 +240,7 @@ func (d *btrfs) Create() error {
 
 				// Delete the current directory to replace by subvolume.
 				err := os.Remove(cleanSource)
-				if err != nil && !os.IsNotExist(err) {
+				if err != nil && !errors.Is(err, fs.ErrNotExist) {
 					return fmt.Errorf("Failed to remove %q: %w", cleanSource, err)
 				}
 			}
@@ -302,7 +306,7 @@ func (d *btrfs) Delete(op *operations.Operation) error {
 		}
 
 		// And re-create as an empty directory to make the backend happy.
-		err = os.Mkdir(mountPath, 0700)
+		err = os.Mkdir(mountPath, 0o700)
 		if err != nil {
 			return fmt.Errorf("Failed creating directory %q: %w", mountPath, err)
 		}
@@ -311,7 +315,7 @@ func (d *btrfs) Delete(op *operations.Operation) error {
 	// Delete any loop file we may have used.
 	loopPath := loopFilePath(d.name)
 	err = os.Remove(loopPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed removing loop file %q: %w", loopPath, err)
 	}
 
@@ -359,7 +363,7 @@ func (d *btrfs) Update(changedConfig map[string]string) error {
 		}
 
 		// Resize loop file
-		f, err := os.OpenFile(loopPath, os.O_RDWR, 0600)
+		f, err := os.OpenFile(loopPath, os.O_RDWR, 0o600)
 		if err != nil {
 			return err
 		}
@@ -484,7 +488,7 @@ func (d *btrfs) GetResources() (*api.ResourcesStoragePool, error) {
 }
 
 // MigrationType returns the type of transfer methods to be used when doing migrations between pools in preference order.
-func (d *btrfs) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool) []localMigration.Type {
+func (d *btrfs) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool, clusterMove bool, storageMove bool) []localMigration.Type {
 	var rsyncFeatures []string
 	btrfsFeatures := []string{migration.BTRFSFeatureMigrationHeader, migration.BTRFSFeatureSubvolumes, migration.BTRFSFeatureSubvolumeUUIDs}
 

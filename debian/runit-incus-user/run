@@ -1,0 +1,12 @@
+#!/usr/bin/env /lib/runit/invoke-run
+#Copyright: 2025 Martin Steigerwald <martin@lichtvoll.de>
+#License: Apache-2.0
+
+exec 2>&1
+
+sv start lxcfs
+
+test -e /etc/environment && . /etc/environment
+test -e /etc/default/incus && . /etc/default/incus
+
+exec /usr/libexec/incus/incus-user --group incus

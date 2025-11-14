@@ -61,7 +61,7 @@
 					{
 						"io.bus": {
 							"default": "`virtio-scsi` for block, `auto` for file system",
-							"longdesc": "This controls what bus a disk device should be attached to.\n\nFor block devices (disks), this is one of:\n- `nvme`\n- `virtio-blk`\n- `virtio-scsi` (default)\n\nFor file systems (shared directories or custom volumes), this is one of:\n- `9p`\n- `auto` (default) (`virtiofs` + `9p`, just `9p` if `virtiofsd` is missing)\n- `virtiofs`",
+							"longdesc": "This controls what bus a disk device should be attached to.\n\nFor block devices (disks), this is one of:\n- `nvme`\n- `virtio-blk`\n- `virtio-scsi` (default)\n- `usb`\n\nFor file systems (shared directories or custom volumes), this is one of:\n- `9p`\n- `auto` (default) (`virtiofs` + `9p`, just `9p` if `virtiofsd` is missing)\n- `virtiofs`",
 							"required": "no",
 							"shortdesc": "Only for VMs: Override the bus for the device",
 							"type": "string"
@@ -104,7 +104,7 @@
 						"path": {
 							"longdesc": "",
 							"required": "yes",
-							"shortdesc": "Path inside the instance where the disk will be mounted (only for containers)",
+							"shortdesc": "Path inside the instance where the disk will be mounted (only for file system disk devices)",
 							"type": "string"
 						}
 					},
@@ -464,9 +464,9 @@
 						"boot.host_shutdown_action": {
 							"defaultdesc": "stop",
 							"liveupdate": "yes",
-							"longdesc": "Action to take on host shut down",
+							"longdesc": "Action to take on host shut down\n\nValid values are: `stop`, `force-stop` or `stateful-stop`",
 							"shortdesc": "What action to take on the instance when the host is shut down",
-							"type": "integer"
+							"type": "string"
 						}
 					},
 					{
@@ -618,6 +618,14 @@
 						}
 					},
 					{
+						"environment.*": {
+							"liveupdate": "yes",
+							"longdesc": "Extra environment variables to set on boot and during exec.",
+							"shortdesc": "Free-form environment key/value",
+							"type": "string"
+						}
+					},
+					{
 						"linux.kernel_modules": {
 							"condition": "container",
 							"liveupdate": "yes",
@@ -636,8 +644,16 @@
 						}
 					},
 					{
+						"smbios11.*": {
+							"liveupdate": "yes",
+							"longdesc": "`SMBIOS Type 11` configuration keys.",
+							"shortdesc": "Free-form `SMBIOS Type 11` key/value",
+							"type": "string"
+						}
+					},
+					{
 						"user.*": {
-							"liveupdate": "no",
+							"liveupdate": "yes",
 							"longdesc": "User keys can be used in search.",
 							"shortdesc": "Free-form user key/value storage",
 							"type": "string"
@@ -995,6 +1011,16 @@
 						}
 					},
 					{
+						"security.iommu": {
+							"condition": "virtual machine",
+							"defaultdesc": "`false`",
+							"liveupdate": "no",
+							"longdesc": "",
+							"shortdesc": "Whether to enable virtual IOMMU, useful for device passthrough and nesting",
+							"type": "bool"
+						}
+					},
+					{
 						"security.nesting": {
 							"condition": "container",
 							"defaultdesc": "`false`",
@@ -1039,7 +1065,7 @@
 							"defaultdesc": "`true`",
 							"liveupdate": "no",
 							"longdesc": "When disabling this option, consider enabling {config:option}`instance-security:security.csm`.",
-							"shortdesc": "Whether UEFI secure boot is enabled with the default Microsoft keys",
+							"shortdesc": "Whether UEFI secure boot is enforced with the default Microsoft keys",
 							"type": "bool"
 						}
 					},
@@ -1190,7 +1216,7 @@
 						}
 					},
 					{
-						"security.syscalls.intercept.sched_setcheduler": {
+						"security.syscalls.intercept.sched_setscheduler": {
 							"condition": "container",
 							"defaultdesc": "`false`",
 							"liveupdate": "no",
@@ -1244,7 +1270,7 @@
 						"snapshots.schedule": {
 							"defaultdesc": "empty",
 							"liveupdate": "no",
-							"longdesc": "Specify either a cron expression (`\u003cminute\u003e \u003chour\u003e \u003cdom\u003e \u003cmonth\u003e \u003cdow\u003e`), a comma-separated list of schedule aliases (`@hourly`, `@daily`, `@midnight`, `@weekly`, `@monthly`, `@annually`, `@yearly`), or leave empty to disable automatic snapshots.\n",
+							"longdesc": "Specify either a cron expression (`\u003cminute\u003e \u003chour\u003e \u003cdom\u003e \u003cmonth\u003e \u003cdow\u003e`), a comma-and-space-separated list of schedule aliases (`@startup`, `@hourly`, `@daily`, `@midnight`, `@weekly`, `@monthly`, `@annually`, `@yearly`), or leave empty to disable automatic snapshots.\n\nNote that unlike most other configuration keys, this one must be comma-and-space-separated and not just comma-separated as cron expression can themselves contain commas.\n",
 							"shortdesc": "Schedule for automatic instance snapshots",
 							"type": "string"
 						}
@@ -1508,6 +1534,13 @@
 						}
 					},
 					{
+						"volatile.rebalance.last_move": {
+							"longdesc": "",
+							"shortdesc": "Timestamp of last move by automatic live-migration",
+							"type": "integer"
+						}
+					},
+					{
 						"volatile.uuid": {
 							"longdesc": "The instance UUID is globally unique across all servers and projects.",
 							"shortdesc": "Instance UUID",
@@ -1518,6 +1551,13 @@
 						"volatile.uuid.generation": {
 							"longdesc": "The instance generation UUID changes whenever the instance's place in time moves backwards.\nIt is globally unique across all servers and projects.",
 							"shortdesc": "Instance generation UUID",
+							"type": "string"
+						}
+					},
+					{
+						"volatile.vm.definition": {
+							"longdesc": "",
+							"shortdesc": "QEMU VM definition name (used for migration between versions)",
 							"type": "string"
 						}
 					},
@@ -1984,7 +2024,7 @@
 					{
 						"restricted.containers.privilege": {
 							"defaultdesc": "`unprivileged`",
-							"longdesc": "Possible values are `unprivileged`, `isolated`, and `allow`.\n\n- When set to `unpriviliged`, this option prevents setting {config:option}`instance-security:security.privileged` to `true`.\n- When set to `isolated`, this option prevents setting {config:option}`instance-security:security.privileged` and {config:option}`instance-security:security.idmap.isolated` to `true`.\n- When set to `allow`, there is no restriction.",
+							"longdesc": "Possible values are `unprivileged`, `isolated`, and `allow`.\n\n- When set to `unprivileged`, this option prevents setting {config:option}`instance-security:security.privileged` to `true`.\n- When set to `isolated`, this option prevents setting {config:option}`instance-security:security.privileged` and {config:option}`instance-security:security.idmap.isolated` to `true`.\n- When set to `allow`, there is no restriction.",
 							"shortdesc": "Which settings for privileged containers to prevent",
 							"type": "string"
 						}
@@ -2221,6 +2261,15 @@
 						}
 					},
 					{
+						"acme.challenge": {
+							"defaultdesc": "`HTTP-01`",
+							"longdesc": "Possible values are `DNS-01` and `HTTP-01`.",
+							"scope": "global",
+							"shortdesc": "ACME challenge type to use",
+							"type": "string"
+						}
+					},
+					{
 						"acme.domain": {
 							"longdesc": "",
 							"scope": "global",
@@ -2233,6 +2282,42 @@
 							"longdesc": "",
 							"scope": "global",
 							"shortdesc": "Email address used for the account registration",
+							"type": "string"
+						}
+					},
+					{
+						"acme.http.port": {
+							"defaultdesc": "`:80`",
+							"longdesc": "Set the port and interface to use for HTTP-01 based challenges to listen on",
+							"scope": "global",
+							"shortdesc": "Port and interface for HTTP server (used by HTTP-01)",
+							"type": "string"
+						}
+					},
+					{
+						"acme.provider": {
+							"defaultdesc": "``",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Backend provider for the challenge (used by DNS-01)",
+							"type": "string"
+						}
+					},
+					{
+						"acme.provider.environment": {
+							"defaultdesc": "``",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Environment variables to set during the challenge (used by DNS-01)",
+							"type": "string"
+						}
+					},
+					{
+						"acme.provider.resolvers": {
+							"defaultdesc": "``",
+							"longdesc": "DNS resolvers to use for performing (recursive) `CNAME` resolving and apex domain determination during DNS-01 challenge.",
+							"scope": "global",
+							"shortdesc": "Comma-separated list of DNS resolvers (used by DNS-01)",
 							"type": "string"
 						}
 					}
@@ -2299,6 +2384,42 @@
 							"longdesc": "Specify the number of seconds after which an unresponsive member is considered offline.",
 							"scope": "global",
 							"shortdesc": "Threshold when an unresponsive member is considered offline",
+							"type": "integer"
+						}
+					},
+					{
+						"cluster.rebalance.batch": {
+							"defaultdesc": "`1`",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Maximum number of instances to move during one re-balancing run",
+							"type": "integer"
+						}
+					},
+					{
+						"cluster.rebalance.cooldown": {
+							"defaultdesc": "`6H`",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Amount of time during which an instance will not be moved again",
+							"type": "string"
+						}
+					},
+					{
+						"cluster.rebalance.interval": {
+							"defaultdesc": "`0`",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "How often (in minutes) to consider re-balancing things. 0 to disable (default)",
+							"type": "integer"
+						}
+					},
+					{
+						"cluster.rebalance.threshold": {
+							"defaultdesc": "`20`",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Percentage load difference between most and least busy server needed to trigger a migration",
 							"type": "integer"
 						}
 					}
@@ -2602,6 +2723,14 @@
 			},
 			"miscellaneous": {
 				"keys": [
+					{
+						"authorization.scriptlet": {
+							"longdesc": "When using scriptlet-based authorization, this option stores the scriptlet.",
+							"scope": "global",
+							"shortdesc": "Authorization scriptlet",
+							"type": "string"
+						}
+					},
 					{
 						"backups.compression_algorithm": {
 							"defaultdesc": "`gzip`",

@@ -20,11 +20,12 @@ import (
 	"github.com/lxc/incus/v6/shared/logger"
 )
 
-func newMigrationSource(inst instance.Instance, stateful bool, instanceOnly bool, allowInconsistent bool, clusterMoveSourceName string, pushTarget *api.InstancePostTarget) (*migrationSourceWs, error) {
+func newMigrationSource(inst instance.Instance, stateful bool, instanceOnly bool, allowInconsistent bool, clusterMoveSourceName string, storagePool string, pushTarget *api.InstancePostTarget) (*migrationSourceWs, error) {
 	ret := migrationSourceWs{
 		migrationFields: migrationFields{
 			instance:          inst,
 			allowInconsistent: allowInconsistent,
+			storagePool:       storagePool,
 		},
 		clusterMoveSourceName: clusterMoveSourceName,
 	}
@@ -84,7 +85,7 @@ func newMigrationSource(inst instance.Instance, stateful bool, instanceOnly bool
 func (s *migrationSourceWs) Do(state *state.State, migrateOp *operations.Operation) error {
 	l := logger.AddContext(logger.Ctx{"project": s.instance.Project().Name, "instance": s.instance.Name(), "live": s.live, "clusterMoveSourceName": s.clusterMoveSourceName, "push": s.pushOperationURL != ""})
 
-	ctx, cancel := context.WithTimeout(context.TODO(), time.Second*10)
+	ctx, cancel := context.WithTimeout(context.TODO(), time.Second*30)
 	defer cancel()
 
 	l.Debug("Waiting for migration control connection on source")
@@ -144,6 +145,7 @@ func (s *migrationSourceWs) Do(state *state.State, migrateOp *operations.Operati
 				}
 			},
 			ClusterMoveSourceName: s.clusterMoveSourceName,
+			StoragePool:           s.storagePool,
 		},
 		AllowInconsistent: s.allowInconsistent,
 	})
@@ -164,11 +166,13 @@ func newMigrationSink(args *migrationSinkArgs) (*migrationSink, error) {
 			instance:     args.Instance,
 			instanceOnly: args.InstanceOnly,
 			live:         args.Live,
+			storagePool:  args.StoragePool,
 		},
 		url:                   args.URL,
 		clusterMoveSourceName: args.ClusterMoveSourceName,
 		push:                  args.Push,
 		refresh:               args.Refresh,
+		refreshExcludeOlder:   args.RefreshExcludeOlder,
 	}
 
 	secretNames := []string{api.SecretNameControl, api.SecretNameFilesystem}
@@ -212,7 +216,7 @@ func newMigrationSink(args *migrationSinkArgs) (*migrationSink, error) {
 func (c *migrationSink) Do(state *state.State, instOp *operationlock.InstanceOperation) error {
 	l := logger.AddContext(logger.Ctx{"project": c.instance.Project().Name, "instance": c.instance.Name(), "live": c.live, "clusterMoveSourceName": c.clusterMoveSourceName, "push": c.push})
 
-	ctx, cancel := context.WithTimeout(context.TODO(), time.Second*10)
+	ctx, cancel := context.WithTimeout(context.TODO(), time.Second*30)
 	defer cancel()
 
 	l.Debug("Waiting for migration control connection on target")
@@ -274,9 +278,11 @@ func (c *migrationSink) Do(state *state.State, instOp *operationlock.InstanceOpe
 				}
 			},
 			ClusterMoveSourceName: c.clusterMoveSourceName,
+			StoragePool:           c.storagePool,
 		},
-		InstanceOperation: instOp,
-		Refresh:           c.refresh,
+		InstanceOperation:   instOp,
+		Refresh:             c.refresh,
+		RefreshExcludeOlder: c.refreshExcludeOlder,
 	})
 	if err != nil {
 		l.Error("Failed migration on target", logger.Ctx{"err": err})

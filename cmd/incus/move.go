@@ -71,7 +71,7 @@ incus move <instance>/<old snapshot name> <instance>/<new snapshot name>
 		}
 
 		if len(args) == 1 {
-			return c.global.cmpRemotes(false)
+			return c.global.cmpRemotes(toComplete, false)
 		}
 
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -316,7 +316,7 @@ func (c *cmdMove) moveInstance(sourceResource string, destResource string, state
 			return err
 		}
 
-		// Fetch the current isntance.
+		// Fetch the current instance.
 		inst, _, err := source.GetInstance(sourceName)
 		if err != nil {
 			return err

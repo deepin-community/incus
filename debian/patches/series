@@ -1,3 +1,7 @@
 001-skip-TestConvertNetworkConfig.patch
 002-adjust-import-paths.patch
-0003-Compile-against-go-criu-v7.patch
+003-Compile-against-go-criu-v7.patch
+004-apparmor-4x-userns.patch
+005-cherry-pick-qemu-socket-cleanup.patch
+006-cherry-pick-agent-mount-retry.patch
+007-cherry-pick-usb-hotplug-fix.patch

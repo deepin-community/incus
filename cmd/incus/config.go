@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/instance"
@@ -123,7 +123,7 @@ func (c *cmdConfigEdit) helpTemplate() string {
 ### profiles:
 ### - default
 ### config:
-###   volatile.eth0.hwaddr: 00:16:3e:e9:f8:7f
+###   volatile.eth0.hwaddr: 10:66:6a:e9:f8:7f
 ### devices:
 ###   homedir:
 ###     path: /extra

@@ -13,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
@@ -167,7 +167,7 @@ It requires the source to be an alias and for it to be public.`))
 		}
 
 		if len(args) == 1 {
-			return c.global.cmpRemotes(false)
+			return c.global.cmpRemotes(toComplete, false)
 		}
 
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -228,7 +228,6 @@ func (c *cmdImageCopy) Run(cmd *cobra.Command, args []string) error {
 
 	// Copy the image
 	var imgInfo *api.Image
-	var fp string
 	if conf.Remotes[remoteName].Protocol != "incus" && !c.flagCopyAliases && len(c.flagAliases) == 0 {
 		// All image servers outside of other Incus servers are always public, so unless we
 		// need the aliases list too or the real fingerprint, we can skip the otherwise very expensive
@@ -243,9 +242,6 @@ func (c *cmdImageCopy) Run(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-
-		// Store the fingerprint for use when creating aliases later (as imgInfo.Fingerprint may be overridden)
-		fp = imgInfo.Fingerprint
 	}
 
 	if imgInfo.Public && imgInfo.Fingerprint != name && !strings.HasPrefix(imgInfo.Fingerprint, name) {
@@ -253,12 +249,19 @@ func (c *cmdImageCopy) Run(cmd *cobra.Command, args []string) error {
 		imgInfo.Fingerprint = name
 	}
 
+	aliases := make([]api.ImageAlias, len(c.flagAliases))
+	for i, entry := range c.flagAliases {
+		aliases[i].Name = entry
+	}
+
 	copyArgs := incus.ImageCopyArgs{
-		AutoUpdate: c.flagAutoUpdate,
-		Public:     c.flagPublic,
-		Type:       imageType,
-		Mode:       c.flagMode,
-		Profiles:   c.flagProfile,
+		Aliases:     aliases,
+		AutoUpdate:  c.flagAutoUpdate,
+		CopyAliases: c.flagCopyAliases,
+		Public:      c.flagPublic,
+		Type:        imageType,
+		Mode:        c.flagMode,
+		Profiles:    c.flagProfile,
 	}
 
 	// Do the copy
@@ -287,22 +290,6 @@ func (c *cmdImageCopy) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	progress.Done(i18n.G("Image copied successfully!"))
-
-	// Ensure aliases
-	aliases := make([]api.ImageAlias, len(c.flagAliases))
-	for i, entry := range c.flagAliases {
-		aliases[i].Name = entry
-	}
-
-	if c.flagCopyAliases {
-		// Also add the original aliases
-		aliases = append(aliases, imgInfo.Aliases...)
-	}
-
-	err = ensureImageAliases(destinationServer, aliases, fp)
-	if err != nil {
-		return err
-	}
 
 	return nil
 }
@@ -669,6 +656,7 @@ type cmdImageImport struct {
 	image  *cmdImage
 
 	flagPublic  bool
+	flagReuse   bool
 	flagAliases []string
 }
 
@@ -682,6 +670,7 @@ func (c *cmdImageImport) Command() *cobra.Command {
 Directory import is only available on Linux and must be performed as root.`))
 
 	cmd.Flags().BoolVar(&c.flagPublic, "public", false, i18n.G("Make image public"))
+	cmd.Flags().BoolVar(&c.flagReuse, "reuse", false, i18n.G("If the image alias already exists, delete and create a new one"))
 	cmd.Flags().StringArrayVar(&c.flagAliases, "alias", nil, i18n.G("New aliases to add to the image")+"``")
 	cmd.RunE = c.Run
 
@@ -691,7 +680,7 @@ Directory import is only available on Linux and must be performed as root.`))
 		}
 
 		if len(args) == 1 {
-			return c.global.cmpRemotes(false)
+			return c.global.cmpRemotes(toComplete, false)
 		}
 
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -893,13 +882,24 @@ func (c *cmdImageImport) Run(cmd *cobra.Command, args []string) error {
 	fingerprint := opAPI.Metadata["fingerprint"].(string)
 	progress.Done(fmt.Sprintf(i18n.G("Image imported with fingerprint: %s"), fingerprint))
 
+	// Reformat aliases
+	aliases := []api.ImageAlias{}
+	for _, entry := range c.flagAliases {
+		alias := api.ImageAlias{}
+		alias.Name = entry
+		aliases = append(aliases, alias)
+	}
+
+	// Delete images if necessary
+	if c.flagReuse {
+		err = deleteImagesByAliases(d, aliases)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Add the aliases
 	if len(c.flagAliases) > 0 {
-		aliases := make([]api.ImageAlias, len(c.flagAliases))
-		for i, entry := range c.flagAliases {
-			aliases[i].Name = entry
-		}
-
 		err = ensureImageAliases(d, aliases, fingerprint)
 		if err != nil {
 			return err
@@ -1091,8 +1091,13 @@ Column shorthand chars:
     t - Type`))
 
 	cmd.Flags().StringVarP(&c.flagColumns, "columns", "c", defaultImagesColumns, i18n.G("Columns")+"``")
-	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G("Format (csv|json|table|yaml|compact)")+"``")
+	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G(`Format (csv|json|table|yaml|compact), use suffix ",noheader" to disable headers and ",header" to enable it if missing, e.g. csv,header`)+"``")
 	cmd.Flags().BoolVar(&c.flagAllProjects, "all-projects", false, i18n.G("Display images from all projects"))
+
+	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		return cli.ValidateFlagFormatForListOutput(cmd.Flag("format").Value.String())
+	}
+
 	cmd.RunE = c.Run
 
 	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -1106,8 +1111,10 @@ Column shorthand chars:
 	return cmd
 }
 
-const defaultImagesColumns = "lfpdatsu"
-const defaultImagesColumnsAllProjects = "elfpdatsu"
+const (
+	defaultImagesColumns            = "lfpdatsu"
+	defaultImagesColumnsAllProjects = "elfpdatsu"
+)
 
 func (c *cmdImageList) parseColumns() ([]imageColumn, error) {
 	columnsShorthandMap := map[rune]imageColumn{
@@ -1258,14 +1265,14 @@ func (c *cmdImageList) imageShouldShow(filters []string, state *api.Image) bool 
 				list := cmdList{}
 				list.global = c.global
 				if list.dotPrefixMatch(key, configKey) {
-					//try to test filter value as a regexp
+					// try to test filter value as a regexp
 					regexpValue := value
 					if !(strings.Contains(value, "^") || strings.Contains(value, "$")) {
 						regexpValue = "^" + regexpValue + "$"
 					}
 
 					r, err := regexp.Compile(regexpValue)
-					//if not regexp compatible use original value
+					// if not regexp compatible use original value
 					if err != nil {
 						if value == configValue {
 							found = true
@@ -1401,7 +1408,7 @@ func (c *cmdImageList) Run(cmd *cobra.Command, args []string) error {
 		headers = append(headers, column.Name)
 	}
 
-	return cli.RenderTable(c.flagFormat, headers, data, rawData)
+	return cli.RenderTable(os.Stdout, c.flagFormat, headers, data, rawData)
 }
 
 // Refresh.

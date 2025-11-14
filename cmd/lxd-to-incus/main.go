@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,17 +15,17 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/unix"
 
-	"github.com/lxc/incus/v6/client"
-	cli "github.com/lxc/incus/v6/internal/cmd"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/ask"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
 type cmdGlobal struct {
-	asker cli.Asker
+	asker ask.Asker
 
 	flagHelp    bool
 	flagVersion bool
@@ -45,7 +47,7 @@ func main() {
 	app.CompletionOptions = cobra.CompletionOptions{DisableDefaultCmd: true}
 
 	// Global flags.
-	globalCmd := cmdGlobal{asker: cli.NewAsker(bufio.NewReader(os.Stdin))}
+	globalCmd := cmdGlobal{asker: ask.NewAsker(bufio.NewReader(os.Stdin))}
 	migrateCmd.global = globalCmd
 	app.PersistentFlags().BoolVar(&globalCmd.flagVersion, "version", false, "Print version number")
 	app.PersistentFlags().BoolVarP(&globalCmd.flagHelp, "help", "h", false, "Print help")
@@ -100,7 +102,7 @@ func (c *cmdMigrate) Run(app *cobra.Command, args []string) error {
 
 	defer logFile.Close()
 
-	err = logFile.Chmod(0600)
+	err = logFile.Chmod(0o600)
 	if err != nil {
 		_, _ = logFile.WriteString(fmt.Sprintf("ERROR: %v\n", err))
 		return fmt.Errorf("Failed to set permissions on log file: %w", err)
@@ -348,7 +350,7 @@ func (c *cmdMigrate) Run(app *cobra.Command, args []string) error {
 					return fmt.Errorf("Failed to get OVN southbound database address: %w", err)
 				}
 
-				ovnSB := strings.TrimSpace(strings.Replace(out, "\"", "", -1))
+				ovnSB := strings.TrimSpace(strings.ReplaceAll(out, "\"", ""))
 
 				commands, err := ovnConvert(ovnNB, ovnSB)
 				if err != nil {
@@ -376,6 +378,10 @@ func (c *cmdMigrate) Run(app *cobra.Command, args []string) error {
 		// Remove volatile.uuid key from storage volumes (not used by Incus).
 		rewriteStatements = append(rewriteStatements, "DELETE FROM storage_volumes_config WHERE key='volatile.uuid';")
 		rewriteStatements = append(rewriteStatements, "DELETE FROM storage_volumes_snapshots_config WHERE key='volatile.uuid';")
+
+		// Remove volatile.uuid key from instances (not used by Incus).
+		rewriteStatements = append(rewriteStatements, "DELETE FROM instances_config WHERE key='volatile.uuid';")
+		rewriteStatements = append(rewriteStatements, "DELETE FROM instances_snapshots_config WHERE key='volatile.uuid';")
 	}
 
 	// Mangle database schema to be compatible.
@@ -424,35 +430,35 @@ INSERT INTO certificates (id, fingerprint, type, name, certificate, restricted) 
 INSERT INTO certificates_projects (certificate_id, project_id) SELECT identity_id, project_id FROM identities_projects;`)
 
 			// Drop the other tables.
-			rewriteStatements = append(rewriteStatements, `DROP TRIGGER on_auth_group_delete;
-DROP TRIGGER on_cluster_group_delete;
-DROP TRIGGER on_identity_delete;
-DROP TRIGGER on_identity_provider_group_delete;
-DROP TRIGGER on_image_alias_delete;
-DROP TRIGGER on_image_delete;
-DROP TRIGGER on_instance_backup_delete;
-DROP TRIGGER on_instance_delete;
-DROP TRIGGER on_instance_snaphot_delete;
-DROP TRIGGER on_network_acl_delete;
-DROP TRIGGER on_network_delete;
-DROP TRIGGER on_network_zone_delete;
-DROP TRIGGER on_node_delete;
-DROP TRIGGER on_operation_delete;
-DROP TRIGGER on_profile_delete;
-DROP TRIGGER on_project_delete;
-DROP TRIGGER on_storage_bucket_delete;
-DROP TRIGGER on_storage_pool_delete;
-DROP TRIGGER on_storage_volume_backup_delete;
-DROP TRIGGER on_storage_volume_delete;
-DROP TRIGGER on_storage_volume_snapshot_delete;
-DROP TRIGGER on_warning_delete;
-DROP TABLE identities_projects;
-DROP TABLE auth_groups_permissions;
-DROP TABLE auth_groups_identity_provider_groups;
-DROP TABLE identities_auth_groups;
-DROP TABLE identity_provider_groups;
-DROP TABLE identities;
-DROP TABLE auth_groups;`)
+			rewriteStatements = append(rewriteStatements, `DROP TRIGGER IF EXISTS on_auth_group_delete;
+DROP TRIGGER IF EXISTS on_cluster_group_delete;
+DROP TRIGGER IF EXISTS on_identity_delete;
+DROP TRIGGER IF EXISTS on_identity_provider_group_delete;
+DROP TRIGGER IF EXISTS on_image_alias_delete;
+DROP TRIGGER IF EXISTS on_image_delete;
+DROP TRIGGER IF EXISTS on_instance_backup_delete;
+DROP TRIGGER IF EXISTS on_instance_delete;
+DROP TRIGGER IF EXISTS on_instance_snapshot_delete;
+DROP TRIGGER IF EXISTS on_network_acl_delete;
+DROP TRIGGER IF EXISTS on_network_delete;
+DROP TRIGGER IF EXISTS on_network_zone_delete;
+DROP TRIGGER IF EXISTS on_node_delete;
+DROP TRIGGER IF EXISTS on_operation_delete;
+DROP TRIGGER IF EXISTS on_profile_delete;
+DROP TRIGGER IF EXISTS on_project_delete;
+DROP TRIGGER IF EXISTS on_storage_bucket_delete;
+DROP TRIGGER IF EXISTS on_storage_pool_delete;
+DROP TRIGGER IF EXISTS on_storage_volume_backup_delete;
+DROP TRIGGER IF EXISTS on_storage_volume_delete;
+DROP TRIGGER IF EXISTS on_storage_volume_snapshot_delete;
+DROP TRIGGER IF EXISTS on_warning_delete;
+DROP TABLE IF EXISTS identities_projects;
+DROP TABLE IF EXISTS auth_groups_permissions;
+DROP TABLE IF EXISTS auth_groups_identity_provider_groups;
+DROP TABLE IF EXISTS identities_auth_groups;
+DROP TABLE IF EXISTS identity_provider_groups;
+DROP TABLE IF EXISTS identities;
+DROP TABLE IF EXISTS auth_groups;`)
 		}
 	}
 
@@ -575,19 +581,19 @@ Instead this tool will be providing specific commands for each of the servers.`)
 	_, _ = logFile.WriteString("Wiping the target server\n")
 
 	err = os.RemoveAll(targetPaths.logs)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		_, _ = logFile.WriteString(fmt.Sprintf("ERROR: %v\n", err))
 		return fmt.Errorf("Failed to remove %q: %w", targetPaths.logs, err)
 	}
 
 	err = os.RemoveAll(targetPaths.cache)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		_, _ = logFile.WriteString(fmt.Sprintf("ERROR: %v\n", err))
 		return fmt.Errorf("Failed to remove %q: %w", targetPaths.cache, err)
 	}
 
 	err = os.RemoveAll(targetPaths.daemon)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		_, _ = logFile.WriteString(fmt.Sprintf("ERROR: %v\n", err))
 		return fmt.Errorf("Failed to remove %q: %w", targetPaths.daemon, err)
 	}
@@ -611,7 +617,7 @@ Instead this tool will be providing specific commands for each of the servers.`)
 	if linux.IsMountPoint(sourcePaths.daemon) {
 		_, _ = logFile.WriteString("Source daemon path is a mountpoint\n")
 
-		err = os.MkdirAll(targetPaths.daemon, 0711)
+		err = os.MkdirAll(targetPaths.daemon, 0o711)
 		if err != nil {
 			_, _ = logFile.WriteString(fmt.Sprintf("ERROR: %v\n", err))
 			return fmt.Errorf("Failed to create target directory: %w", err)
@@ -667,7 +673,7 @@ Instead this tool will be providing specific commands for each of the servers.`)
 		fmt.Println("=> Writing database patch")
 		_, _ = logFile.WriteString("Writing the database patch\n")
 
-		err = os.WriteFile(filepath.Join(targetPaths.daemon, "database", "patch.global.sql"), []byte(strings.Join(rewriteStatements, "\n")+"\n"), 0600)
+		err = os.WriteFile(filepath.Join(targetPaths.daemon, "database", "patch.global.sql"), []byte(strings.Join(rewriteStatements, "\n")+"\n"), 0o600)
 		if err != nil {
 			_, _ = logFile.WriteString(fmt.Sprintf("ERROR: %v\n", err))
 			return fmt.Errorf("Failed to write database path: %w", err)
@@ -713,7 +719,7 @@ Instead this tool will be providing specific commands for each of the servers.`)
 
 		_ = unix.Unmount(filepath.Join(targetPaths.daemon, dir), unix.MNT_DETACH)
 		err = os.RemoveAll(filepath.Join(targetPaths.daemon, dir))
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			_, _ = logFile.WriteString(fmt.Sprintf("ERROR: %v\n", err))
 			return fmt.Errorf("Failed to delete %q: %w", dir, err)
 		}
@@ -722,7 +728,7 @@ Instead this tool will be providing specific commands for each of the servers.`)
 	for _, dir := range []string{"containers", "containers-snapshots", "snapshots", "virtual-machines", "virtual-machines-snapshots"} {
 		entries, err := os.ReadDir(filepath.Join(targetPaths.daemon, dir))
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 

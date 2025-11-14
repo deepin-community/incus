@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
 )
@@ -41,7 +41,7 @@ func (c *qemuCmd) Signal(sig unix.Signal) error {
 	// Check handler hasn't finished.
 	select {
 	case <-c.dataDone:
-		return fmt.Errorf("no such process") // Aligns with error retured from unix.Kill in lxc's Signal().
+		return fmt.Errorf("no such process") // Aligns with error returned from unix.Kill in lxc's Signal().
 	default:
 	}
 
@@ -109,7 +109,7 @@ func (c *qemuCmd) WindowResize(fd, winchWidth, winchHeight int) error {
 	// Check handler hasn't finished.
 	select {
 	case <-c.dataDone:
-		return fmt.Errorf("no such process") // Aligns with error retured from unix.Kill in lxc's Signal().
+		return fmt.Errorf("no such process") // Aligns with error returned from unix.Kill in lxc's Signal().
 	default:
 	}
 

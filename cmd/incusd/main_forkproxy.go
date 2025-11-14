@@ -120,6 +120,7 @@ void forkproxy(void)
 
 	if (pid == 0) {
 		int listen_nsfd;
+		int setns_flags;
 
 		whoami = FORKPROXY_CHILD;
 
@@ -134,19 +135,23 @@ void forkproxy(void)
 			_exit(EXIT_FAILURE);
 		}
 
-		// Attach to the user namespace of the listener
-		attach_userns_fd(listen_nsfd);
+		// Attach to the namespaces of the listener
+		setns_flags = CLONE_NEWNET;
 
-		// Attach to the network namespace of the listener
-		if (!change_namespaces(listen_pidfd, listen_nsfd, CLONE_NEWNET)) {
-			fprintf(stderr, "Error: %m - Failed setns to listener network namespace\n");
+		if (in_same_namespace(getpid(), listen_nsfd, "user") > 0)
+			setns_flags |= CLONE_NEWUSER;
+
+		if (needs_mntns & CONNECT_NEEDS_MNTNS)
+			setns_flags |= CLONE_NEWNS;
+
+		if (!change_namespaces(listen_pidfd, listen_nsfd, setns_flags)) {
+			fprintf(stderr, "Error: %m - Failed setns to listener namespaces\n");
 			_exit(EXIT_FAILURE);
 		}
 
-		if ((needs_mntns & LISTEN_NEEDS_MNTNS) && !change_namespaces(listen_pidfd, listen_nsfd, CLONE_NEWNS)) {
-			fprintf(stderr, "Error: %m - Failed setns to listener mount namespace\n");
-			_exit(EXIT_FAILURE);
-		}
+		// Complete switch to the user namespace of the connector
+		if (setns_flags & CLONE_NEWUSER)
+			finalize_userns();
 
 		close_prot_errno_disarm(listen_nsfd);
 		close_prot_errno_disarm(listen_pidfd);
@@ -166,6 +171,7 @@ void forkproxy(void)
 	} else {
 		pthread_t thread;
 		int connect_nsfd;
+		int setns_flags;
 
 		whoami = FORKPROXY_PARENT;
 
@@ -180,20 +186,23 @@ void forkproxy(void)
 			_exit(EXIT_FAILURE);
 		}
 
-		// Attach to the user namespace of the connector
-		attach_userns_fd(connect_nsfd);
+		// Attach to the namespaces of the connector
+		setns_flags = CLONE_NEWNET;
 
-		// Attach to the network namespace of the connector
-		if (!change_namespaces(connect_pidfd, connect_nsfd, CLONE_NEWNET)) {
-			fprintf(stderr, "Error: %m - Failed setns to connector network namespace\n");
+		if (in_same_namespace(getpid(), connect_nsfd, "user") > 0)
+			setns_flags |= CLONE_NEWUSER;
+
+		if (needs_mntns & CONNECT_NEEDS_MNTNS)
+			setns_flags |= CLONE_NEWNS;
+
+		if (!change_namespaces(connect_pidfd, connect_nsfd, setns_flags)) {
+			fprintf(stderr, "Error: %m - Failed setns to connector namespaces\n");
 			_exit(EXIT_FAILURE);
 		}
 
-		// Attach to the mount namespace of the connector
-		if ((needs_mntns & CONNECT_NEEDS_MNTNS) && !change_namespaces(connect_pidfd, connect_nsfd, CLONE_NEWNS)) {
-			fprintf(stderr, "Error: %m - Failed setns to connector mount namespace\n");
-			_exit(EXIT_FAILURE);
-		}
+		// Complete switch to the user namespace of the connector
+		if (setns_flags & CLONE_NEWUSER)
+			finalize_userns();
 
 		close_prot_errno_disarm(connect_nsfd);
 		close_prot_errno_disarm(connect_pidfd);
@@ -241,8 +250,10 @@ void forkproxy(void)
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/signal"
@@ -270,8 +281,10 @@ type cmdForkproxy struct {
 }
 
 // UDP session tracking (map "client tuple" to udp session)
-var udpSessions = map[string]*udpSession{}
-var udpSessionsLock sync.Mutex
+var (
+	udpSessions     = map[string]*udpSession{}
+	udpSessionsLock sync.Mutex
+)
 
 type udpSession struct {
 	client    net.Addr
@@ -453,7 +466,7 @@ func (c *cmdForkproxy) Run(cmd *cobra.Command, args []string) error {
 
 		if lAddr.ConnType == "unix" && !lAddr.Abstract {
 			err := os.Remove(lAddr.Address)
-			if err != nil && !os.IsNotExist(err) {
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
 		}

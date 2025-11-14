@@ -1,3 +1,97 @@
+incus (6.0.4-2) unstable; urgency=medium
+
+  * Fix inadvertent policy violation where build created files in HOME
+    (Closes: #1103554)
+  * Cherry-pick upstream fixes:
+    - Cleanup old qemu sockets
+    - Retry agent mounts
+    - USB hotplugging
+  * d/control:
+    - Add back Build-Using stanzas
+    - Add squashfs-tools-ng to incus-base Required packages
+    - Have incus-client Suggest "spice-client-gtk | virt-viewer"
+  * Update systemd service to wait long enough for Incus to correctly shutdown
+  * Update systemd and sysv init scripts to use `incusd waitready`
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sun, 27 Apr 2025 14:45:33 +0000
+
+incus (6.0.4-1) unstable; urgency=medium
+
+  * New upstream release
+    - Rebase patches and drop upstream cherry-picked commits
+  * d/control:
+    - Update Build-Depends and Depends
+    - Add lego to list of Suggested packages for incus-base
+
+ -- Mathias Gibbens <gibmat@debian.org>  Fri, 04 Apr 2025 02:43:07 +0000
+
+incus (6.0.3-5) unstable; urgency=medium
+
+  [ Martin Steigerwald ]
+  * Runit support for Incus (Closes: #1084990)
+
+  [ Mathias Gibbens ]
+  * d/control:
+    - Apply hack for /usr-move (Closes: #1099444; DEP17 P1 M7)
+    - Update minimum required version of lxcfs to ensure its runit scripts
+      will be available
+    - Set minimum version of apparmor
+    - Replace Built-Using with Static-Built-Using
+  * Add apparmor 4.x userns patch
+  * Cherry-pick upstream commit for selecting SecureBoot capable OVMF
+  * Cherry-pick upstream fix for qemu 10
+  * Update d/README.Debian to reflect addition of runit scripts
+  * Fix lintian warning old-fsf-address-in-copyright-file in d/copyright
+
+ -- Mathias Gibbens <gibmat@debian.org>  Mon, 31 Mar 2025 22:36:28 +0000
+
+incus (6.0.3-4) unstable; urgency=medium
+
+  * d/control:
+    - Update Standards-Version to 4.7.2 (no changes needed)
+    - Limit virtiofsd dependency to 64bit architectures
+    - Set minimum required version of qemu
+  * Cherry-pick upstream fix to allow virtiofsd on non-x86 architectures
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sun, 02 Mar 2025 23:07:28 +0000
+
+incus (6.0.3-3) unstable; urgency=medium
+
+  * Update organization of binary packages:
+    - bin:incus provides all dependencies to run both containers and VMs
+    - bin:incus-base has just what is necessary for running containers
+    - bin:incus-tools and bin:incus-migrate combined into bin:incus-extra
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sat, 01 Mar 2025 17:16:21 +0000
+
+incus (6.0.3-2) unstable; urgency=medium
+
+  [ Kwok Guy ]
+  * Initial SysV init scripts for incus
+
+  [ Mathias Gibbens ]
+  * Update years in d/copyright
+  * Update d/README.Debian
+  * Cherry-pick upstream fix to remove virtfs-proxy-helper dependency
+  * Cherry-pick upstream fix for qemu device_id warning
+  * Add startup wrapper script to allow directing logging to syslog
+  * Add a patch to adjust the MinIO client's binary name to reflect Debian
+    packaging
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sun, 26 Jan 2025 01:19:17 +0000
+
+incus (6.0.3-1) unstable; urgency=medium
+
+  * New upstream release (Closes: #1090375)
+    - Includes fix for CVE-2024-6156
+    - Rebase d/p/002-adjust-import-paths.patch
+  * d/control:
+    - Set minimum required version of golang-starlark-dev
+    - Adjust recommended and suggested packages
+  * Mention the swtpm-tools package in d/README.Debian
+
+ -- Mathias Gibbens <gibmat@debian.org>  Fri, 20 Dec 2024 02:44:01 +0000
+
 incus (6.0.2-1) unstable; urgency=medium
 
   * New upstream release

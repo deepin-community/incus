@@ -14,7 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/shared/api"
@@ -26,6 +26,7 @@ import (
 type cmdConsole struct {
 	global *cmdGlobal
 
+	flagForce   bool
 	flagShowLog bool
 	flagType    string
 }
@@ -41,8 +42,13 @@ This command allows you to interact with the boot console of an instance
 as well as retrieve past log entries from it.`))
 
 	cmd.RunE = c.Run
+	cmd.Flags().BoolVarP(&c.flagForce, "force", "f", false, i18n.G("Forces a connection to the console, even if there is already an active session"))
 	cmd.Flags().BoolVar(&c.flagShowLog, "show-log", false, i18n.G("Retrieve the instance's console log"))
 	cmd.Flags().StringVarP(&c.flagType, "type", "t", "console", i18n.G("Type of connection to establish: 'console' for serial console, 'vga' for SPICE graphical output")+"``")
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return c.global.cmpInstances(toComplete)
+	}
 
 	return cmd
 }
@@ -184,6 +190,7 @@ func (c *cmdConsole) text(d incus.InstanceServer, name string) error {
 		Width:  width,
 		Height: height,
 		Type:   "console",
+		Force:  c.flagForce,
 	}
 
 	consoleDisconnect := make(chan bool)
@@ -193,8 +200,10 @@ func (c *cmdConsole) text(d incus.InstanceServer, name string) error {
 	defer close(sendDisconnect)
 
 	consoleArgs := incus.InstanceConsoleArgs{
-		Terminal: &readWriteCloser{stdinMirror{os.Stdin,
-			manualDisconnect, new(bool)}, os.Stdout},
+		Terminal: &readWriteCloser{stdinMirror{
+			os.Stdin,
+			manualDisconnect, new(bool),
+		}, os.Stdout},
 		Control:           handler,
 		ConsoleDisconnect: consoleDisconnect,
 	}
@@ -206,6 +215,9 @@ func (c *cmdConsole) text(d incus.InstanceServer, name string) error {
 		}
 
 		close(consoleDisconnect)
+
+		// Make sure we leave the user back to a clean prompt.
+		fmt.Printf("\r\n")
 	}()
 
 	// Attach to the instance console
@@ -239,7 +251,8 @@ func (c *cmdConsole) vga(d incus.InstanceServer, name string) error {
 
 	// Prepare the remote console.
 	req := api.InstanceConsolePost{
-		Type: "vga",
+		Type:  "vga",
+		Force: c.flagForce,
 	}
 
 	chDisconnect := make(chan bool)
@@ -256,7 +269,7 @@ func (c *cmdConsole) vga(d incus.InstanceServer, name string) error {
 	if runtime.GOOS != "windows" {
 		// Create a temporary unix socket mirroring the instance's spice socket.
 		if !util.PathExists(conf.ConfigPath("sockets")) {
-			err := os.MkdirAll(conf.ConfigPath("sockets"), 0700)
+			err := os.MkdirAll(conf.ConfigPath("sockets"), 0o700)
 			if err != nil {
 				return err
 			}

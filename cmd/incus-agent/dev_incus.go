@@ -12,11 +12,11 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/server/daemon"
 	"github.com/lxc/incus/v6/internal/server/device/config"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
-	"github.com/lxc/incus/v6/shared/api/guest"
+	api "github.com/lxc/incus/v6/shared/api/guest"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -265,7 +265,7 @@ func devIncusAPI(d *Daemon) http.Handler {
 func createDevIncuslListener(dir string) (net.Listener, error) {
 	path := filepath.Join(dir, "incus", "sock")
 
-	err := os.MkdirAll(filepath.Dir(path), 0755)
+	err := os.MkdirAll(filepath.Dir(path), 0o755)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +297,7 @@ func createDevIncuslListener(dir string) (net.Listener, error) {
 		return nil, err
 	}
 
-	err = socketUnixSetPermissions(path, 0600)
+	err = socketUnixSetPermissions(path, 0o600)
 	if err != nil {
 		_ = listener.Close()
 		return nil, err
