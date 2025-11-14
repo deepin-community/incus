@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/ports"
@@ -109,17 +109,20 @@ func (c *cmdAdminInit) RunAuto(cmd *cobra.Command, args []string, d incus.Instan
 		config.StoragePools = []api.StoragePoolsPost{pool}
 
 		// Profile entry
-		config.Profiles = []api.ProfilesPost{{
-			Name: "default",
-			ProfilePut: api.ProfilePut{
-				Devices: map[string]map[string]string{
-					"root": {
-						"type": "disk",
-						"path": "/",
-						"pool": pool.Name,
+		config.Profiles = []api.InitProfileProjectPost{{
+			ProfilesPost: api.ProfilesPost{
+				Name: "default",
+				ProfilePut: api.ProfilePut{
+					Devices: map[string]map[string]string{
+						"root": {
+							"type": "disk",
+							"path": "/",
+							"pool": pool.Name,
+						},
 					},
 				},
 			},
+			Project: api.ProjectDefaultName,
 		}}
 	}
 
@@ -170,17 +173,20 @@ func (c *cmdAdminInit) RunAuto(cmd *cobra.Command, args []string, d incus.Instan
 
 		// Add it to the profile
 		if config.Profiles == nil {
-			config.Profiles = []api.ProfilesPost{{
-				Name: "default",
-				ProfilePut: api.ProfilePut{
-					Devices: map[string]map[string]string{
-						"eth0": {
-							"type":    "nic",
-							"network": network.Name,
-							"name":    "eth0",
+			config.Profiles = []api.InitProfileProjectPost{{
+				ProfilesPost: api.ProfilesPost{
+					Name: "default",
+					ProfilePut: api.ProfilePut{
+						Devices: map[string]map[string]string{
+							"eth0": {
+								"type":    "nic",
+								"network": network.Name,
+								"name":    "eth0",
+							},
 						},
 					},
 				},
+				Project: api.ProjectDefaultName,
 			}}
 		} else {
 			config.Profiles[0].Devices["eth0"] = map[string]string{

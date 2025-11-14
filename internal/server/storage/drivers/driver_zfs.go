@@ -1,7 +1,9 @@
 package drivers
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +13,6 @@ import (
 
 	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
@@ -19,6 +20,7 @@ import (
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
@@ -34,12 +36,14 @@ var zfsSupportedVdevTypes = []string{
 	"raidz2",
 }
 
-var zfsVersion string
-var zfsLoaded bool
-var zfsDirectIO bool
-var zfsTrim bool
-var zfsRaw bool
-var zfsDelegate bool
+var (
+	zfsVersion  string
+	zfsLoaded   bool
+	zfsDirectIO bool
+	zfsTrim     bool
+	zfsRaw      bool
+	zfsDelegate bool
+)
 
 var zfsDefaultSettings = map[string]string{
 	"relatime":   "on",
@@ -405,41 +409,40 @@ func (d *zfs) Delete(op *operations.Operation) error {
 		return err
 	}
 
-	if !exists {
-		return nil
-	}
-
-	// Confirm that nothing's been left behind
-	datasets, err := d.getDatasets(d.config["zfs.pool_name"], "all")
-	if err != nil {
-		return err
-	}
-
-	initialDatasets := d.initialDatasets()
-	for _, dataset := range datasets {
-		dataset = strings.TrimPrefix(dataset, "/")
-
-		if slices.Contains(initialDatasets, dataset) {
-			continue
-		}
-
-		fields := strings.Split(dataset, "/")
-		if len(fields) > 1 {
-			return fmt.Errorf("ZFS pool has leftover datasets: %s", dataset)
-		}
-	}
-
-	if strings.Contains(d.config["zfs.pool_name"], "/") {
-		// Delete the dataset.
-		_, err := subprocess.RunCommand("zfs", "destroy", "-r", d.config["zfs.pool_name"])
+	if exists {
+		// Confirm that nothing's been left behind
+		datasets, err := d.getDatasets(d.config["zfs.pool_name"], "all")
 		if err != nil {
 			return err
 		}
-	} else {
+
+		initialDatasets := d.initialDatasets()
+		for _, dataset := range datasets {
+			dataset = strings.TrimPrefix(dataset, "/")
+
+			if slices.Contains(initialDatasets, dataset) {
+				continue
+			}
+
+			fields := strings.Split(dataset, "/")
+			if len(fields) > 1 {
+				return fmt.Errorf("ZFS pool has leftover datasets: %s", dataset)
+			}
+		}
+
 		// Delete the pool.
-		_, err := subprocess.RunCommand("zpool", "destroy", d.config["zfs.pool_name"])
-		if err != nil {
-			return err
+		if strings.Contains(d.config["zfs.pool_name"], "/") {
+			// Delete the dataset.
+			_, err := subprocess.RunCommand("zfs", "destroy", "-r", d.config["zfs.pool_name"])
+			if err != nil {
+				return err
+			}
+		} else {
+			// Delete the pool.
+			_, err := subprocess.RunCommand("zpool", "destroy", d.config["zfs.pool_name"])
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -452,7 +455,7 @@ func (d *zfs) Delete(op *operations.Operation) error {
 	// Delete any loop file we may have used
 	loopPath := loopFilePath(d.name)
 	err = os.Remove(loopPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed to remove '%s': %w", loopPath, err)
 	}
 
@@ -495,7 +498,7 @@ func (d *zfs) Update(changedConfig map[string]string) error {
 		}
 
 		// Resize loop file
-		f, err := os.OpenFile(loopPath, os.O_RDWR, 0600)
+		f, err := os.OpenFile(loopPath, os.O_RDWR, 0o600)
 		if err != nil {
 			return err
 		}
@@ -565,11 +568,26 @@ func (d *zfs) importPool() (bool, error) {
 		return false, err
 	}
 
-	if exists {
-		return true, nil
+	if !exists {
+		return false, fmt.Errorf("ZFS zpool exists but dataset is missing")
 	}
 
-	return false, fmt.Errorf("ZFS zpool exists but dataset is missing")
+	// We need to explicitly import the keys here so containers can start. This
+	// is always needed because even if the admin has set up auto-import of
+	// keys on the system, because incus manually imports and exports the pools
+	// the keys can get unloaded.
+	//
+	// We could do "zpool import -l" to request the keys during import, but by
+	// doing it separately we know that the key loading specifically failed and
+	// not some other operation. If a user has keylocation=prompt configured,
+	// this command will fail and the pool will fail to load.
+	_, err = subprocess.RunCommand("zfs", "load-key", "-r", d.config["zfs.pool_name"])
+	if err != nil {
+		_, _ = d.Unmount()
+		return false, fmt.Errorf("Failed to load keys for ZFS dataset %q: %w", d.config["zfs.pool_name"], err)
+	}
+
+	return true, nil
 }
 
 // Mount mounts the storage pool.
@@ -654,7 +672,7 @@ func (d *zfs) GetResources() (*api.ResourcesStoragePool, error) {
 }
 
 // MigrationType returns the type of transfer methods to be used when doing migrations between pools in preference order.
-func (d *zfs) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool) []localMigration.Type {
+func (d *zfs) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool, clusterMove bool, storageMove bool) []localMigration.Type {
 	var rsyncFeatures []string
 
 	// Do not pass compression argument to rsync if the associated

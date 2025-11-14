@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/x509"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,12 +25,11 @@ import (
 	"github.com/gorilla/mux"
 	liblxc "github.com/lxc/go-lxc"
 	"golang.org/x/sys/unix"
+	yaml "gopkg.in/yaml.v2"
 
 	internalIO "github.com/lxc/incus/v6/internal/io"
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/rsync"
-	"github.com/lxc/incus/v6/internal/server/acme"
 	"github.com/lxc/incus/v6/internal/server/apparmor"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/auth/oidc"
@@ -80,6 +78,7 @@ import (
 	"github.com/lxc/incus/v6/shared/idmap"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/proxy"
+	"github.com/lxc/incus/v6/shared/revert"
 	localtls "github.com/lxc/incus/v6/shared/tls"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -156,9 +155,6 @@ type Daemon struct {
 
 	lokiClient *loki.Client
 
-	// HTTP-01 challenge provider for ACME
-	http01Provider acme.HTTP01Provider
-
 	// Authorization.
 	authorizer auth.Authorizer
 
@@ -198,7 +194,6 @@ func newDaemon(config *DaemonConfig, os *sys.OS) *Daemon {
 		devIncusEvents: devIncusEvents,
 		events:         incusEvents,
 		db:             &db.DB{},
-		http01Provider: acme.NewHTTP01Provider(),
 		os:             os,
 		setupChan:      make(chan struct{}),
 		waitReady:      cancel.New(context.Background()),
@@ -429,8 +424,43 @@ func (d *Daemon) checkTrustedClient(r *http.Request) error {
 }
 
 // getTrustedCertificates returns trusted certificates key on DB type and fingerprint.
-func (d *Daemon) getTrustedCertificates() map[certificate.Type]map[string]x509.Certificate {
-	return d.clientCerts.GetCertificates()
+//
+// When in PKI mode, this also filters out any non-server certificate which isn't issued by the PKI.
+func (d *Daemon) getTrustedCertificates() (map[certificate.Type]map[string]x509.Certificate, error) {
+	certs := d.clientCerts.GetCertificates()
+
+	// If not in PKI mode, return all certificates.
+	if !util.PathExists(internalUtil.VarPath("server.ca")) {
+		return certs, nil
+	}
+
+	// If in PKI mode, filter certificates that aren't trusted by the CA.
+	ca, err := localtls.ReadCert(internalUtil.VarPath("server.ca"))
+	if err != nil {
+		return nil, err
+	}
+
+	certPool := x509.NewCertPool()
+	certPool.AddCert(ca)
+
+	for certType, certEntries := range certs {
+		if certType == certificate.TypeServer {
+			continue
+		}
+
+		for name, entry := range certEntries {
+			_, err := entry.Verify(x509.VerifyOptions{
+				Roots:     certPool,
+				KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			})
+			if err != nil {
+				// Skip certificates that aren't signed by the PKI.
+				delete(certs[certType], name)
+			}
+		}
+	}
+
+	return certs, nil
 }
 
 // Authenticate validates an incoming http Request
@@ -441,7 +471,10 @@ func (d *Daemon) getTrustedCertificates() map[certificate.Type]map[string]x509.C
 // Returns whether trusted or not, the username (or certificate fingerprint) of the trusted client, and the type of
 // client that has been authenticated (cluster, unix, or tls).
 func (d *Daemon) Authenticate(w http.ResponseWriter, r *http.Request) (bool, string, string, error) {
-	trustedCerts := d.getTrustedCertificates()
+	trustedCerts, err := d.getTrustedCertificates()
+	if err != nil {
+		return false, "", "", err
+	}
 
 	// Allow internal cluster traffic by checking against the trusted certfificates.
 	if r.TLS != nil {
@@ -480,6 +513,11 @@ func (d *Daemon) Authenticate(w http.ResponseWriter, r *http.Request) (bool, str
 	// Cluster notification with wrong certificate.
 	if isClusterNotification(r) {
 		return false, "", "", fmt.Errorf("Cluster notification isn't using trusted server certificate")
+	}
+
+	// Cluster internal client with wrong certificate.
+	if isClusterInternal(r) {
+		return false, "", "", fmt.Errorf("Cluster internal client isn't using trusted server certificate")
 	}
 
 	// Bad query, no TLS found.
@@ -816,7 +854,6 @@ func (d *Daemon) Init() error {
 	d.startTime = time.Now()
 
 	err := d.init()
-
 	// If an error occurred synchronously while starting up, let's try to
 	// cleanup any state we produced so far. Errors happening here will be
 	// ignored.
@@ -1111,7 +1148,7 @@ func (d *Daemon) init() error {
 	testDev := internalUtil.VarPath("devices", ".test")
 	testDevNum := int(unix.Mkdev(0, 0))
 	_ = os.Remove(testDev)
-	err = unix.Mknod(testDev, 0600|unix.S_IFCHR, testDevNum)
+	err = unix.Mknod(testDev, 0o600|unix.S_IFCHR, testDevNum)
 	if err == nil {
 		fd, err := os.Open(testDev)
 		if err != nil && os.IsPermission(err) {
@@ -1433,6 +1470,7 @@ func (d *Daemon) init() error {
 	syslogSocketEnabled := d.localConfig.SyslogSocket()
 	openfgaAPIURL, openfgaAPIToken, openfgaStoreID := d.globalConfig.OpenFGA()
 	instancePlacementScriptlet := d.globalConfig.InstancesPlacementScriptlet()
+	authorizationScriptlet := d.globalConfig.AuthorizationScriptlet()
 
 	d.endpoints.NetworkUpdateTrustedProxy(d.globalConfig.HTTPSTrustedProxy())
 	d.globalConfigMu.Unlock()
@@ -1469,10 +1507,18 @@ func (d *Daemon) init() error {
 		}
 	}
 
+	// Setup the authorization scriptlet.
+	if authorizationScriptlet != "" {
+		err = d.setupAuthorizationScriptlet(authorizationScriptlet)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Setup BGP listener.
 	d.bgp = bgp.NewServer()
 	if bgpAddress != "" && bgpASN != 0 && bgpRouterID != "" {
-		err := d.bgp.Start(bgpAddress, uint32(bgpASN), net.ParseIP(bgpRouterID))
+		err := d.bgp.Configure(bgpAddress, uint32(bgpASN), net.ParseIP(bgpRouterID))
 		if err != nil {
 			return err
 		}
@@ -1526,7 +1572,7 @@ func (d *Daemon) init() error {
 	}
 
 	// Setup the networks.
-	if !d.db.Cluster.LocalNodeIsEvacuated() {
+	if !d.serverClustered || !d.db.Cluster.LocalNodeIsEvacuated() {
 		logger.Infof("Initializing networks")
 
 		err = networkStartup(d.State())
@@ -1719,6 +1765,9 @@ func (d *Daemon) startClusterTasks() {
 	// Perform automatic evacuation for offline cluster members
 	d.clusterTasks.Add(autoHealClusterTask(d))
 
+	// Perform automatic live-migration to alance load on cluster
+	d.clusterTasks.Add(autoRebalanceClusterTask(d))
+
 	// Start all background tasks
 	d.clusterTasks.Start(d.shutdownCtx)
 }
@@ -1790,7 +1839,7 @@ func (d *Daemon) Stop(ctx context.Context, sig os.Signal) error {
 	if sig == unix.SIGPWR || sig == unix.SIGTERM {
 		if d.db.Cluster != nil {
 			// waitForOperations will block until all operations are done, or it's forced to shut down.
-			// For the latter case, we re-use the shutdown channel which is filled when a shutdown is
+			// For the latter case, we reuse the shutdown channel which is filled when a shutdown is
 			// initiated using `shutdown`.
 			waitForOperations(ctx, d.db.Cluster, s.GlobalConfig.ShutdownTimeout())
 		}
@@ -1980,7 +2029,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 		var resources auth.Resources
 
 		err = d.db.Cluster.Transaction(d.shutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
-			err := query.Scan(ctx, tx.Tx(), "SELECT certificates.fingerprint from certificates", func(scan func(dest ...any) error) error {
+			err := query.Scan(ctx, tx.Tx(), "SELECT certificates.fingerprint FROM certificates", func(scan func(dest ...any) error) error {
 				var fingerprint string
 				err := scan(&fingerprint)
 				if err != nil {
@@ -1994,7 +2043,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 				return err
 			}
 
-			err = query.Scan(ctx, tx.Tx(), "SELECT name from storage_pools", func(scan func(dest ...any) error) error {
+			err = query.Scan(ctx, tx.Tx(), "SELECT name FROM storage_pools", func(scan func(dest ...any) error) error {
 				var storagePoolName string
 				err := scan(&storagePoolName)
 				if err != nil {
@@ -2008,7 +2057,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 				return err
 			}
 
-			err = query.Scan(ctx, tx.Tx(), "SELECT name from projects", func(scan func(dest ...any) error) error {
+			err = query.Scan(ctx, tx.Tx(), "SELECT name FROM projects", func(scan func(dest ...any) error) error {
 				var projectName string
 				err := scan(&projectName)
 				if err != nil {
@@ -2022,7 +2071,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 				return err
 			}
 
-			err = query.Scan(ctx, tx.Tx(), "SELECT images.fingerprint, projects.name from images JOIN projects ON projects.id=images.project_id", func(scan func(dest ...any) error) error {
+			err = query.Scan(ctx, tx.Tx(), "SELECT images.fingerprint, projects.name FROM images JOIN projects ON projects.id=images.project_id", func(scan func(dest ...any) error) error {
 				var imageFingerprint string
 				var projectName string
 				err := scan(&imageFingerprint, &projectName)
@@ -2037,7 +2086,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 				return err
 			}
 
-			err = query.Scan(ctx, tx.Tx(), "SELECT images_aliases.name, projects.name from images_aliases JOIN projects ON projects.id=images_aliases.project_id", func(scan func(dest ...any) error) error {
+			err = query.Scan(ctx, tx.Tx(), "SELECT images_aliases.name, projects.name FROM images_aliases JOIN projects ON projects.id=images_aliases.project_id", func(scan func(dest ...any) error) error {
 				var imageAliasName string
 				var projectName string
 				err := scan(&imageAliasName, &projectName)
@@ -2052,7 +2101,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 				return err
 			}
 
-			err = query.Scan(ctx, tx.Tx(), "SELECT instances.name, projects.name from instances JOIN projects ON projects.id=instances.project_id", func(scan func(dest ...any) error) error {
+			err = query.Scan(ctx, tx.Tx(), "SELECT instances.name, projects.name FROM instances JOIN projects ON projects.id=instances.project_id", func(scan func(dest ...any) error) error {
 				var instanceName string
 				var projectName string
 				err := scan(&instanceName, &projectName)
@@ -2194,6 +2243,38 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 	d.authorizer = openfgaAuthorizer
 
 	revert.Success()
+	return nil
+}
+
+// Setup authorization scriptlet.
+func (d *Daemon) setupAuthorizationScriptlet(scriptlet string) error {
+	err := scriptletLoad.AuthorizationSet(scriptlet)
+	if err != nil {
+		return fmt.Errorf("Failed saving authorization scriptlet: %w", err)
+	}
+
+	if scriptlet == "" {
+		// Reset to default authorizer.
+		d.authorizer, err = auth.LoadAuthorizer(d.shutdownCtx, auth.DriverTLS, logger.Log, d.clientCerts)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	// Fail if not using the default tls or scriptlet authorizer.
+	switch d.authorizer.(type) {
+	case *auth.TLS, *auth.Scriptlet:
+		d.authorizer, err = auth.LoadAuthorizer(d.shutdownCtx, auth.DriverScriptlet, logger.Log, d.clientCerts)
+		if err != nil {
+			return err
+		}
+
+	default:
+		return errors.New("Attempting to setup scriptlet authorization while another authorizer is already set")
+	}
+
 	return nil
 }
 
@@ -2388,7 +2469,7 @@ func (d *Daemon) heartbeatHandler(w http.ResponseWriter, r *http.Request, isLead
 			// Check if we have a recent local cache entry already.
 			resourcesPath := internalUtil.CachePath("resources", fmt.Sprintf("%s.yaml", name))
 			fi, err := os.Stat(resourcesPath)
-			if err == nil && fi.ModTime().Before(time.Now().Add(time.Hour)) {
+			if err == nil && time.Since(fi.ModTime()) < time.Hour {
 				return
 			}
 
@@ -2405,12 +2486,12 @@ func (d *Daemon) heartbeatHandler(w http.ResponseWriter, r *http.Request, isLead
 			}
 
 			// Write to cache.
-			data, err := json.Marshal(resources)
+			data, err := yaml.Marshal(resources)
 			if err != nil {
 				return
 			}
 
-			err = os.WriteFile(resourcesPath, data, 0600)
+			err = os.WriteFile(resourcesPath, data, 0o600)
 			if err != nil {
 				return
 			}

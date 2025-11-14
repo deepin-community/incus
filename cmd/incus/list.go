@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"os"
 	"regexp"
 	"slices"
 	"sort"
@@ -12,12 +13,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/instance"
 	"github.com/lxc/incus/v6/shared/api"
-	config "github.com/lxc/incus/v6/shared/cliconfig"
 	"github.com/lxc/incus/v6/shared/units"
 )
 
@@ -72,7 +72,7 @@ Examples:
   - "type=container" will list all container instances
   - "type=container status=running" will list all running container instances
 
-A regular expression matching a configuration item or its value. (e.g. volatile.eth0.hwaddr=00:16:3e:.*).
+A regular expression matching a configuration item or its value. (e.g. volatile.eth0.hwaddr=10:66:6a:.*).
 
 When multiple filters are passed, they are added one on top of the other,
 selecting instances which satisfy them all.
@@ -131,13 +131,17 @@ incus list -c ns,user.comment:comment
 
 	cmd.RunE = c.Run
 	cmd.Flags().StringVarP(&c.flagColumns, "columns", "c", defaultColumns, i18n.G("Columns")+"``")
-	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G("Format (csv|json|table|yaml|compact)")+"``")
+	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G(`Format (csv|json|table|yaml|compact), use suffix ",noheader" to disable headers and ",header" to enable it if missing, e.g. csv,header`)+"``")
 	cmd.Flags().BoolVar(&c.flagFast, "fast", false, i18n.G("Fast mode (same as --columns=nsacPt)"))
 	cmd.Flags().BoolVar(&c.flagAllProjects, "all-projects", false, i18n.G("Display instances from all projects"))
 
+	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		return cli.ValidateFlagFormatForListOutput(cmd.Flag("format").Value.String())
+	}
+
 	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
-			return c.global.cmpRemotes(false)
+			return c.global.cmpRemotes(toComplete, false)
 		}
 
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -146,10 +150,12 @@ incus list -c ns,user.comment:comment
 	return cmd
 }
 
-const defaultColumns = "ns46tSL"
-const defaultColumnsAllProjects = "ens46tSL"
-const configColumnType = "config"
-const deviceColumnType = "devices"
+const (
+	defaultColumns            = "ns46tSL"
+	defaultColumnsAllProjects = "ens46tSL"
+	configColumnType          = "config"
+	deviceColumnType          = "devices"
+)
 
 // This seems a little excessive.
 func (c *cmdList) dotPrefixMatch(short string, full string) bool {
@@ -245,25 +251,25 @@ func (c *cmdList) evaluateShorthandFilter(key string, value string, inst *api.In
 	const shorthandValueDelimiter = ","
 	shorthandFilterFunction, isShorthandFilter := c.shorthandFilters[strings.ToLower(key)]
 
-	if isShorthandFilter {
-		if strings.Contains(value, shorthandValueDelimiter) {
-			matched := false
-			for _, curValue := range strings.Split(value, shorthandValueDelimiter) {
-				if shorthandFilterFunction(inst, state, curValue) {
-					matched = true
-				}
-			}
+	if !isShorthandFilter {
+		return false
+	}
 
-			return matched
-		}
-
+	if !strings.Contains(value, shorthandValueDelimiter) {
 		return shorthandFilterFunction(inst, state, value)
 	}
 
-	return false
+	matched := false
+	for _, curValue := range strings.Split(value, shorthandValueDelimiter) {
+		if shorthandFilterFunction(inst, state, curValue) {
+			matched = true
+		}
+	}
+
+	return matched
 }
 
-func (c *cmdList) listInstances(conf *config.Config, d incus.InstanceServer, instances []api.Instance, filters []string, columns []column) error {
+func (c *cmdList) listInstances(d incus.InstanceServer, instances []api.Instance, filters []string, columns []column) error {
 	threads := 10
 	if len(instances) < threads {
 		threads = len(instances)
@@ -452,7 +458,7 @@ func (c *cmdList) showInstances(instances []api.InstanceFull, filters []string, 
 		headers = append(headers, column.Name)
 	}
 
-	return cli.RenderTable(c.flagFormat, headers, data, instancesFiltered)
+	return cli.RenderTable(os.Stdout, c.flagFormat, headers, data, instancesFiltered)
 }
 
 func (c *cmdList) Run(cmd *cobra.Command, args []string) error {
@@ -561,7 +567,7 @@ func (c *cmdList) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Fetch any remaining data and render the table
-	return c.listInstances(conf, d, instancesFiltered, clientFilters, columns)
+	return c.listInstances(d, instancesFiltered, clientFilters, columns)
 }
 
 func (c *cmdList) parseColumns(clustered bool) ([]column, bool, error) {
@@ -613,14 +619,15 @@ func (c *cmdList) parseColumns(clustered bool) ([]column, bool, error) {
 
 	if clustered {
 		columnsShorthandMap['L'] = column{
-			i18n.G("LOCATION"), c.locationColumnData, false, false}
+			i18n.G("LOCATION"), c.locationColumnData, false, false,
+		}
 	} else {
 		if c.flagColumns != defaultColumns && c.flagColumns != defaultColumnsAllProjects {
 			if strings.ContainsAny(c.flagColumns, "L") {
 				return nil, false, fmt.Errorf(i18n.G("Can't specify column L when not clustered"))
 			}
 		}
-		c.flagColumns = strings.Replace(c.flagColumns, "L", "", -1)
+		c.flagColumns = strings.ReplaceAll(c.flagColumns, "L", "")
 	}
 
 	columnList := strings.Split(c.flagColumns, ",")
@@ -973,7 +980,7 @@ func (c *cmdList) matchByLocation(cInfo *api.Instance, cState *api.InstanceState
 	return strings.EqualFold(cInfo.Location, query)
 }
 
-func (c *cmdList) matchByNet(cInfo *api.Instance, cState *api.InstanceState, query string, family string) bool {
+func (c *cmdList) matchByNet(cState *api.InstanceState, query string, family string) bool {
 	// Skip if no state.
 	if cState == nil {
 		return false
@@ -1014,12 +1021,12 @@ func (c *cmdList) matchByNet(cInfo *api.Instance, cState *api.InstanceState, que
 	return false
 }
 
-func (c *cmdList) matchByIPV6(cInfo *api.Instance, cState *api.InstanceState, query string) bool {
-	return c.matchByNet(cInfo, cState, query, "ipv6")
+func (c *cmdList) matchByIPV6(_ *api.Instance, cState *api.InstanceState, query string) bool {
+	return c.matchByNet(cState, query, "ipv6")
 }
 
-func (c *cmdList) matchByIPV4(cInfo *api.Instance, cState *api.InstanceState, query string) bool {
-	return c.matchByNet(cInfo, cState, query, "ipv4")
+func (c *cmdList) matchByIPV4(_ *api.Instance, cState *api.InstanceState, query string) bool {
+	return c.matchByNet(cState, query, "ipv4")
 }
 
 func (c *cmdList) mapShorthandFilters() {

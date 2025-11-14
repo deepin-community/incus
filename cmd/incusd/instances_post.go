@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +15,6 @@ import (
 	"github.com/gorilla/websocket"
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	"github.com/lxc/incus/v6/internal/server/db"
@@ -39,6 +39,7 @@ import (
 	"github.com/lxc/incus/v6/shared/archive"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/osarch"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -60,7 +61,7 @@ func ensureDownloadedImageFitWithinBudget(ctx context.Context, s *state.State, r
 		return nil, err
 	}
 
-	imgDownloaded, err := ImageDownload(ctx, r, s, op, &ImageDownloadArgs{
+	imgDownloaded, created, err := ImageDownload(ctx, r, s, op, &ImageDownloadArgs{
 		Server:       source.Server,
 		Protocol:     source.Protocol,
 		Certificate:  source.Certificate,
@@ -78,19 +79,21 @@ func ensureDownloadedImageFitWithinBudget(ctx context.Context, s *state.State, r
 		return nil, err
 	}
 
-	// Add the image to the authorizer.
-	err = s.Authorizer.AddImage(s.ShutdownCtx, p.Name, imgDownloaded.Fingerprint)
-	if err != nil {
-		logger.Error("Failed to add image to authorizer", logger.Ctx{"fingerprint": imgDownloaded.Fingerprint, "project": p.Name, "error": err})
-	}
+	if created {
+		// Add the image to the authorizer.
+		err = s.Authorizer.AddImage(s.ShutdownCtx, p.Name, imgDownloaded.Fingerprint)
+		if err != nil {
+			logger.Error("Failed to add image to authorizer", logger.Ctx{"fingerprint": imgDownloaded.Fingerprint, "project": p.Name, "error": err})
+		}
 
-	s.Events.SendLifecycle(p.Name, lifecycle.ImageCreated.Event(imgDownloaded.Fingerprint, p.Name, op.Requestor(), logger.Ctx{"type": imgDownloaded.Type}))
+		s.Events.SendLifecycle(p.Name, lifecycle.ImageCreated.Event(imgDownloaded.Fingerprint, p.Name, op.Requestor(), logger.Ctx{"type": imgDownloaded.Type}))
+	}
 
 	return imgDownloaded, nil
 }
 
 func createFromImage(s *state.State, r *http.Request, p api.Project, profiles []api.Profile, img *api.Image, imgAlias string, req *api.InstancesPost) response.Response {
-	if s.DB.Cluster.LocalNodeIsEvacuated() {
+	if s.ServerClustered && s.DB.Cluster.LocalNodeIsEvacuated() {
 		return response.Forbidden(fmt.Errorf("Cluster member is evacuated"))
 	}
 
@@ -153,7 +156,7 @@ func createFromImage(s *state.State, r *http.Request, p api.Project, profiles []
 }
 
 func createFromNone(s *state.State, r *http.Request, projectName string, profiles []api.Profile, req *api.InstancesPost) response.Response {
-	if s.DB.Cluster.LocalNodeIsEvacuated() {
+	if s.ServerClustered && s.DB.Cluster.LocalNodeIsEvacuated() {
 		return response.Forbidden(fmt.Errorf("Cluster member is evacuated"))
 	}
 
@@ -206,7 +209,7 @@ func createFromNone(s *state.State, r *http.Request, projectName string, profile
 }
 
 func createFromMigration(ctx context.Context, s *state.State, r *http.Request, projectName string, profiles []api.Profile, req *api.InstancesPost) response.Response {
-	if s.DB.Cluster.LocalNodeIsEvacuated() && r != nil && r.Context().Value(request.CtxProtocol) != "cluster" {
+	if s.ServerClustered && r != nil && r.Context().Value(request.CtxProtocol) != "cluster" && s.DB.Cluster.LocalNodeIsEvacuated() {
 		return response.Forbidden(fmt.Errorf("Cluster member is evacuated"))
 	}
 
@@ -360,6 +363,16 @@ func createFromMigration(ctx context.Context, s *state.State, r *http.Request, p
 		InstanceOnly:          instanceOnly,
 		ClusterMoveSourceName: clusterMoveSourceName,
 		Refresh:               req.Source.Refresh,
+		RefreshExcludeOlder:   req.Source.RefreshExcludeOlder,
+		StoragePool:           storagePool,
+	}
+
+	// Check if the pool is changing at all.
+	if r != nil && isClusterNotification(r) && inst != nil {
+		_, currentPool, _ := internalInstance.GetRootDiskDevice(inst.ExpandedDevices().CloneNative())
+		if currentPool["pool"] == storagePool {
+			migrationArgs.StoragePool = ""
+		}
 	}
 
 	sink, err := newMigrationSink(&migrationArgs)
@@ -385,6 +398,56 @@ func createFromMigration(ctx context.Context, s *state.State, r *http.Request, p
 		}
 
 		instOp.Done(nil) // Complete operation that was created earlier, to release lock.
+
+		if migrationArgs.StoragePool != "" {
+			// Update root device for the instance.
+			err = s.DB.Cluster.Transaction(context.Background(), func(ctx context.Context, tx *db.ClusterTx) error {
+				devs := inst.LocalDevices().CloneNative()
+				rootDevKey, _, err := internalInstance.GetRootDiskDevice(inst.ExpandedDevices().CloneNative())
+				if err != nil {
+					if !errors.Is(err, internalInstance.ErrNoRootDisk) {
+						return err
+					}
+
+					rootDev := map[string]string{}
+					rootDev["type"] = "disk"
+					rootDev["path"] = "/"
+					rootDev["pool"] = storagePool
+
+					devs["root"] = rootDev
+				} else {
+					// Copy the device if not a local device.
+					_, ok := devs[rootDevKey]
+					if !ok {
+						devs[rootDevKey] = inst.ExpandedDevices().CloneNative()[rootDevKey]
+					}
+
+					// Apply the override.
+					devs[rootDevKey]["pool"] = storagePool
+				}
+
+				devices, err := dbCluster.APIToDevices(devs)
+				if err != nil {
+					return err
+				}
+
+				id, err := dbCluster.GetInstanceID(ctx, tx.Tx(), inst.Project().Name, inst.Name())
+				if err != nil {
+					return fmt.Errorf("Failed to get ID of moved instance: %w", err)
+				}
+
+				err = dbCluster.UpdateInstanceDevices(ctx, tx.Tx(), int64(id), devices)
+				if err != nil {
+					return err
+				}
+
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+
 		runRevert.Success()
 
 		return instanceCreateFinish(s, req, args, op)
@@ -411,7 +474,7 @@ func createFromMigration(ctx context.Context, s *state.State, r *http.Request, p
 }
 
 func createFromCopy(ctx context.Context, s *state.State, r *http.Request, projectName string, profiles []api.Profile, req *api.InstancesPost) response.Response {
-	if s.DB.Cluster.LocalNodeIsEvacuated() {
+	if s.ServerClustered && s.DB.Cluster.LocalNodeIsEvacuated() {
 		return response.Forbidden(fmt.Errorf("Cluster member is evacuated"))
 	}
 
@@ -547,6 +610,7 @@ func createFromCopy(ctx context.Context, s *state.State, r *http.Request, projec
 			targetInstance:       args,
 			instanceOnly:         req.Source.InstanceOnly,
 			refresh:              req.Source.Refresh,
+			refreshExcludeOlder:  req.Source.RefreshExcludeOlder,
 			applyTemplateTrigger: true,
 			allowInconsistent:    req.Source.AllowInconsistent,
 		}, op)
@@ -630,10 +694,14 @@ func createFromBackup(s *state.State, r *http.Request, projectName string, data 
 		return response.InternalError(err)
 	}
 
-	logger.Debug("Reading backup file info")
 	bInfo, err := backup.GetInfo(backupFile, s.OS, backupFile.Name())
 	if err != nil {
 		return response.BadRequest(err)
+	}
+
+	// Detect broken legacy backups.
+	if bInfo.Config == nil {
+		return response.BadRequest(fmt.Errorf("Backup file is missing required information"))
 	}
 
 	// Check project permissions.
@@ -828,6 +896,7 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 
 	targetProjectName := request.ProjectParam(r)
 	clusterNotification := isClusterNotification(r)
+	clusterInternal := isClusterInternal(r)
 
 	logger.Debug("Responding to instance create")
 
@@ -887,12 +956,12 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 	var targetMemberInfo *db.NodeInfo
 	var targetGroupName string
 
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-		target := request.QueryParam(r, "target")
-		if !s.ServerClustered && target != "" {
-			return api.StatusErrorf(http.StatusBadRequest, "Target only allowed when clustered")
-		}
+	target := request.QueryParam(r, "target")
+	if !s.ServerClustered && target != "" {
+		return response.BadRequest(fmt.Errorf("Target only allowed when clustered"))
+	}
 
+	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
 		dbProject, err := dbCluster.GetProject(ctx, tx.Tx(), targetProjectName)
 		if err != nil {
 			return fmt.Errorf("Failed loading project: %w", err)
@@ -991,7 +1060,12 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 				return err
 			}
 
-			dbProfileDevices, err := dbCluster.GetDevices(ctx, tx.Tx(), "profile")
+			dbProfileConfigs, err := dbCluster.GetAllProfileConfigs(ctx, tx.Tx())
+			if err != nil {
+				return err
+			}
+
+			dbProfileDevices, err := dbCluster.GetAllProfileDevices(ctx, tx.Tx())
 			if err != nil {
 				return err
 			}
@@ -1007,7 +1081,7 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 					return fmt.Errorf("Requested profile %q doesn't exist", profileName)
 				}
 
-				apiProfile, err := profile.ToAPI(ctx, tx.Tx(), dbProfileDevices)
+				apiProfile, err := profile.ToAPI(ctx, tx.Tx(), dbProfileConfigs, dbProfileDevices)
 				if err != nil {
 					return err
 				}
@@ -1093,8 +1167,13 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 		return response.BadRequest(err)
 	}
 
-	if s.ServerClustered && !clusterNotification && targetMemberInfo == nil {
-		// Run instance placement scriptlet if enabled and no cluster member selected yet.
+	if s.ServerClustered && !clusterNotification && !clusterInternal {
+		// If a target was specified, limit the list of candidates to that target.
+		if targetMemberInfo != nil {
+			candidateMembers = []db.NodeInfo{*targetMemberInfo}
+		}
+
+		// Run instance placement scriptlet if enabled.
 		if s.GlobalConfig.InstancesPlacementScriptlet() != "" {
 			leaderAddress, err := s.Cluster.LeaderAddress()
 			if err != nil {
@@ -1118,19 +1197,17 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 		}
 
 		// If no target member was selected yet, pick the member with the least number of instances.
+		if targetMemberInfo == nil && len(candidateMembers) > 0 {
+			targetMemberInfo = &candidateMembers[0]
+		}
+
 		if targetMemberInfo == nil {
-			err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-				targetMemberInfo, err = tx.GetNodeWithLeastInstances(ctx, candidateMembers)
-				return err
-			})
-			if err != nil {
-				return response.SmartError(err)
-			}
+			return response.InternalError(fmt.Errorf("Couldn't find a cluster member for the instance"))
 		}
 	}
 
 	// Record the cluster group as a volatile config key if present.
-	if !clusterNotification && targetGroupName != "" {
+	if !clusterNotification && !clusterInternal && targetGroupName != "" {
 		req.Config["volatile.cluster.group"] = targetGroupName
 	}
 
@@ -1283,7 +1360,6 @@ func clusterCopyContainerInternal(ctx context.Context, s *state.State, r *http.R
 		pullReq := api.InstanceSnapshotPost{
 			Migration: true,
 			Live:      req.Source.Live,
-			Name:      req.Name,
 		}
 
 		op, err := client.MigrateInstanceSnapshot(cName, sName, pullReq)
@@ -1298,7 +1374,6 @@ func clusterCopyContainerInternal(ctx context.Context, s *state.State, r *http.R
 			Migration:    true,
 			Live:         req.Source.Live,
 			InstanceOnly: instanceOnly,
-			Name:         req.Name,
 		}
 
 		op, err := client.MigrateInstance(req.Source.Source, pullReq)

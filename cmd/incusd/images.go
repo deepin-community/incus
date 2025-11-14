@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"math/rand"
 	"mime"
@@ -28,7 +29,7 @@ import (
 	"github.com/kballard/go-shellquote"
 	"gopkg.in/yaml.v2"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/filter"
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
 	internalIO "github.com/lxc/incus/v6/internal/io"
@@ -345,15 +346,10 @@ func imgPostInstanceInfo(ctx context.Context, s *state.State, r *http.Request, r
 	}
 
 	// Export instance to writer.
-	var meta api.ImageMetadata
+	var meta *api.ImageMetadata
 
 	writer = internalIO.NewQuotaWriter(writer, budget)
 	meta, err = c.Export(writer, req.Properties, req.ExpiresAt, tracker)
-
-	// Get ExpiresAt
-	if meta.ExpiryDate != 0 {
-		info.ExpiresAt = time.Unix(meta.ExpiryDate, 0)
-	}
 
 	// Clean up file handles.
 	// When compression is used, Close on imageProgressWriter/tarWriter is required for compressFile/gzip to
@@ -370,6 +366,11 @@ func imgPostInstanceInfo(ctx context.Context, s *state.State, r *http.Request, r
 	// Check instance export errors.
 	if err != nil {
 		return nil, err
+	}
+
+	// Get ExpiresAt
+	if meta.ExpiryDate != 0 {
+		info.ExpiresAt = time.Unix(meta.ExpiryDate, 0)
 	}
 
 	fi, err := os.Stat(imageFile.Name())
@@ -427,7 +428,7 @@ func imgPostRemoteInfo(ctx context.Context, s *state.State, r *http.Request, req
 		return nil, fmt.Errorf("must specify one of alias or fingerprint for init from image")
 	}
 
-	info, err := ImageDownload(ctx, r, s, op, &ImageDownloadArgs{
+	info, _, err := ImageDownload(ctx, r, s, op, &ImageDownloadArgs{
 		Server:            req.Source.Server,
 		Protocol:          req.Source.Protocol,
 		Certificate:       req.Source.Certificate,
@@ -545,7 +546,7 @@ func imgPostURLInfo(ctx context.Context, s *state.State, r *http.Request, req ap
 	}
 
 	// Import the image
-	info, err := ImageDownload(ctx, r, s, op, &ImageDownloadArgs{
+	info, _, err := ImageDownload(ctx, r, s, op, &ImageDownloadArgs{
 		Server:      url,
 		Protocol:    "direct",
 		Alias:       hash,
@@ -595,6 +596,7 @@ func getImgPostInfo(ctx context.Context, s *state.State, r *http.Request, buildd
 	info.Public = util.IsTrue(r.Header.Get("X-Incus-public"))
 	propHeaders := r.Header[http.CanonicalHeaderKey("X-Incus-properties")]
 	profilesHeaders := r.Header.Get("X-Incus-profiles")
+	aliasesHeaders := r.Header.Get("X-Incus-aliases")
 	ctype, ctypeParams, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
 		ctype = "application/octet-stream"
@@ -693,7 +695,8 @@ func getImgPostInfo(ctx context.Context, s *state.State, r *http.Request, buildd
 			l.Error("Failed to move the image tarfile", logger.Ctx{
 				"err":    err,
 				"source": imageTarf.Name(),
-				"dest":   imgfname})
+				"dest":   imgfname,
+			})
 			return nil, err
 		}
 
@@ -703,7 +706,8 @@ func getImgPostInfo(ctx context.Context, s *state.State, r *http.Request, buildd
 			l.Error("Failed to move the rootfs tarfile", logger.Ctx{
 				"err":    err,
 				"source": rootfsTarf.Name(),
-				"dest":   imgfname})
+				"dest":   imgfname,
+			})
 			return nil, err
 		}
 	} else {
@@ -727,7 +731,8 @@ func getImgPostInfo(ctx context.Context, s *state.State, r *http.Request, buildd
 		if expectedFingerprint != "" && info.Fingerprint != expectedFingerprint {
 			l.Error("Fingerprints don't match", logger.Ctx{
 				"got":      info.Fingerprint,
-				"expected": expectedFingerprint})
+				"expected": expectedFingerprint,
+			})
 			err = fmt.Errorf("fingerprints don't match, got %s expected %s", info.Fingerprint, expectedFingerprint)
 			return nil, err
 		}
@@ -747,7 +752,8 @@ func getImgPostInfo(ctx context.Context, s *state.State, r *http.Request, buildd
 			l.Error("Failed to move the tarfile", logger.Ctx{
 				"err":    err,
 				"source": post.Name(),
-				"dest":   imgfname})
+				"dest":   imgfname,
+			})
 			return nil, err
 		}
 	}
@@ -780,6 +786,19 @@ func getImgPostInfo(ctx context.Context, s *state.State, r *http.Request, buildd
 		}
 	}
 
+	if len(aliasesHeaders) > 0 {
+		info.Aliases = []api.ImageAlias{}
+		aliasNames, _ := url.ParseQuery(aliasesHeaders)
+
+		for _, aliasName := range aliasNames["alias"] {
+			alias := api.ImageAlias{
+				Name: aliasName,
+			}
+
+			info.Aliases = append(info.Aliases, alias)
+		}
+	}
+
 	var profileIds []int64
 	if len(profilesHeaders) > 0 {
 		p, _ := url.ParseQuery(profilesHeaders)
@@ -805,7 +824,6 @@ func getImgPostInfo(ctx context.Context, s *state.State, r *http.Request, buildd
 	}
 
 	var exists bool
-
 	err = s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
 		// Check if the image already exists
 		exists, err = tx.ImageExists(ctx, project, info.Fingerprint)
@@ -944,6 +962,13 @@ func imageCreateInPool(s *state.State, info *api.Image, storagePool string) erro
 //	    schema:
 //	      type: string
 //	  - in: header
+//	    name: X-Incus-aliases
+//	    description: List of aliases to assign
+//	    schema:
+//	      type: array
+//	      items:
+//	        type: string
+//	  - in: header
 //	    name: X-Incus-properties
 //	    description: Descriptive properties
 //	    schema:
@@ -995,7 +1020,6 @@ func imagesPost(d *Daemon, r *http.Request) response.Response {
 	fingerprint := r.Header.Get("X-Incus-fingerprint")
 
 	var imageMetadata map[string]any
-
 	if !trusted && (secret == "" || fingerprint == "") {
 		return response.Forbidden(nil)
 	} else {
@@ -1171,9 +1195,18 @@ func imagesPost(d *Daemon, r *http.Request) response.Response {
 		}
 
 		// Apply any provided alias
-		aliases, ok := imageMetadata["aliases"]
-		if ok {
-			req.Aliases = aliases.([]api.ImageAlias)
+		if len(req.Aliases) == 0 {
+			aliases, ok := imageMetadata["aliases"]
+			if ok {
+				// Used to get aliases from push mode image copy operation.
+				aliases, ok := aliases.([]api.ImageAlias)
+				if ok {
+					req.Aliases = aliases
+				}
+			} else if len(info.Aliases) > 0 {
+				// Used to get aliases from HTTP headers on raw image imports.
+				req.Aliases = info.Aliases
+			}
 		}
 
 		err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -1198,7 +1231,7 @@ func imagesPost(d *Daemon, r *http.Request) response.Response {
 				}
 
 				// Add the image alias to the authorizer.
-				err = s.Authorizer.AddImageAlias(r.Context(), projectName, alias.Name)
+				err = s.Authorizer.AddImageAlias(ctx, projectName, alias.Name)
 				if err != nil {
 					logger.Error("Failed to add image alias to authorizer", logger.Ctx{"name": alias.Name, "project": projectName, "error": err})
 				}
@@ -2197,7 +2230,7 @@ func autoUpdateImage(ctx context.Context, s *state.State, op *operations.Operati
 		default:
 		}
 
-		newInfo, err = ImageDownload(ctx, nil, s, op, &ImageDownloadArgs{
+		newInfo, _, err = ImageDownload(ctx, nil, s, op, &ImageDownloadArgs{
 			Server:      source.Server,
 			Protocol:    source.Protocol,
 			Certificate: source.Certificate,
@@ -2623,14 +2656,14 @@ func pruneExpiredImages(ctx context.Context, s *state.State, op *operations.Oper
 		// Remove main image file.
 		fname := filepath.Join(s.OS.VarDir, "images", fingerprint)
 		err = os.Remove(fname)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("Error deleting image file %q: %w", fname, err)
 		}
 
 		// Remove the rootfs file for the image.
 		fname = filepath.Join(s.OS.VarDir, "images", fingerprint) + ".rootfs"
 		err = os.Remove(fname)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("Error deleting image file %q: %w", fname, err)
 		}
 
@@ -2856,7 +2889,7 @@ func imageDeleteFromDisk(fingerprint string) {
 	fname := internalUtil.VarPath("images", fingerprint)
 	if util.PathExists(fname) {
 		err := os.Remove(fname)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			logger.Errorf("Error deleting image file %s: %s", fname, err)
 		}
 	}
@@ -2865,7 +2898,7 @@ func imageDeleteFromDisk(fingerprint string) {
 	fname = internalUtil.VarPath("images", fingerprint) + ".rootfs"
 	if util.PathExists(fname) {
 		err := os.Remove(fname)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			logger.Errorf("Error deleting image file %s: %s", fname, err)
 		}
 	}
@@ -2914,10 +2947,13 @@ func imageValidSecret(s *state.State, r *http.Request, projectName string, finge
 		}
 
 		if opSecret == secret {
-			// Token is single-use, so cancel it now.
-			err = operationCancel(s, r, projectName, op)
-			if err != nil {
-				return nil, fmt.Errorf("Failed to cancel operation %q: %w", op.ID, err)
+			// Check if the operation is currently running (we allow access while expired).
+			if op.Status == api.Running.String() {
+				// Token is single-use, so cancel it now.
+				err = operationCancel(s, r, projectName, op)
+				if err != nil {
+					return nil, fmt.Errorf("Failed to cancel operation %q: %w", op.ID, err)
+				}
 			}
 
 			return op, nil

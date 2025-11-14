@@ -2,8 +2,10 @@ package apparmor
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,9 +23,11 @@ const (
 	cmdParse  = "Q"
 )
 
-var aaCacheDir string
-var aaPath = internalUtil.VarPath("security", "apparmor")
-var aaVersion *version.DottedVersion
+var (
+	aaCacheDir string
+	aaPath     = internalUtil.VarPath("security", "apparmor")
+	aaVersion  *version.DottedVersion
+)
 
 // Init performs initial version and feature detection.
 func Init() error {
@@ -75,7 +79,6 @@ func runApparmor(sysOS *sys.OS, command string, name string) error {
 		filepath.Join(aaPath, "cache"),
 		filepath.Join(aaPath, "profiles", name),
 	}...)
-
 	if err != nil {
 		return err
 	}
@@ -94,7 +97,7 @@ func createNamespace(sysOS *sys.OS, name string) error {
 	}
 
 	p := filepath.Join("/sys/kernel/security/apparmor/policy/namespaces", name)
-	err := os.Mkdir(p, 0755)
+	err := os.Mkdir(p, 0o755)
 	if err != nil && !os.IsExist(err) {
 		return err
 	}
@@ -114,7 +117,7 @@ func deleteNamespace(sysOS *sys.OS, name string) error {
 
 	p := filepath.Join("/sys/kernel/security/apparmor/policy/namespaces", name)
 	err := os.Remove(p)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 
@@ -123,7 +126,7 @@ func deleteNamespace(sysOS *sys.OS, name string) error {
 
 // hasProfile checks if the profile is already loaded.
 func hasProfile(sysOS *sys.OS, name string) (bool, error) {
-	mangled := strings.Replace(strings.Replace(strings.Replace(name, "/", ".", -1), "<", "", -1), ">", "", -1)
+	mangled := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(name, "/", "."), "<", ""), ">", "")
 
 	profilesPath := "/sys/kernel/security/apparmor/policy/profiles"
 	if util.PathExists(profilesPath) {
@@ -195,12 +198,12 @@ func deleteProfile(sysOS *sys.OS, fullName string, name string) error {
 	}
 
 	err = os.Remove(filepath.Join(aaCacheDir, name))
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed to remove %s: %w", filepath.Join(aaCacheDir, name), err)
 	}
 
 	err = os.Remove(filepath.Join(aaPath, "profiles", name))
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed to remove %s: %w", filepath.Join(aaPath, "profiles", name), err)
 	}
 
@@ -219,15 +222,6 @@ func parserSupports(sysOS *sys.OS, feature string) (bool, error) {
 
 	if feature == "unix" {
 		minVer, err := version.NewDottedVersion("2.10.95")
-		if err != nil {
-			return false, err
-		}
-
-		return aaVersion.Compare(minVer) >= 0, nil
-	}
-
-	if feature == "nosymfollow" {
-		minVer, err := version.NewDottedVersion("4.0.0")
 		if err != nil {
 			return false, err
 		}

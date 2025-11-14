@@ -14,7 +14,8 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/internal/filter"
 	"github.com/lxc/incus/v6/internal/jmap"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/cluster"
@@ -71,6 +72,11 @@ var profileCmd = APIEndpoint{
 //      description: Retrieve profiles from all projects
 //      type: boolean
 //      example: true
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
 //  responses:
 //    "200":
 //      description: API endpoints
@@ -107,52 +113,58 @@ var profileCmd = APIEndpoint{
 
 // swagger:operation GET /1.0/profiles?recursion=1 profiles profiles_get_recursion1
 //
-//	Get the profiles
+//  Get the profiles
 //
-//	Returns a list of profiles (structs).
+//  Returns a list of profiles (structs).
 //
-//	---
-//	produces:
-//	  - application/json
-//	parameters:
-//	  - in: query
-//	    name: project
-//	    description: Project name
-//	    type: string
-//	    example: default
-//	  - in: query
-//	    name: all-projects
-//	    description: Retrieve profiles from all projects
-//	    type: boolean
-//	    example: true
-//	responses:
-//	  "200":
-//	    description: API endpoints
-//	    schema:
-//	      type: object
-//	      description: Sync response
-//	      properties:
-//	        type:
-//	          type: string
-//	          description: Response type
-//	          example: sync
-//	        status:
-//	          type: string
-//	          description: Status description
-//	          example: Success
-//	        status_code:
-//	          type: integer
-//	          description: Status code
-//	          example: 200
-//	        metadata:
-//	          type: array
-//	          description: List of profiles
-//	          items:
-//	            $ref: "#/definitions/Profile"
-//	  "403":
-//	    $ref: "#/responses/Forbidden"
-//	  "500":
-//	    $ref: "#/responses/InternalServerError"
+//  ---
+//  produces:
+//    - application/json
+//  parameters:
+//    - in: query
+//      name: project
+//      description: Project name
+//      type: string
+//      example: default
+//    - in: query
+//      name: all-projects
+//      description: Retrieve profiles from all projects
+//      type: boolean
+//      example: true
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
+//  responses:
+//    "200":
+//      description: API endpoints
+//      schema:
+//        type: object
+//        description: Sync response
+//        properties:
+//          type:
+//            type: string
+//            description: Response type
+//            example: sync
+//          status:
+//            type: string
+//            description: Status description
+//            example: Success
+//          status_code:
+//            type: integer
+//            description: Status code
+//            example: 200
+//          metadata:
+//            type: array
+//            description: List of profiles
+//            items:
+//              $ref: "#/definitions/Profile"
+//    "403":
+//      $ref: "#/responses/Forbidden"
+//    "500":
+//      $ref: "#/responses/InternalServerError"
+
 func profilesGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
@@ -162,6 +174,16 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	recursion := localUtil.IsRecursionRequest(r)
+
+	// Parse filter value.
+	filterStr := r.FormValue("filter")
+	clauses, err := filter.Parse(filterStr, filter.QueryOperatorSet())
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid filter: %w", err))
+	}
+
+	mustLoadObjects := recursion || (clauses != nil && len(clauses.Clauses) > 0)
+
 	allProjects := util.IsTrue(request.QueryParam(r, "all-projects"))
 
 	userHasPermission, err := s.Authorizer.GetPermissionChecker(r.Context(), r, auth.EntitlementCanView, auth.ObjectTypeProfile)
@@ -169,7 +191,8 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 		return response.InternalError(err)
 	}
 
-	var result any
+	fullResults := make([]api.Profile, 0)
+	linkResults := make([]string, 0)
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
 		var profiles []dbCluster.Profile
@@ -189,19 +212,23 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 			}
 		}
 
-		if recursion {
-			profileDevices, err := dbCluster.GetDevices(ctx, tx.Tx(), "profile")
+		if mustLoadObjects {
+			profileConfigs, err := dbCluster.GetAllProfileConfigs(ctx, tx.Tx())
 			if err != nil {
 				return err
 			}
 
-			apiProfiles := make([]*api.Profile, 0, len(profiles))
+			profileDevices, err := dbCluster.GetAllProfileDevices(ctx, tx.Tx())
+			if err != nil {
+				return err
+			}
+
 			for _, profile := range profiles {
 				if !userHasPermission(auth.ObjectProfile(p.Name, profile.Name)) {
 					continue
 				}
 
-				apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileDevices)
+				apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileConfigs, profileDevices)
 				if err != nil {
 					return err
 				}
@@ -212,22 +239,30 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 				}
 
 				apiProfile.UsedBy = project.FilterUsedBy(s.Authorizer, r, apiProfile.UsedBy)
-				apiProfiles = append(apiProfiles, apiProfile)
-			}
 
-			result = apiProfiles
+				if clauses != nil && len(clauses.Clauses) > 0 {
+					match, err := filter.Match(*apiProfile, *clauses)
+					if err != nil {
+						return err
+					}
+
+					if !match {
+						continue
+					}
+				}
+
+				fullResults = append(fullResults, *apiProfile)
+				linkResults = append(linkResults, apiProfile.URL(version.APIVersion, profile.Project).String())
+			}
 		} else {
-			urls := make([]string, 0, len(profiles))
 			for _, profile := range profiles {
 				if !userHasPermission(auth.ObjectProfile(p.Name, profile.Name)) {
 					continue
 				}
 
 				apiProfile := api.Profile{Name: profile.Name}
-				urls = append(urls, apiProfile.URL(version.APIVersion, profile.Project).String())
+				linkResults = append(linkResults, apiProfile.URL(version.APIVersion, profile.Project).String())
 			}
-
-			result = urls
 		}
 
 		return err
@@ -236,7 +271,11 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	return response.SyncResponse(true, result)
+	if recursion {
+		return response.SyncResponse(true, fullResults)
+	}
+
+	return response.SyncResponse(true, linkResults)
 }
 
 // profileUsedBy returns all the instance URLs that are using the given profile.
@@ -437,12 +476,17 @@ func profileGet(d *Daemon, r *http.Request) response.Response {
 			return fmt.Errorf("Fetch profile: %w", err)
 		}
 
-		profileDevices, err := dbCluster.GetDevices(ctx, tx.Tx(), "profile")
+		profileConfigs, err := dbCluster.GetAllProfileConfigs(ctx, tx.Tx())
 		if err != nil {
 			return err
 		}
 
-		resp, err = profile.ToAPI(ctx, tx.Tx(), profileDevices)
+		profileDevices, err := dbCluster.GetAllProfileDevices(ctx, tx.Tx())
+		if err != nil {
+			return err
+		}
+
+		resp, err = profile.ToAPI(ctx, tx.Tx(), profileConfigs, profileDevices)
 		if err != nil {
 			return err
 		}
@@ -533,7 +577,7 @@ func profilePut(d *Daemon, r *http.Request) response.Response {
 			return fmt.Errorf("Failed to retrieve profile %q: %w", name, err)
 		}
 
-		profile, err = current.ToAPI(ctx, tx.Tx(), nil)
+		profile, err = current.ToAPI(ctx, tx.Tx(), nil, nil)
 		if err != nil {
 			return err
 		}
@@ -638,7 +682,7 @@ func profilePatch(d *Daemon, r *http.Request) response.Response {
 			return fmt.Errorf("Failed to retrieve profile=%q: %w", name, err)
 		}
 
-		profile, err = current.ToAPI(ctx, tx.Tx(), nil)
+		profile, err = current.ToAPI(ctx, tx.Tx(), nil, nil)
 		if err != nil {
 			return err
 		}

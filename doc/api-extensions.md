@@ -2587,3 +2587,157 @@ This implements a new `security.promiscuous` configuration option on OVN NICs.
 ## `ovn_nic_ip_address_none`
 
 This adds `none` as a value for `ipv4.address` and `ipv6.address` for OVN NICs.
+
+## `instances_state_os_info`
+
+This extension adds a pointer to an `InstanceStateOSInfo` struct to the instance's state API.
+
+## `network_load_balancer_state`
+
+This adds a new `/1.0/networks/NAME/load-balancers/IP/state` API endpoint
+which returns load-balancer health check information (when configured).
+
+## `instance_nic_macvlan_mode`
+
+This adds a `mode` configuration key on `macvlan` network interfaces which allows for configuring the Macvlan mode.
+
+## `storage_lvm_cluster_create`
+
+Allow for creating new LVM cluster pools by setting the `source` to the shared block device.
+
+## `network_ovn_external_interfaces`
+
+This adds support for `bridge.external_interfaces` on OVN networks.
+
+## `instances_scriptlet_get_instances_count`
+
+This allows the instance scriptlet to fetch the count instances given an optional Project or Location filter as well as including pending instances.
+
+## `cluster_rebalance`
+
+This adds automatic live-migration to balance load on cluster again.
+
+As part of this, the following configuration options have been added:
+
+* `cluster.rebalance.batch`
+* `cluster.rebalance.cooldown`
+* `cluster.rebalance.interval`
+* `cluster.rebalance.threshold`
+
+## `custom_volume_refresh_exclude_older_snapshots`
+
+This adds support for excluding source snapshots earlier than latest target snapshot.
+
+## `storage_initial_owner`
+
+This adds ability to set the initial owner of a custom volume.
+
+The following configuration options have been added:
+
+* `initial.gid`
+* `initial.mode`
+* `initial.uid`
+
+## `storage_live_migration`
+
+This adds support for virtual-machines live-migration between storage pools.
+
+## `instance_console_screenshot`
+
+This adds support to take screenshots of the current VGA console of a VM.
+
+## `image_import_alias`
+
+Adds a new `X-Incus-aliases` HTTP header to set aliases while uploading an image.
+
+## `authorization_scriptlet`
+
+This adds the ability to define a scriptlet in a new configuration key, `authorization.scriptlet`, managing authorization on the Incus cluster.
+
+## `console_force`
+
+This adds support for forcing a connection to the console, even if there is already an active session.
+It introduces the new `--force` flag for connecting to the instance console.
+
+## `network_ovn_state_addresses`
+
+This adds extra fields to the OVN network state struct for the IPv4 and IPv6 addresses used on the uplink.
+
+## `qemu_scriptlet_config`
+
+This extends the QEMU scriptlet feature by allowing to modify QEMU configuration before a VM starts, and passing information about the instance to the scriptlet.
+
+## `network_bridge_acl_devices`
+
+This adds support for device ACLs when attached to a bridged network.
+
+## `instance_debug_memory`
+
+Add new memory dump API at `/1.0/instances/NAME/debug/memory`.
+
+## `init_preseed_storage_volumes`
+
+This API extension provides the ability to configure storage volumes in preseed init.
+
+## `init_preseed_profile_project`
+
+This API extension provides the ability to specify the project as part of profile definitions in preseed init.
+
+## `instance_nic_routed_host_address`
+
+Adds support for specifying the VRF to add the routes to.
+
+## `instance_smbios11`
+
+A new category of configuration options, `smbios11.XYZ` has been added
+which allows passing key/value pairs through `SMBIOS Type 11` on systems that
+support it.
+
+## `api_filtering_extended`
+
+This extends the API filtering mechanism to all API collections.
+
+## `acme_dns01`
+
+Adds support for `DNS-01` challenge to the Incus ACME support for certificate generation.
+
+## `security_iommu`
+
+Introduce a new `security.iommu` configuration key to control whether to
+enable IOMMU emulation. This is done through `virtio_iommu` on Linux and the emulated Intel IOMMU on Windows.
+
+## `network_ipv4_dhcp_routes`
+
+Introduces a new `ipv4.dhcp.routes` configuration option on bridged and OVN networks.
+This allows specifying pairs of CIDR networks and gateway address to be announced by the DHCP server.
+
+## `network_state_ovn_ls`
+
+Adds a new `LogicalSwitch` field to the `NetworkStateOVN` struct which is part of the `GET /1.0/networks/NAME/state` API.
+
+This is used to get the OVN logical switch name.
+
+## `network_dns_nameservers`
+
+Introduces the `dns.nameservers` configuration option on bridged and OVN networks.
+This allows specifying IPv4 and IPv6 DNS server addresses to be announced by the DHCP server and via Router Advertisements.
+
+## `acme_http01_port`
+
+Adds `acme.http.port` to control an alternative HTTP port for `HTTP-01` validation.
+
+## `network_ovn_ipv4_dhcp_expiry`
+
+Introduces `ipv4.dhcp.expiry` for OVN networks.
+
+## `instance_state_cpu_time`
+
+This adds an `allocated_time` field below `CPU` in the instance state API.
+
+## `network_io_bus`
+
+This introduces a new `io.bus` property for compatible network devices allowing to choose between `virtio` (default) and `usb`.
+
+## `disk_io_bus_usb`
+
+Adds a new `usb` value for `io.bus` on `disk` devices.

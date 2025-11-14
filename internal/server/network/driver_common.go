@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -10,9 +11,10 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
 	"github.com/lxc/incus/v6/internal/iprange"
+	"github.com/lxc/incus/v6/internal/server/bgp"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	"github.com/lxc/incus/v6/internal/server/cluster/request"
 	"github.com/lxc/incus/v6/internal/server/db"
@@ -135,7 +137,7 @@ func (n *common) validate(config map[string]string, driverRules map[string]func(
 
 	// Run the validator against each field.
 	for k, validator := range rules {
-		checkedFields[k] = struct{}{} //Mark field as checked.
+		checkedFields[k] = struct{}{} // Mark field as checked.
 		err := validator(config[k])
 		if err != nil {
 			return fmt.Errorf("Invalid value for network %q option %q: %w", n.name, k, err)
@@ -298,8 +300,21 @@ func (n *common) Locations() []string {
 	return locations
 }
 
-// IsUsed returns whether the network is used by any instances or profiles.
-func (n *common) IsUsed() (bool, error) {
+// IsUsed returns whether the network is in use by instances or by downstream networks.
+func (n *common) IsUsed(instanceOnly bool) (bool, error) {
+	if instanceOnly {
+		usedBy := 0
+		err := UsedByInstanceDevices(n.state, n.project, n.name, n.netType, func(inst db.InstanceArgs, nicName string, nicConfig map[string]string) error {
+			usedBy++
+			return nil
+		})
+		if err != nil {
+			return false, err
+		}
+
+		return usedBy > 0, nil
+	}
+
 	usedBy, err := UsedBy(n.state, n.project, n.id, n.name, n.netType, true)
 	if err != nil {
 		return false, err
@@ -624,31 +639,39 @@ func (n *common) bgpValidationRules(config map[string]string) (map[string]func(v
 
 // bgpSetup initializes BGP peers and prefixes.
 func (n *common) bgpSetup(oldConfig map[string]string) error {
+	currentPeers := n.bgpGetPeers(n.config)
+	oldPeers := n.bgpGetPeers(oldConfig)
+
+	// Don't set up BGP on non-OVN networks when no peers are configured.
+	if n.netType != "ovn" && len(currentPeers) == 0 {
+		if len(oldPeers) > 0 {
+			return n.bgpClear(oldConfig)
+		}
+
+		return nil
+	}
+
+	// Set up the peers.
 	err := n.bgpSetupPeers(oldConfig)
 	if err != nil {
 		return fmt.Errorf("Failed setting up BGP peers: %w", err)
 	}
 
+	// Export the prefixes.
 	err = n.bgpSetupPrefixes(oldConfig)
 	if err != nil {
 		return fmt.Errorf("Failed setting up BGP prefixes: %w", err)
 	}
 
-	// Refresh exported BGP prefixes on local member.
 	err = n.forwardBGPSetupPrefixes()
 	if err != nil {
 		return fmt.Errorf("Failed applying BGP prefixes for address forwards: %w", err)
 	}
 
-	err = n.loadBalancerBGPSetupPrefixes()
-	if err != nil {
-		return fmt.Errorf("Failed applying BGP prefixes for load balancers: %w", err)
-	}
-
 	return nil
 }
 
-// bgpClear initializes BGP peers and prefixes.
+// bgpClear clears BGP peers and prefixes.
 func (n *common) bgpClear(config map[string]string) error {
 	// Clear all peers.
 	err := n.bgpClearPeers(config)
@@ -678,7 +701,7 @@ func (n *common) bgpClearPeers(config map[string]string) error {
 		// Remove the peer.
 		fields := strings.Split(peer, ",")
 		err := n.state.BGP.RemovePeer(net.ParseIP(fields[0]))
-		if err != nil {
+		if err != nil && !errors.Is(err, bgp.ErrPeerNotFound) {
 			return err
 		}
 	}
@@ -1380,83 +1403,14 @@ func (n *common) LoadBalancerUpdate(listenAddress string, newLoadBalancer api.Ne
 	return ErrNotImplemented
 }
 
+// LoadBalancerState returns ErrNotImplemented for drivers that do not support load balancers..
+func (n *common) LoadBalancerState(loadBalancer api.NetworkLoadBalancer) (*api.NetworkLoadBalancerState, error) {
+	return nil, ErrNotImplemented
+}
+
 // LoadBalancerDelete returns ErrNotImplemented for drivers that do not support load balancers..
 func (n *common) LoadBalancerDelete(listenAddress string, clientType request.ClientType) error {
 	return ErrNotImplemented
-}
-
-// loadBalancerBGPSetupPrefixes exports external load balancer addresses as prefixes.
-func (n *common) loadBalancerBGPSetupPrefixes() error {
-	var listenAddresses map[int64]string
-
-	err := n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		var err error
-
-		// Retrieve network forwards before clearing existing prefixes, and separate them by IP family.
-		listenAddresses, err = tx.GetNetworkLoadBalancerListenAddresses(ctx, n.ID(), true)
-
-		return err
-	})
-	if err != nil {
-		return fmt.Errorf("Failed loading network forwards: %w", err)
-	}
-
-	listenAddressesByFamily := map[uint][]string{
-		4: make([]string, 0),
-		6: make([]string, 0),
-	}
-
-	for _, listenAddress := range listenAddresses {
-		if strings.Contains(listenAddress, ":") {
-			listenAddressesByFamily[6] = append(listenAddressesByFamily[6], listenAddress)
-		} else {
-			listenAddressesByFamily[4] = append(listenAddressesByFamily[4], listenAddress)
-		}
-	}
-
-	// Use load balancer specific owner string (different from the network prefixes) so that these can be
-	// reapplied independently of the network's own prefixes.
-	bgpOwner := fmt.Sprintf("network_%d_load_balancer", n.id)
-
-	// Clear existing address load balancer prefixes for network.
-	err = n.state.BGP.RemovePrefixByOwner(bgpOwner)
-	if err != nil {
-		return err
-	}
-
-	// Add the new prefixes.
-	for _, ipVersion := range []uint{4, 6} {
-		nextHopAddr := n.bgpNextHopAddress(ipVersion)
-		natEnabled := util.IsTrue(n.config[fmt.Sprintf("ipv%d.nat", ipVersion)])
-		_, netSubnet, _ := net.ParseCIDR(n.config[fmt.Sprintf("ipv%d.address", ipVersion)])
-
-		routeSubnetSize := 128
-		if ipVersion == 4 {
-			routeSubnetSize = 32
-		}
-
-		// Export external forward listen addresses.
-		for _, listenAddress := range listenAddressesByFamily[ipVersion] {
-			listenAddr := net.ParseIP(listenAddress)
-
-			// Don't export internal address forwards (those inside the NAT enabled network's subnet).
-			if natEnabled && netSubnet != nil && netSubnet.Contains(listenAddr) {
-				continue
-			}
-
-			_, ipRouteSubnet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", listenAddr.String(), routeSubnetSize))
-			if err != nil {
-				return err
-			}
-
-			err = n.state.BGP.AddPrefix(*ipRouteSubnet, nextHopAddr, bgpOwner)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
 }
 
 // Leases returns ErrNotImplemented for drivers that don't support address leases.

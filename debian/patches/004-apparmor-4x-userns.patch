@@ -1,0 +1,15 @@
+Description: Update apparmor profile for userns permission
+Author: Mathias Gibbens <gibmat@debian.org>
+Forwarded: https://github.com/lxc/lxc/issues/4529
+diff --git a/internal/server/apparmor/instance_lxc.profile.go b/internal/server/apparmor/instance_lxc.profile.go
+index 5c46e8af0..c140988d4 100644
+--- a/internal/server/apparmor/instance_lxc.profile.go
++++ b/internal/server/apparmor/instance_lxc.profile.go
+@@ -7,6 +7,7 @@ import (
+ var lxcProfileTpl = template.Must(template.New("lxcProfile").Parse(`#include <tunables/global>
+ profile "{{ .name }}" flags=(attach_disconnected,mediate_deleted) {
+   ### Base profile
++  userns,
+   capability,
+   dbus,
+   file,

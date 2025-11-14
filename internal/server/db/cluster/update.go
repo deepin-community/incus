@@ -332,7 +332,7 @@ UPDATE storage_pools_config
 	return nil
 }
 
-// updatefromV64 updates nodes_cluster_groups to include an ID field so that it works well with incus-generate.
+// updatefromV64 updates nodes_cluster_groups to include an ID field so that it works well with generate-database.
 func updateFromV64(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.Exec(`
 CREATE TABLE "nodes_cluster_groups_new" (
@@ -1745,7 +1745,6 @@ CREATE TABLE "nodes_config" (
     UNIQUE (node_id, key)
 );
 	`)
-
 	if err != nil {
 		return fmt.Errorf("Failed creating nodes_config table: %w", err)
 	}

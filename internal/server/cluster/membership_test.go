@@ -44,7 +44,7 @@ func TestBootstrap_UnmetPreconditions(t *testing.T) {
 				f.ClusterAddress("1.2.3.4:666")
 				f.RaftNode("5.6.7.8:666")
 				filename := filepath.Join(f.state.OS.VarDir, "cluster.crt")
-				_ = os.WriteFile(filename, []byte{}, 0644)
+				_ = os.WriteFile(filename, []byte{}, 0o644)
 			},
 			"Inconsistent state: found leftover cluster certificate",
 		},
@@ -138,10 +138,6 @@ func TestBootstrap(t *testing.T) {
 
 	// The cluster certificate is in place.
 	assert.True(t, util.PathExists(filepath.Join(state.OS.VarDir, "cluster.crt")))
-
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
-		return nil
-	}
 
 	// The dqlite driver is now exposed over the network.
 	for path, handler := range gateway.HandlerFuncs(nil, trustedCerts) {
@@ -297,12 +293,12 @@ func TestJoin(t *testing.T) {
 	altServerCert := localtls.TestingAltKeyPair()
 	trustedAltServerCert, _ := x509.ParseCertificate(altServerCert.KeyPair().Certificate[0])
 
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
+	trustedCerts := func() (map[certificate.Type]map[string]x509.Certificate, error) {
 		return map[certificate.Type]map[string]x509.Certificate{
 			certificate.TypeServer: {
 				altServerCert.Fingerprint(): *trustedAltServerCert,
 			},
-		}
+		}, nil
 	}
 
 	for path, handler := range targetGateway.HandlerFuncs(nil, trustedCerts) {

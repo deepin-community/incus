@@ -12,12 +12,12 @@ import (
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/locking"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
@@ -29,7 +29,7 @@ const lvmBlockVolSuffix = ".block"
 // lvmISOVolSuffix suffix used for iso content type volumes.
 const lvmISOVolSuffix = ".iso"
 
-// lvmSnapshotSeparator separator character used between volume name and snaphot name in logical volume names.
+// lvmSnapshotSeparator separator character used between volume name and snapshot name in logical volume names.
 const lvmSnapshotSeparator = "-"
 
 // lvmEscapedHyphen used to escape hyphens in volume names to avoid conflicts with lvmSnapshotSeparator.
@@ -37,6 +37,15 @@ const lvmEscapedHyphen = "--"
 
 // lvmThinpoolDefaultName is the default name for the thinpool volume.
 const lvmThinpoolDefaultName = "IncusThinPool"
+
+type lvmSourceType int
+
+const (
+	lvmSourceTypeUnknown lvmSourceType = iota
+	lvmSourceTypeDefault
+	lvmSourceTypePhysicalDevice
+	lvmSourceTypeVolumeGroup
+)
 
 // usesThinpool indicates whether the config specifies to use a thin pool or not.
 func (d *lvm) usesThinpool() bool {
@@ -397,6 +406,12 @@ func (d *lvm) createLogicalVolume(vgName, thinPoolName string, vol Volume, makeT
 		if err != nil {
 			return fmt.Errorf("Error making filesystem on LVM logical volume: %w", err)
 		}
+	} else if !d.usesThinpool() {
+		// Make sure we get an empty LV.
+		err := linux.ClearBlock(volDevPath, 0)
+		if err != nil {
+			return err
+		}
 	}
 
 	isRecent, err := d.lvmVersionIsAtLeast(lvmVersion, "2.02.99")
@@ -538,7 +553,7 @@ func (d *lvm) lvmFullVolumeName(volType VolumeType, contentType ContentType, vol
 	}
 
 	// Escape the volume name to a name suitable for using as a logical volume.
-	lvName := strings.Replace(strings.Replace(volName, "-", lvmEscapedHyphen, -1), internalInstance.SnapshotDelimiter, lvmSnapshotSeparator, -1)
+	lvName := strings.ReplaceAll(strings.ReplaceAll(volName, "-", lvmEscapedHyphen), internalInstance.SnapshotDelimiter, lvmSnapshotSeparator)
 
 	return fmt.Sprintf("%s_%s%s", volType, lvName, contentTypeSuffix)
 }
@@ -555,7 +570,17 @@ func (d *lvm) lvmDevPath(vgName string, volType VolumeType, contentType ContentT
 
 // resizeLogicalVolume resizes an LVM logical volume. This function does not resize any filesystem inside the LV.
 func (d *lvm) resizeLogicalVolume(lvPath string, sizeBytes int64) error {
-	_, err := subprocess.TryRunCommand("lvresize", "-L", fmt.Sprintf("%db", sizeBytes), "-f", lvPath)
+	isRecent, err := d.lvmVersionIsAtLeast(lvmVersion, "2.03.17")
+	if err != nil {
+		return fmt.Errorf("Error checking LVM version: %w", err)
+	}
+
+	args := []string{"-L", fmt.Sprintf("%db", sizeBytes), "-f", lvPath}
+	if isRecent {
+		args = append(args, "--fs=ignore")
+	}
+
+	_, err = subprocess.TryRunCommand("lvresize", args...)
 	if err != nil {
 		return err
 	}
@@ -732,7 +757,7 @@ func (d *lvm) thinPoolVolumeUsage(volDevPath string) (uint64, uint64, error) {
 		"--units", "b",
 		"--nosuffix",
 		"--separator", ",",
-		"-o", "lv_size,data_percent,metadata_percent",
+		"-o", "lv_size,data_percent",
 	}
 
 	out, err := subprocess.RunCommand("lvs", args...)
@@ -741,7 +766,7 @@ func (d *lvm) thinPoolVolumeUsage(volDevPath string) (uint64, uint64, error) {
 	}
 
 	parts := util.SplitNTrimSpace(out, ",", -1, true)
-	if len(parts) < 3 {
+	if len(parts) < 2 {
 		return 0, 0, fmt.Errorf("Unexpected output from lvs command")
 	}
 
@@ -762,17 +787,7 @@ func (d *lvm) thinPoolVolumeUsage(volDevPath string) (uint64, uint64, error) {
 		return 0, 0, fmt.Errorf("Failed parsing thin volume used percentage (%q): %w", parts[1], err)
 	}
 
-	metaPerc := float64(0)
-
-	// For thin volumes there is no meta data percentage. This is only for the thin pool volume itself.
-	if parts[2] != "" {
-		metaPerc, err = strconv.ParseFloat(parts[2], 64)
-		if err != nil {
-			return 0, 0, fmt.Errorf("Failed parsing thin pool meta used percentage (%q): %w", parts[2], err)
-		}
-	}
-
-	usedSize := uint64(float64(total) * ((dataPerc + metaPerc) / 100))
+	usedSize := uint64(float64(total) * (dataPerc / 100))
 
 	return totalSize, usedSize, nil
 }
@@ -806,7 +821,7 @@ func (d *lvm) parseLogicalVolumeSnapshot(parent Volume, lvmVolName string) strin
 	// named volume that just has escaped "-" characters in it.
 	if strings.HasPrefix(lvmVolName, snapPrefix) && !strings.HasPrefix(lvmVolName, badPrefix) {
 		// Remove volume name prefix (including snapshot delimiter) and unescape snapshot name.
-		return strings.Replace(strings.TrimPrefix(lvmVolName, snapPrefix), lvmEscapedHyphen, "-", -1)
+		return strings.ReplaceAll(strings.TrimPrefix(lvmVolName, snapPrefix), lvmEscapedHyphen, "-")
 	}
 
 	return ""
@@ -878,4 +893,19 @@ func (d *lvm) deactivateVolume(vol Volume) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// getSourceType determines the source type based on the config["source"] value.
+func (d *lvm) getSourceType() lvmSourceType {
+	defaultSource := loopFilePath(d.name)
+
+	if d.config["source"] == "" || d.config["source"] == defaultSource {
+		return lvmSourceTypeDefault
+	} else if filepath.IsAbs(d.config["source"]) {
+		return lvmSourceTypePhysicalDevice
+	} else if d.config["source"] != "" {
+		return lvmSourceTypeVolumeGroup
+	}
+
+	return lvmSourceTypeUnknown
 }

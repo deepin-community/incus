@@ -16,8 +16,8 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/lxc/incus/v6/client"
-	"github.com/lxc/incus/v6/internal/revert"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/internal/filter"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	clusterRequest "github.com/lxc/incus/v6/internal/server/cluster/request"
@@ -38,10 +38,11 @@ import (
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
-// Lock to prevent concurent networks creation.
+// Lock to prevent concurrent networks creation.
 var networkCreateLock sync.Mutex
 
 var networksCmd = APIEndpoint{
@@ -95,6 +96,11 @@ var networkStateCmd = APIEndpoint{
 //      description: Retrieve networks from all projects
 //      type: boolean
 //      example: true
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
 //  responses:
 //    "200":
 //      description: API endpoints
@@ -131,52 +137,58 @@ var networkStateCmd = APIEndpoint{
 
 // swagger:operation GET /1.0/networks?recursion=1 networks networks_get_recursion1
 //
-//	Get the networks
+//  Get the networks
 //
-//	Returns a list of networks (structs).
+//  Returns a list of networks (structs).
 //
-//	---
-//	produces:
-//	  - application/json
-//	parameters:
-//	  - in: query
-//	    name: project
-//	    description: Project name
-//	    type: string
-//	    example: default
-//	  - in: query
-//	    name: all-projects
-//	    description: Retrieve networks from all projects
-//	    type: boolean
-//	    example: true
-//	responses:
-//	  "200":
-//	    description: API endpoints
-//	    schema:
-//	      type: object
-//	      description: Sync response
-//	      properties:
-//	        type:
-//	          type: string
-//	          description: Response type
-//	          example: sync
-//	        status:
-//	          type: string
-//	          description: Status description
-//	          example: Success
-//	        status_code:
-//	          type: integer
-//	          description: Status code
-//	          example: 200
-//	        metadata:
-//	          type: array
-//	          description: List of networks
-//	          items:
-//	            $ref: "#/definitions/Network"
-//	  "403":
-//	    $ref: "#/responses/Forbidden"
-//	  "500":
-//	    $ref: "#/responses/InternalServerError"
+//  ---
+//  produces:
+//    - application/json
+//  parameters:
+//    - in: query
+//      name: project
+//      description: Project name
+//      type: string
+//      example: default
+//    - in: query
+//      name: all-projects
+//      description: Retrieve networks from all projects
+//      type: boolean
+//      example: true
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
+//  responses:
+//    "200":
+//      description: API endpoints
+//      schema:
+//        type: object
+//        description: Sync response
+//        properties:
+//          type:
+//            type: string
+//            description: Response type
+//            example: sync
+//          status:
+//            type: string
+//            description: Status description
+//            example: Success
+//          status_code:
+//            type: integer
+//            description: Status code
+//            example: 200
+//          metadata:
+//            type: array
+//            description: List of networks
+//            items:
+//              $ref: "#/definitions/Network"
+//    "403":
+//      $ref: "#/responses/Forbidden"
+//    "500":
+//      $ref: "#/responses/InternalServerError"
+
 func networksGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
@@ -186,6 +198,16 @@ func networksGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	recursion := localUtil.IsRecursionRequest(r)
+
+	// Parse filter value.
+	filterStr := r.FormValue("filter")
+	clauses, err := filter.Parse(filterStr, filter.QueryOperatorSet())
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid filter: %w", err))
+	}
+
+	mustLoadObjects := recursion || (clauses != nil && len(clauses.Clauses) > 0)
+
 	allProjects := util.IsTrue(r.FormValue("all-projects"))
 
 	var networkNames map[string][]string
@@ -239,32 +261,47 @@ func networksGet(d *Daemon, r *http.Request) response.Response {
 		return response.InternalError(err)
 	}
 
-	resultString := []string{}
-	resultMap := []api.Network{}
+	linkResults := make([]string, 0)
+	fullResults := make([]api.Network, 0)
 	for projectName, networks := range networkNames {
 		for _, networkName := range networks {
 			if !userHasPermission(auth.ObjectNetwork(projectName, networkName)) {
 				continue
 			}
 
-			if !recursion {
-				resultString = append(resultString, fmt.Sprintf("/%s/networks/%s", version.APIVersion, networkName))
-			} else {
+			if mustLoadObjects {
 				netInfo, err := doNetworkGet(s, r, s.ServerClustered, projectName, reqProject.Config, networkName)
 				if err != nil {
 					continue
 				}
 
-				resultMap = append(resultMap, netInfo)
+				if clauses != nil && len(clauses.Clauses) > 0 {
+					match, err := filter.Match(netInfo, *clauses)
+					if err != nil {
+						return response.SmartError(err)
+					}
+
+					if !match {
+						continue
+					}
+				}
+
+				fullResults = append(fullResults, netInfo)
+			} else {
+				if !project.NetworkAllowed(reqProject.Config, networkName, true) {
+					continue
+				}
 			}
+
+			linkResults = append(linkResults, fmt.Sprintf("/%s/networks/%s", version.APIVersion, networkName))
 		}
 	}
 
 	if !recursion {
-		return response.SyncResponse(true, resultString)
+		return response.SyncResponse(true, linkResults)
 	}
 
-	return response.SyncResponse(true, resultMap)
+	return response.SyncResponse(true, fullResults)
 }
 
 // swagger:operation POST /1.0/networks networks networks_post
@@ -438,7 +475,7 @@ func networksPost(d *Daemon, r *http.Request) response.Response {
 		})
 		if err != nil {
 			if err == db.ErrAlreadyDefined {
-				return response.BadRequest(fmt.Errorf("The network is already defined on member %q", targetNode))
+				return response.Conflict(fmt.Errorf("Network %q is already defined on member %q", req.Name, targetNode))
 			}
 
 			return response.SmartError(err)
@@ -532,7 +569,7 @@ func networksPost(d *Daemon, r *http.Request) response.Response {
 
 	// Non-clustered network creation.
 	if netInfo != nil {
-		return response.BadRequest(fmt.Errorf("The network already exists"))
+		return response.Conflict(fmt.Errorf("Network %q already exists", req.Name))
 	}
 
 	revert := revert.New()
@@ -711,10 +748,7 @@ func networksPostCluster(ctx context.Context, s *state.State, projectName string
 
 		// Clone the network config for this node so we don't modify it and potentially end up sending
 		// this node's config to another node.
-		nodeConfig := make(map[string]string, len(netConfig))
-		for k, v := range netConfig {
-			nodeConfig[k] = v
-		}
+		nodeConfig := util.CloneMap(netConfig)
 
 		// Merge node specific config items into global config.
 		for key, value := range nodeConfigs[server.Environment.ServerName] {
@@ -763,16 +797,25 @@ func doNetworksCreate(ctx context.Context, s *state.State, n network.Network, cl
 	revert := revert.New()
 	defer revert.Fail()
 
-	// Don't validate network config during pre-cluster-join phase, as if network has ACLs they won't exist
-	// in the local database yet. Once cluster join is completed, network will be restarted to give chance for
-	// ACL firewall config to be applied.
-	if clientType != clusterRequest.ClientTypeJoiner {
-		// Validate so that when run on a cluster node the full config (including node specific config)
-		// is checked.
-		err := n.Validate(n.Config())
-		if err != nil {
-			return err
+	validateConfig := n.Config()
+
+	// Skip the ACLs during validation on cluster join as those aren't yet available in the database.
+	if clientType == clusterRequest.ClientTypeJoiner {
+		validateConfig = map[string]string{}
+
+		for k, v := range n.Config() {
+			if k == "security.acls" || strings.HasPrefix(k, "security.acls.") {
+				continue
+			}
+
+			validateConfig[k] = v
 		}
+	}
+
+	// Validate so that when run on a cluster node the full config (including node specific config) is checked.
+	err := n.Validate(validateConfig)
+	if err != nil {
+		return err
 	}
 
 	if n.LocalStatus() == api.NetworkStatusCreated {
@@ -781,7 +824,7 @@ func doNetworksCreate(ctx context.Context, s *state.State, n network.Network, cl
 	}
 
 	// Run initial creation setup for the network driver.
-	err := n.Create(clientType)
+	err = n.Create(clientType)
 	if err != nil {
 		return err
 	}
@@ -1054,7 +1097,7 @@ func networkDelete(d *Daemon, r *http.Request) response.Response {
 	clusterNotification := isClusterNotification(r)
 	if !clusterNotification {
 		// Quick checks.
-		inUse, err := n.IsUsed()
+		inUse, err := n.IsUsed(false)
 		if err != nil {
 			return response.SmartError(err)
 		}
@@ -1153,7 +1196,7 @@ func networkPost(d *Daemon, r *http.Request) response.Response {
 	//        network having already been renamed in the database, which is
 	//        a chicken-and-egg problem for cluster notifications (the
 	//        serving node should typically do the database job, so the
-	//        network is not yet renamed inthe db when the notified node
+	//        network is not yet renamed in the db when the notified node
 	//        runs network.Start).
 	if s.ServerClustered {
 		return response.BadRequest(fmt.Errorf("Renaming clustered network not supported"))
@@ -1203,7 +1246,7 @@ func networkPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Check network isn't in use.
-	inUse, err := n.IsUsed()
+	inUse, err := n.IsUsed(false)
 	if err != nil {
 		return response.InternalError(fmt.Errorf("Failed checking network in use: %w", err))
 	}

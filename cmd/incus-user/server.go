@@ -3,18 +3,19 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/idmap"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	localtls "github.com/lxc/incus/v6/shared/tls"
 	"github.com/lxc/incus/v6/shared/util"
@@ -177,7 +178,7 @@ func serverSetupUser(uid uint32) error {
 	defer revert.Fail()
 
 	// Create certificate directory.
-	err = os.MkdirAll(userPath, 0700)
+	err = os.MkdirAll(userPath, 0o700)
 	if err != nil {
 		return fmt.Errorf("Failed to create user directory: %w", err)
 	}
@@ -238,7 +239,7 @@ func serverSetupUser(uid uint32) error {
 		network.Description = fmt.Sprintf("Network for user restricted project %s", projectName)
 
 		err = client.CreateNetwork(network)
-		if err != nil {
+		if err != nil && !api.StatusErrorCheck(err, http.StatusConflict) {
 			return fmt.Errorf("Failed to create network: %w", err)
 		}
 

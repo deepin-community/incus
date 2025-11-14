@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -17,7 +19,6 @@ import (
 	"github.com/lxc/incus/v6/internal/instancewriter"
 	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
@@ -25,6 +26,7 @@ import (
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/ioprogress"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
@@ -96,7 +98,7 @@ func (d *ceph) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Ope
 			// be restored in the future and a new cached image volume will be created instead.
 			if volSizeBytes != poolVolSizeBytes {
 				d.logger.Debug("Renaming deleted cached image volume so that regeneration is used", logger.Ctx{"fingerprint": vol.Name()})
-				randomVol := NewVolume(d, d.name, deletedVol.volType, deletedVol.contentType, strings.Replace(uuid.New().String(), "-", "", -1), deletedVol.config, deletedVol.poolConfig)
+				randomVol := NewVolume(d, d.name, deletedVol.volType, deletedVol.contentType, strings.ReplaceAll(uuid.New().String(), "-", ""), deletedVol.config, deletedVol.poolConfig)
 				err = renameVolume(d.getRBDVolumeName(deletedVol, "", true), d.getRBDVolumeName(randomVol, "", true))
 				if err != nil {
 					return err
@@ -522,7 +524,7 @@ func (d *ceph) CreateVolumeFromCopy(vol Volume, srcVol Volume, copySnapshots boo
 
 // CreateVolumeFromMigration creates a volume being sent via a migration.
 func (d *ceph) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, volTargetArgs localMigration.VolumeTargetArgs, preFiller *VolumeFiller, op *operations.Operation) error {
-	if volTargetArgs.ClusterMoveSourceName != "" {
+	if volTargetArgs.ClusterMoveSourceName != "" && volTargetArgs.StoragePool == "" {
 		err := vol.EnsureMountPath()
 		if err != nil {
 			return err
@@ -582,8 +584,8 @@ func (d *ceph) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, vo
 		}
 
 		// Transfer the snapshots.
-		for _, snapName := range volTargetArgs.Snapshots {
-			fullSnapshotName := d.getRBDVolumeName(vol, snapName, true)
+		for _, snapshot := range volTargetArgs.Snapshots {
+			fullSnapshotName := d.getRBDVolumeName(vol, snapshot.GetName(), true)
 			wrapper := localMigration.ProgressWriter(op, "fs_progress", fullSnapshotName)
 
 			err = d.receiveVolume(recvName, conn, wrapper)
@@ -591,7 +593,7 @@ func (d *ceph) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, vo
 				return err
 			}
 
-			snapVol, err := vol.NewSnapshot(snapName)
+			snapVol, err := vol.NewSnapshot(snapshot.GetName())
 			if err != nil {
 				return err
 			}
@@ -672,19 +674,19 @@ func (d *ceph) DeleteVolume(vol Volume, op *operations.Operation) error {
 			return err
 		}
 
-		hasDependendantSnapshots := false
+		hasDependentSnapshots := false
 
 		if hasReadonlySnapshot {
-			dependantSnapshots, err := d.rbdListSnapshotClones(vol, "readonly")
+			dependentSnapshots, err := d.rbdListSnapshotClones(vol, "readonly")
 			if err != nil && !response.IsNotFoundError(err) {
 				return err
 			}
 
-			hasDependendantSnapshots = len(dependantSnapshots) > 0
+			hasDependentSnapshots = len(dependentSnapshots) > 0
 		}
 
-		if hasDependendantSnapshots {
-			// If the image has dependant snapshots, then we just mark it as deleted, but don't
+		if hasDependentSnapshots {
+			// If the image has dependent snapshots, then we just mark it as deleted, but don't
 			// actually remove it yet.
 			err = d.rbdMarkVolumeDeleted(vol, vol.name)
 			if err != nil {
@@ -749,7 +751,7 @@ func (d *ceph) DeleteVolume(vol Volume, op *operations.Operation) error {
 		}
 
 		err = os.Remove(mountPath)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("Failed to remove '%s': %w", mountPath, err)
 		}
 	}
@@ -770,7 +772,6 @@ func (d *ceph) hasVolume(rbdVolumeName string) (bool, error) {
 		"info",
 		rbdVolumeName,
 	)
-
 	if err != nil {
 		runErr, ok := err.(subprocess.RunError)
 		if ok {
@@ -1006,7 +1007,7 @@ func (d *ceph) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, o
 			}
 
 			if inUse {
-				return ErrInUse // We don't allow online shrinking of filesytem volumes.
+				return ErrInUse // We don't allow online shrinking of filesystem volumes.
 			}
 
 			// Shrink filesystem first. Pass allowUnsafeResize to allow disabling of filesystem
@@ -1171,7 +1172,7 @@ func (d *ceph) ListVolumes() ([]Volume, error) {
 		return nil, fmt.Errorf("Failed getting volume list: %v: %w", strings.TrimSpace(string(errMsg)), err)
 	}
 
-	volList := make([]Volume, len(vols))
+	volList := make([]Volume, 0, len(vols))
 	for _, v := range vols {
 		volList = append(volList, v)
 	}
@@ -1351,7 +1352,7 @@ func (d *ceph) RenameVolume(vol Volume, newVolName string, op *operations.Operat
 
 // MigrateVolume sends a volume for migration.
 func (d *ceph) MigrateVolume(vol Volume, conn io.ReadWriteCloser, volSrcArgs *localMigration.VolumeSourceArgs, op *operations.Operation) error {
-	if volSrcArgs.ClusterMove {
+	if volSrcArgs.ClusterMove && !volSrcArgs.StorageMove {
 		return nil // When performing a cluster member move don't do anything on the source member.
 	}
 
@@ -1561,7 +1562,7 @@ func (d *ceph) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) er
 		}
 
 		err = os.Remove(mountPath)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("Failed to remove '%s': %w", mountPath, err)
 		}
 	}

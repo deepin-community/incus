@@ -1,0 +1,17 @@
+#!/bin/sh
+
+# Shutdown all containers before quitting incusd during shutdown or reboot
+# This may need a higher timeout for "sv force-stop /etc/service/*" in
+# "/etc/runit/1". Like this: "sv -w 30 force-stop /etc/service/*"
+case "$( runlevel )" in
+  'N 0')
+	echo "Runit: System shutdown. Shutting down containers..."
+	/usr/libexec/incus/incusd shutdown
+	;;
+  'N 6')
+	echo "Runit: System reboot. Shutting down containers..."
+	/usr/libexec/incus/incusd shutdown
+	;;
+esac
+
+exit 1

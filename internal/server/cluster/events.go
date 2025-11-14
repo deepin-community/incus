@@ -7,13 +7,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lxc/incus/v6/client"
-	"github.com/lxc/incus/v6/internal/revert"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/endpoints"
 	"github.com/lxc/incus/v6/internal/server/events"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	localtls "github.com/lxc/incus/v6/shared/tls"
 )
 
@@ -111,15 +111,17 @@ func (lc *eventListenerClient) SetEventMode(eventMode EventMode, eventHubPushCh 
 	}
 }
 
-var eventMode EventMode = EventModeFullMesh
-var eventHubAddresses []string
-var eventHubPushCh = make(chan api.Event, 10) // Buffer size to accommodate slow consumers before dropping events.
-var eventHubPushChTimeout = time.Duration(time.Second)
-var listeners = map[string]*eventListenerClient{}
-var listenersUnavailable = map[string]bool{}
-var listenersNotify = map[chan struct{}][]string{}
-var listenersLock sync.Mutex
-var listenersUpdateLock sync.Mutex
+var (
+	eventMode             = EventModeFullMesh
+	eventHubAddresses     []string
+	eventHubPushCh        = make(chan api.Event, 10) // Buffer size to accommodate slow consumers before dropping events.
+	eventHubPushChTimeout = time.Duration(time.Second)
+	listeners             = map[string]*eventListenerClient{}
+	listenersUnavailable  = map[string]bool{}
+	listenersNotify       = map[chan struct{}][]string{}
+	listenersLock         sync.Mutex
+	listenersUpdateLock   sync.Mutex
+)
 
 // ServerEventMode returns the event distribution mode that this local server is operating in.
 func ServerEventMode() EventMode {

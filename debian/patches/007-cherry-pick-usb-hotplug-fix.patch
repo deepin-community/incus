@@ -1,0 +1,40 @@
+From 5d6abd76d78f8fba991cef2271de17b65fc128db Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?St=C3=A9phane=20Graber?= <stgraber@stgraber.org>
+Date: Fri, 18 Apr 2025 01:53:01 -0400
+Subject: [PATCH] incusd/devices: Don't require a serial number for USB hotplug
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Closes #1944
+
+Signed-off-by: Stéphane Graber <stgraber@stgraber.org>
+---
+ cmd/incusd/devices.go | 7 +------
+ 1 file changed, 1 insertion(+), 6 deletions(-)
+
+diff --git a/cmd/incusd/devices.go b/cmd/incusd/devices.go
+index f8641b8a19a..62dff9f2638 100644
+--- a/cmd/incusd/devices.go
++++ b/cmd/incusd/devices.go
+@@ -150,11 +150,6 @@ func deviceNetlinkListener() (chan []string, chan device.USBEvent, chan device.U
+ 					continue
+ 				}
+ 
+-				serial, ok := props["SERIAL"]
+-				if !ok {
+-					continue
+-				}
+-
+ 				major, ok := props["MAJOR"]
+ 				if !ok {
+ 					continue
+@@ -192,7 +187,7 @@ func deviceNetlinkListener() (chan []string, chan device.USBEvent, chan device.U
+ 					 */
+ 					zeroPad(parts[0], 4),
+ 					zeroPad(parts[1], 4),
+-					serial,
++					props["SERIAL"],
+ 					major,
+ 					minor,
+ 					busnum,

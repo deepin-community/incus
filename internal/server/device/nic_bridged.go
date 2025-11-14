@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math/rand"
 	"net"
 	"net/http"
@@ -19,21 +21,24 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/mdlayher/netx/eui64"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/db/cluster"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/internal/server/dnsmasq"
 	"github.com/lxc/incus/v6/internal/server/dnsmasq/dhcpalloc"
+	firewallDrivers "github.com/lxc/incus/v6/internal/server/firewall/drivers"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
 	"github.com/lxc/incus/v6/internal/server/ip"
 	"github.com/lxc/incus/v6/internal/server/network"
+	"github.com/lxc/incus/v6/internal/server/network/acl"
+	"github.com/lxc/incus/v6/internal/server/project"
 	"github.com/lxc/incus/v6/internal/server/resources"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
@@ -87,8 +92,14 @@ func (d *nicBridged) validateConfig(instConf instance.ConfigReader) error {
 		"security.ipv4_filtering",
 		"security.ipv6_filtering",
 		"security.port_isolation",
+		"security.acls",
+		"security.acls.default.ingress.action",
+		"security.acls.default.egress.action",
+		"security.acls.default.ingress.logged",
+		"security.acls.default.egress.logged",
 		"boot.priority",
 		"vlan",
+		"io.bus",
 	}
 
 	// checkWithManagedNetwork validates the device's settings against the managed network.
@@ -284,6 +295,24 @@ func (d *nicBridged) validateConfig(instConf instance.ConfigReader) error {
 		}
 	}
 
+	// Check if security ACL(s) are configured.
+	if d.config["security.acls"] != "" {
+		if d.state.Firewall.String() != "nftables" {
+			return fmt.Errorf("Security ACLs are only supported when using nftables firewall")
+		}
+
+		// The NIC's network may be a non-default project, so lookup project and get network's project name.
+		networkProjectName, _, err := project.NetworkProject(d.state.DB.Cluster, instConf.Project().Name)
+		if err != nil {
+			return fmt.Errorf("Failed loading network project name: %w", err)
+		}
+
+		err = acl.Exists(d.state, networkProjectName, util.SplitNTrimSpace(d.config["security.acls"], ",", -1, true)...)
+		if err != nil {
+			return err
+		}
+	}
+
 	rules := nicValidationRules(requiredFields, optionalFields, instConf)
 
 	// Add bridge specific vlan validation.
@@ -443,7 +472,7 @@ func (d *nicBridged) UpdatableFields(oldDevice Type) []string {
 		return []string{}
 	}
 
-	return []string{"limits.ingress", "limits.egress", "limits.max", "limits.priority", "ipv4.routes", "ipv6.routes", "ipv4.routes.external", "ipv6.routes.external", "ipv4.address", "ipv6.address", "security.mac_filtering", "security.ipv4_filtering", "security.ipv6_filtering"}
+	return []string{"limits.ingress", "limits.egress", "limits.max", "limits.priority", "ipv4.routes", "ipv6.routes", "ipv4.routes.external", "ipv6.routes.external", "ipv4.address", "ipv6.address", "security.mac_filtering", "security.ipv4_filtering", "security.ipv6_filtering", "security.acls", "security.acls.default.egress.action", "security.acls.default.egress.logged", "security.acls.default.ingress.action", "security.acls.default.ingress.logged"}
 }
 
 // Add is run when a device is added to a non-snapshot instance whether or not the instance is running.
@@ -552,7 +581,7 @@ func (d *nicBridged) Start() (*deviceConfig.RunConfig, error) {
 	// Disable IPv6 on host-side veth interface (prevents host-side interface getting link-local address)
 	// which isn't needed because the host-side interface is connected to a bridge.
 	err = localUtil.SysctlSet(fmt.Sprintf("net/ipv6/conf/%s/disable_ipv6", saveData["host_name"]), "1")
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 
@@ -574,7 +603,7 @@ func (d *nicBridged) Start() (*deviceConfig.RunConfig, error) {
 
 	// Attempt to disable router advertisement acceptance.
 	err = localUtil.SysctlSet(fmt.Sprintf("net/ipv6/conf/%s/accept_ra", saveData["host_name"]), "0")
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 
@@ -653,6 +682,10 @@ func (d *nicBridged) Start() (*deviceConfig.RunConfig, error) {
 		{Key: "flags", Value: "up"},
 		{Key: "link", Value: peerName},
 		{Key: "hwaddr", Value: d.config["hwaddr"]},
+	}
+
+	if d.config["io.bus"] == "usb" {
+		runConf.UseUSBBus = true
 	}
 
 	if d.inst.Type() == instancetype.VM {
@@ -811,6 +844,12 @@ func (d *nicBridged) Stop() (*deviceConfig.RunConfig, error) {
 
 // postStop is run after the device is removed from the instance.
 func (d *nicBridged) postStop() error {
+	// Handle the case where validation fails but the device still must be removed.
+	bridgeName := d.config["parent"]
+	if bridgeName == "" && d.config["network"] != "" {
+		bridgeName = d.config["network"]
+	}
+
 	defer func() {
 		_ = d.volatileSet(map[string]string{
 			"host_name": "",
@@ -823,9 +862,9 @@ func (d *nicBridged) postStop() error {
 
 	if d.config["host_name"] != "" && network.InterfaceExists(d.config["host_name"]) {
 		// Detach host-side end of veth pair from bridge (required for openvswitch particularly).
-		err := network.DetachInterface(d.state, d.config["parent"], d.config["host_name"])
+		err := network.DetachInterface(d.state, bridgeName, d.config["host_name"])
 		if err != nil {
-			return fmt.Errorf("Failed to detach interface %q from %q: %w", d.config["host_name"], d.config["parent"], err)
+			return fmt.Errorf("Failed to detach interface %q from %q: %w", d.config["host_name"], bridgeName, err)
 		}
 
 		// Removing host-side end of veth pair will delete the peer end too.
@@ -841,9 +880,9 @@ func (d *nicBridged) postStop() error {
 	routes = append(routes, util.SplitNTrimSpace(d.config["ipv6.routes"], ",", -1, true)...)
 	routes = append(routes, util.SplitNTrimSpace(d.config["ipv4.routes.external"], ",", -1, true)...)
 	routes = append(routes, util.SplitNTrimSpace(d.config["ipv6.routes.external"], ",", -1, true)...)
-	networkNICRouteDelete(d.config["parent"], routes...)
+	networkNICRouteDelete(bridgeName, routes...)
 
-	if util.IsTrue(d.config["security.mac_filtering"]) || util.IsTrue(d.config["security.ipv4_filtering"]) || util.IsTrue(d.config["security.ipv6_filtering"]) {
+	if util.IsTrue(d.config["security.mac_filtering"]) || util.IsTrue(d.config["security.ipv4_filtering"]) || util.IsTrue(d.config["security.ipv6_filtering"]) || d.config["security.acls"] != "" {
 		d.removeFilters(d.config)
 	}
 
@@ -852,25 +891,31 @@ func (d *nicBridged) postStop() error {
 
 // Remove is run when the device is removed from the instance or the instance is deleted.
 func (d *nicBridged) Remove() error {
-	if d.config["parent"] != "" {
+	// Handle the case where validation fails but the device still must be removed.
+	bridgeName := d.config["parent"]
+	if bridgeName == "" && d.config["network"] != "" {
+		bridgeName = d.config["network"]
+	}
+
+	if bridgeName != "" {
 		dnsmasq.ConfigMutex.Lock()
 		defer dnsmasq.ConfigMutex.Unlock()
 
-		if network.InterfaceExists(d.config["parent"]) {
-			err := d.networkClearLease(d.inst.Name(), d.config["parent"], d.config["hwaddr"], clearLeaseAll)
+		if network.InterfaceExists(bridgeName) {
+			err := d.networkClearLease(d.inst.Name(), bridgeName, d.config["hwaddr"], clearLeaseAll)
 			if err != nil {
 				return fmt.Errorf("Failed clearing leases: %w", err)
 			}
 		}
 
 		// Remove dnsmasq config if it exists (doesn't return error if file is missing).
-		err := dnsmasq.RemoveStaticEntry(d.config["parent"], d.inst.Project().Name, d.inst.Name(), d.Name())
+		err := dnsmasq.RemoveStaticEntry(bridgeName, d.inst.Project().Name, d.inst.Name(), d.Name())
 		if err != nil {
 			return err
 		}
 
 		// Reload dnsmasq to apply new settings if dnsmasq is running.
-		err = dnsmasq.Kill(d.config["parent"], true)
+		err = dnsmasq.Kill(bridgeName, true)
 		if err != nil {
 			return err
 		}
@@ -907,7 +952,7 @@ func (d *nicBridged) rebuildDnsmasqEntry() error {
 	if (util.IsTrue(d.config["security.ipv4_filtering"]) && ipv4Address == "") || (util.IsTrue(d.config["security.ipv6_filtering"]) && ipv6Address == "") {
 		deviceStaticFileName := dnsmasq.StaticAllocationFileName(d.inst.Project().Name, d.inst.Name(), d.Name())
 		_, curIPv4, curIPv6, err := dnsmasq.DHCPStaticAllocation(d.config["parent"], deviceStaticFileName)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 
@@ -950,12 +995,12 @@ func (d *nicBridged) setupHostFilters(oldConfig deviceConfig.Device) (revert.Hoo
 	}
 
 	// Remove any old network filters if non-empty oldConfig supplied as part of update.
-	if oldConfig != nil && (util.IsTrue(oldConfig["security.mac_filtering"]) || util.IsTrue(oldConfig["security.ipv4_filtering"]) || util.IsTrue(oldConfig["security.ipv6_filtering"])) {
+	if oldConfig != nil && (util.IsTrue(oldConfig["security.mac_filtering"]) || util.IsTrue(oldConfig["security.ipv4_filtering"]) || util.IsTrue(oldConfig["security.ipv6_filtering"]) || oldConfig["security.acls"] != "") {
 		d.removeFilters(oldConfig)
 	}
 
 	// Setup network filters.
-	if util.IsTrue(d.config["security.mac_filtering"]) || util.IsTrue(d.config["security.ipv4_filtering"]) || util.IsTrue(d.config["security.ipv6_filtering"]) {
+	if util.IsTrue(d.config["security.mac_filtering"]) || util.IsTrue(d.config["security.ipv4_filtering"]) || util.IsTrue(d.config["security.ipv6_filtering"]) || d.config["security.acls"] != "" {
 		err := d.setFilters()
 		if err != nil {
 			return nil, err
@@ -1008,7 +1053,7 @@ func (d *nicBridged) removeFilters(m deviceConfig.Device) {
 	deviceStaticFileName := dnsmasq.StaticAllocationFileName(d.inst.Project().Name, d.inst.Name(), d.Name())
 	_, IPv4Alloc, IPv6Alloc, err := dnsmasq.DHCPStaticAllocation(m["parent"], deviceStaticFileName)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return
 		}
 
@@ -1045,7 +1090,7 @@ func (d *nicBridged) removeFilters(m deviceConfig.Device) {
 }
 
 // setFilters sets up any network level filters defined for the instance.
-// These are controlled by the security.mac_filtering, security.ipv4_Filtering and security.ipv6_filtering config keys.
+// These are controlled by the security.mac_filtering, security.ipv4_Filtering, security.ipv6_filtering and security.acls config keys.
 func (d *nicBridged) setFilters() (err error) {
 	if d.config["hwaddr"] == "" {
 		return fmt.Errorf("Failed to set network filters: require hwaddr defined")
@@ -1135,7 +1180,16 @@ func (d *nicBridged) setFilters() (err error) {
 		return err
 	}
 
-	err = d.state.Firewall.InstanceSetupBridgeFilter(d.inst.Project().Name, d.inst.Name(), d.name, d.config["parent"], d.config["host_name"], d.config["hwaddr"], IPv4Nets, IPv6Nets, d.network != nil)
+	var aclRules []firewallDrivers.ACLRule
+
+	if config["security.acls"] != "" {
+		aclRules, err = acl.FirewallACLRules(d.state, d.name, d.inst.Project().Name, d.config)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = d.state.Firewall.InstanceSetupBridgeFilter(d.inst.Project().Name, d.inst.Name(), d.name, d.config["parent"], d.config["host_name"], d.config["hwaddr"], IPv4Nets, IPv6Nets, d.network != nil, util.IsTrue(config["security.mac_filtering"]), aclRules)
 	if err != nil {
 		return err
 	}
@@ -1272,7 +1326,7 @@ func (d *nicBridged) networkClearLease(name string, network string, hwaddr strin
 
 				if dstIPv4 == nil {
 					logger.Warnf("Failed to release DHCPv4 lease for instance %q, IP %q, MAC %q, %v", name, srcIP, srcMAC, "No server address found")
-					continue // Cant send release packet if no dstIP found.
+					continue // Can't send release packet if no dstIP found.
 				}
 
 				err = d.networkDHCPv4Release(srcMAC, srcIP, dstIPv4)
@@ -1291,12 +1345,12 @@ func (d *nicBridged) networkClearLease(name string, network string, hwaddr strin
 
 				if dstIPv6 == nil {
 					logger.Warnf("Failed to release DHCPv6 lease for instance %q, IP %q, DUID %q, IAID %q: %q", name, srcIP, DUID, IAID, "No server address found")
-					continue // Cant send release packet if no dstIP found.
+					continue // Can't send release packet if no dstIP found.
 				}
 
 				if dstDUID == "" {
 					errs = append(errs, fmt.Errorf("Failed to release DHCPv6 lease for instance %q, IP %q, DUID %q, IAID %q: %s", name, srcIP, DUID, IAID, "No server DUID found"))
-					continue // Cant send release packet if no dstDUID found.
+					continue // Can't send release packet if no dstDUID found.
 				}
 
 				err = d.networkDHCPv6Release(DUID, IAID, srcIP, dstIPv6, dstDUID)
@@ -1337,7 +1391,7 @@ func (d *nicBridged) networkDHCPv4Release(srcMAC net.HardwareAddr, srcIP net.IP,
 
 	defer func() { _ = conn.Close() }()
 
-	//Random DHCP transaction ID
+	// Random DHCP transaction ID
 	xid := rand.Uint32()
 
 	// Construct a DHCP packet pretending to be from the source IP and MAC supplied.
@@ -1394,13 +1448,13 @@ func (d *nicBridged) networkDHCPv6Release(srcDUID string, srcIAID string, srcIP 
 	}
 
 	// Convert Server DUID from string to byte array
-	dstDUIDRaw, err := hex.DecodeString(strings.Replace(dstDUID, ":", "", -1))
+	dstDUIDRaw, err := hex.DecodeString(strings.ReplaceAll(dstDUID, ":", ""))
 	if err != nil {
 		return err
 	}
 
 	// Convert DUID from string to byte array
-	srcDUIDRaw, err := hex.DecodeString(strings.Replace(srcDUID, ":", "", -1))
+	srcDUIDRaw, err := hex.DecodeString(strings.ReplaceAll(srcDUID, ":", ""))
 	if err != nil {
 		return err
 	}

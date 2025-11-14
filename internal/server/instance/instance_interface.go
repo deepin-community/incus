@@ -83,6 +83,8 @@ type Instance interface {
 	Restart(timeout time.Duration) error
 	Rebuild(img *api.Image, op *operations.Operation) error
 	Unfreeze() error
+
+	ReloadDevice(devName string) error
 	RegisterDevices()
 
 	Info() Info
@@ -100,7 +102,7 @@ type Instance interface {
 	Update(newConfig db.InstanceArgs, userRequested bool) error
 
 	Delete(force bool) error
-	Export(w io.Writer, properties map[string]string, expiration time.Time, tracker *ioprogress.ProgressTracker) (api.ImageMetadata, error)
+	Export(w io.Writer, properties map[string]string, expiration time.Time, tracker *ioprogress.ProgressTracker) (*api.ImageMetadata, error)
 
 	// Live configuration.
 	CGroup() (*cgroup.CGroup, error)
@@ -142,6 +144,8 @@ type Instance interface {
 	State() string
 	ExpiryDate() time.Time
 	FillNetworkDevice(name string, m deviceConfig.Device) (deviceConfig.Device, error)
+
+	ETag() []any
 
 	// Paths.
 	Path() string
@@ -190,6 +194,9 @@ type VM interface {
 	Instance
 
 	AgentCertificate() *x509.Certificate
+	ConsoleLog() (string, error)
+	ConsoleScreenshot(screenshotFile *os.File) error
+	DumpGuestMemory(w *os.File, format string) error
 }
 
 // CriuMigrationArgs arguments for CRIU migration.
@@ -224,6 +231,7 @@ type MigrateArgs struct {
 	Live                  bool
 	Disconnect            func()
 	ClusterMoveSourceName string // Will be empty if not a cluster move, othwise indicates the source instance.
+	StoragePool           string
 }
 
 // MigrateSendArgs represent arguments for instance migration send.
@@ -237,6 +245,7 @@ type MigrateSendArgs struct {
 type MigrateReceiveArgs struct {
 	MigrateArgs
 
-	InstanceOperation *operationlock.InstanceOperation
-	Refresh           bool
+	InstanceOperation   *operationlock.InstanceOperation
+	Refresh             bool
+	RefreshExcludeOlder bool
 }

@@ -19,12 +19,15 @@ import (
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/cancel"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/util"
 )
 
 var debug bool
 
-var operationsLock sync.Mutex
-var operations = make(map[string]*Operation)
+var (
+	operationsLock sync.Mutex
+	operations     = make(map[string]*Operation)
+)
 
 // OperationClass represents the OperationClass type.
 type OperationClass int
@@ -66,12 +69,7 @@ func Clone() map[string]*Operation {
 	operationsLock.Lock()
 	defer operationsLock.Unlock()
 
-	localOperations := make(map[string]*Operation, len(operations))
-	for k, v := range operations {
-		localOperations[k] = v
-	}
-
-	return localOperations
+	return util.CloneMap(operations)
 }
 
 // OperationGetInternal returns the operation with the given id. It returns an
@@ -117,7 +115,7 @@ type Operation struct {
 	// Indicates if operation has finished.
 	finished *cancel.Canceller
 
-	// Locking for concurent access to the Operation
+	// Locking for concurrent access to the Operation
 	lock sync.Mutex
 
 	state  *state.State

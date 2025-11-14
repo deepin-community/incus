@@ -168,6 +168,8 @@ type InstanceServer interface {
 	CreateInstanceTemplateFile(instanceName string, templateName string, content io.ReadSeeker) (err error)
 	DeleteInstanceTemplateFile(name string, templateName string) (err error)
 
+	GetInstanceDebugMemory(name string, format string) (rc io.ReadCloser, err error)
+
 	// Event handling functions
 	GetEvents() (listener *EventListener, err error)
 	GetEventsAllProjects() (listener *EventListener, err error)
@@ -215,6 +217,7 @@ type InstanceServer interface {
 	CreateNetworkLoadBalancer(networkName string, forward api.NetworkLoadBalancersPost) error
 	UpdateNetworkLoadBalancer(networkName string, listenAddress string, forward api.NetworkLoadBalancerPut, ETag string) (err error)
 	DeleteNetworkLoadBalancer(networkName string, listenAddress string) (err error)
+	GetNetworkLoadBalancerState(networkName string, listenAddress string) (lbState *api.NetworkLoadBalancerState, err error)
 
 	// Network peer functions ("network_peer" API extension)
 	GetNetworkPeerNames(networkName string) ([]string, error)
@@ -521,6 +524,9 @@ type StoragePoolVolumeCopyArgs struct {
 
 	// API extension: custom_volume_refresh
 	Refresh bool
+
+	// API extension: custom_volume_refresh_exclude_older_snapshots
+	RefreshExcludeOlder bool
 }
 
 // The StoragePoolVolumeMoveArgs struct is used to pass additional options
@@ -572,6 +578,9 @@ type InstanceCopyArgs struct {
 	// Perform an incremental copy
 	Refresh bool
 
+	// API extension: custom_volume_refresh_exclude_older_snapshots
+	RefreshExcludeOlder bool
+
 	// API extension: instance_allow_inconsistent_copy
 	AllowInconsistent bool
 }
@@ -604,8 +613,7 @@ type InstanceConsoleArgs struct {
 
 // The InstanceConsoleLogArgs struct is used to pass additional options during a
 // instance console log request.
-type InstanceConsoleLogArgs struct {
-}
+type InstanceConsoleLogArgs struct{}
 
 // The InstanceExecArgs struct is used to pass additional options during instance exec.
 type InstanceExecArgs struct {

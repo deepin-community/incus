@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -39,7 +41,7 @@ func (c *cmdRemove) remove(path string) error {
 	}
 
 	err := os.Remove(path)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 
@@ -97,7 +99,7 @@ func (c *cmdRemove) Run(cmd *cobra.Command, args []string) error {
 				} else if metaEntry.CombinedSha256SquashFs == image.Fingerprint {
 					// Deleting a container image.
 					err = c.remove(version.Items["squashfs"].Path)
-					if err != nil && !os.IsNotExist(err) {
+					if err != nil && !errors.Is(err, fs.ErrNotExist) {
 						return err
 					}
 
@@ -152,7 +154,7 @@ func (c *cmdRemove) Run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	err = os.WriteFile("streams/v1/images.json", body, 0644)
+	err = os.WriteFile("streams/v1/images.json", body, 0o644)
 	if err != nil {
 		return err
 	}

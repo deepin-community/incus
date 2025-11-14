@@ -12,13 +12,13 @@ import (
 	"github.com/lxc/incus/v6/internal/instancewriter"
 	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	"github.com/lxc/incus/v6/internal/server/project"
 	"github.com/lxc/incus/v6/internal/server/state"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -67,7 +67,7 @@ func (d *common) validatePool(config map[string]string, driverRules map[string]f
 
 	// Run the validator against each field.
 	for k, validator := range rules {
-		checkedFields[k] = struct{}{} //Mark field as checked.
+		checkedFields[k] = struct{}{} // Mark field as checked.
 		err := validator(config[k])
 		if err != nil {
 			return fmt.Errorf("Invalid value for option %q: %w", k, err)
@@ -94,7 +94,7 @@ func (d *common) validatePool(config map[string]string, driverRules map[string]f
 
 // fillVolumeConfig populates volume config with defaults from pool.
 // excludeKeys allow exclude some keys from copying to volume config.
-// Sometimes that can be useful when copying is dependant from specific conditions
+// Sometimes that can be useful when copying is dependent from specific conditions
 // and shouldn't be done in generic way.
 func (d *common) fillVolumeConfig(vol *Volume, excludedKeys ...string) error {
 	for k := range d.config {
@@ -161,7 +161,7 @@ func (d *common) validateVolume(vol Volume, driverRules map[string]func(value st
 
 	// Run the validator against each field.
 	for k, validator := range rules {
-		checkedFields[k] = struct{}{} //Mark field as checked.
+		checkedFields[k] = struct{}{} // Mark field as checked.
 		err := validator(vol.config[k])
 		if err != nil {
 			return fmt.Errorf("Invalid value for volume %q option %q: %w", vol.name, k, err)
@@ -202,7 +202,7 @@ func (d *common) validateVolume(vol Volume, driverRules map[string]func(value st
 
 // MigrationType returns the type of transfer methods to be used when doing migrations between pools
 // in preference order.
-func (d *common) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool) []localMigration.Type {
+func (d *common) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool, clusterMove bool, storageMove bool) []localMigration.Type {
 	var transportType migration.MigrationFSType
 	var rsyncFeatures []string
 
@@ -240,12 +240,7 @@ func (d *common) Logger() logger.Logger {
 
 // Config returns the storage pool config (as a copy, so not modifiable).
 func (d *common) Config() map[string]string {
-	confCopy := make(map[string]string, len(d.config))
-	for k, v := range d.config {
-		confCopy[k] = v
-	}
-
-	return confCopy
+	return util.CloneMap(d.config)
 }
 
 // ApplyPatch looks for a suitable patch and runs it.
@@ -280,6 +275,26 @@ func (d *common) moveGPTAltHeader(devPath string) error {
 	if err != nil {
 		d.logger.Warn("Skipped moving GPT alternative header to end of disk as sgdisk command not found", logger.Ctx{"dev": devPath})
 		return nil
+	}
+
+	// Our images and VM drives use a 512 bytes sector size.
+	// If the underlying block device uses a different sector size, we
+	// need to fake the correct size through a loop device so sgdisk can
+	// correctly re-locate the partition tables.
+	if linux.IsBlockdevPath(devPath) {
+		blockSize, err := GetPhysicalBlockSize(devPath)
+		if err != nil {
+			return err
+		}
+
+		if blockSize != 512 {
+			devPath, err = loopDeviceSetupAlign(devPath)
+			if err != nil {
+				return err
+			}
+
+			defer func() { _ = loopDeviceAutoDetach(devPath) }()
+		}
 	}
 
 	_, err = subprocess.RunCommand(path, "--move-second-header", devPath)

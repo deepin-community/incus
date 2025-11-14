@@ -19,7 +19,7 @@ import (
 
 func (d *qemu) getQemuMetrics() (*metrics.MetricSet, error) {
 	// Connect to the monitor.
-	monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+	monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler(), d.QMPLogFilePath())
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func (d *qemu) getQemuMemoryMetrics(monitor *qmp.Monitor) (metrics.MemoryMetrics
 
 		// Extract the before last (value) and last (unit) fields
 		fields := strings.Split(line, "\t")
-		value := strings.Replace(fields[len(fields)-1], " ", "", -1)
+		value := strings.ReplaceAll(fields[len(fields)-1], " ", "")
 
 		// Feed the result to units.ParseByteSizeString to get an int value
 		valueBytes, err := units.ParseByteSizeString(value)

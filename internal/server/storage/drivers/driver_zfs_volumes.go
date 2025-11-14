@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,7 +23,6 @@ import (
 	"github.com/lxc/incus/v6/internal/instancewriter"
 	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
@@ -31,6 +31,7 @@ import (
 	"github.com/lxc/incus/v6/shared/archive"
 	"github.com/lxc/incus/v6/shared/ioprogress"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
@@ -129,6 +130,9 @@ func (d *zfs) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Oper
 					return err
 				}
 
+				// We now have a restored image, so setup revert.
+				revert.Add(func() { _ = d.DeleteVolume(vol, op) })
+
 				if vol.IsVMBlock() {
 					fsVol := vol.NewVMBlockFilesystemVolume()
 
@@ -136,6 +140,8 @@ func (d *zfs) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Oper
 					if err != nil {
 						return err
 					}
+
+					// No need to revert.add since we have already succeeded.
 				}
 
 				revert.Success()
@@ -144,15 +150,15 @@ func (d *zfs) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Oper
 		}
 	}
 
-	// After this point we'll have a volume, so setup revert.
-	revert.Add(func() { _ = d.DeleteVolume(vol, op) })
-
 	if vol.contentType == ContentTypeFS && !d.isBlockBacked(vol) {
 		// Create the filesystem dataset.
 		err := d.createDataset(d.dataset(vol, false), "mountpoint=legacy", "canmount=noauto")
 		if err != nil {
 			return err
 		}
+
+		// After this point we have a filesystem, so setup revert.
+		revert.Add(func() { _ = d.DeleteVolume(vol, op) })
 
 		// Apply the size limit.
 		err = d.SetVolumeQuota(vol, vol.ConfigSize(), false, op)
@@ -224,6 +230,9 @@ func (d *zfs) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.Oper
 		if err != nil {
 			return err
 		}
+
+		// After this point we'll have a volume, so setup revert.
+		revert.Add(func() { _ = d.DeleteVolume(vol, op) })
 
 		if vol.contentType == ContentTypeFS {
 			// Wait up to 30 seconds for the device to appear.
@@ -938,7 +947,7 @@ func (d *zfs) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, vol
 		}
 
 		var respSnapshots []ZFSDataset
-		var syncSnapshotNames []string
+		var syncSnapshots []*migration.Snapshot
 
 		// Get the GUIDs of all target snapshots.
 		for _, snapVol := range snapshots {
@@ -964,7 +973,7 @@ func (d *zfs) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, vol
 			}
 
 			if !found {
-				syncSnapshotNames = append(syncSnapshotNames, srcSnapshot.Name)
+				syncSnapshots = append(syncSnapshots, &migration.Snapshot{Name: &srcSnapshot.Name})
 			}
 		}
 
@@ -991,10 +1000,10 @@ func (d *zfs) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, vol
 			respSnapshots = []ZFSDataset{}
 
 			// Let the source know that we need all snapshots.
-			syncSnapshotNames = []string{}
+			syncSnapshots = []*migration.Snapshot{}
 
 			for _, dataset := range migrationHeader.SnapshotDatasets {
-				syncSnapshotNames = append(syncSnapshotNames, dataset.Name)
+				syncSnapshots = append(syncSnapshots, &migration.Snapshot{Name: &dataset.Name})
 			}
 		} else {
 			// Delete local snapshots which exist on the target but not on the source.
@@ -1033,14 +1042,14 @@ func (d *zfs) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, vol
 			return fmt.Errorf("Failed sending ZFS migration header: %w", err)
 		}
 
-		err = conn.Close() //End the frame.
+		err = conn.Close() // End the frame.
 		if err != nil {
 			return fmt.Errorf("Failed closing ZFS migration header frame: %w", err)
 		}
 
 		// Don't pass the snapshots if it's volume only.
 		if !volumeOnly {
-			volTargetArgs.Snapshots = syncSnapshotNames
+			volTargetArgs.Snapshots = syncSnapshots
 		}
 	}
 
@@ -1089,8 +1098,8 @@ func (d *zfs) createVolumeFromMigrationOptimized(vol Volume, conn io.ReadWriteCl
 		}
 
 		// Transfer the snapshots.
-		for _, snapName := range volTargetArgs.Snapshots {
-			snapVol, err := vol.NewSnapshot(snapName)
+		for _, snapshot := range volTargetArgs.Snapshots {
+			snapVol, err := vol.NewSnapshot(snapshot.GetName())
 			if err != nil {
 				return err
 			}
@@ -1150,8 +1159,8 @@ func (d *zfs) createVolumeFromMigrationOptimized(vol Volume, conn io.ReadWriteCl
 		// Check if snapshot data set matches one of the requested snapshots in volTargetArgs.Snapshots.
 		// If so, then keep it, otherwise request it be removed.
 		entrySnapName := strings.TrimPrefix(dataSetName, dataSetSnapshotPrefix)
-		for _, snapName := range volTargetArgs.Snapshots {
-			if entrySnapName == snapName {
+		for _, snapshot := range volTargetArgs.Snapshots {
+			if entrySnapName == snapshot.GetName() {
 				return true // Keep snapshot data set if present in the requested snapshots list.
 			}
 		}
@@ -1533,13 +1542,13 @@ func (d *zfs) deleteVolume(vol Volume, op *operations.Operation) error {
 	if vol.contentType == ContentTypeFS {
 		// Delete the mountpoint if present.
 		err := os.Remove(vol.MountPath())
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("Failed to remove '%s': %w", vol.MountPath(), err)
 		}
 
 		// Delete the snapshot storage.
 		err = os.RemoveAll(GetVolumeSnapshotDir(d.name, vol.volType, vol.name))
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("Failed to remove '%s': %w", GetVolumeSnapshotDir(d.name, vol.volType, vol.name), err)
 		}
 	}
@@ -2042,7 +2051,7 @@ func (d *zfs) ListVolumes() ([]Volume, error) {
 		return nil, fmt.Errorf("Failed getting volume list: %v: %w", strings.TrimSpace(string(errMsg)), err)
 	}
 
-	volList := make([]Volume, len(vols))
+	volList := make([]Volume, 0, len(vols))
 	for _, v := range vols {
 		volList = append(volList, v)
 	}
@@ -2498,7 +2507,7 @@ func (d *zfs) MigrateVolume(vol Volume, conn io.ReadWriteCloser, volSrcArgs *loc
 			return fmt.Errorf("Failed sending ZFS migration header: %w", err)
 		}
 
-		err = conn.Close() //End the frame.
+		err = conn.Close() // End the frame.
 		if err != nil {
 			return fmt.Errorf("Failed closing ZFS migration header frame: %w", err)
 		}
@@ -2666,7 +2675,7 @@ func (d *zfs) readonlySnapshot(vol Volume) (string, revert.Hook, error) {
 		_ = os.RemoveAll(tmpDir)
 	})
 
-	err = os.Chmod(tmpDir, 0100)
+	err = os.Chmod(tmpDir, 0o100)
 	if err != nil {
 		return "", nil, err
 	}
@@ -2942,7 +2951,7 @@ func (d *zfs) DeleteVolumeSnapshot(vol Volume, op *operations.Operation) error {
 
 	// Delete the mountpoint.
 	err = os.Remove(vol.MountPath())
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed to remove '%s': %w", vol.MountPath(), err)
 	}
 

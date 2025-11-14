@@ -17,7 +17,6 @@ import (
 	"github.com/pkg/sftp"
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/lifecycle"
 	"github.com/lxc/incus/v6/internal/server/request"
@@ -25,6 +24,7 @@ import (
 	"github.com/lxc/incus/v6/internal/server/state"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 )
 
 func instanceFileHandler(d *Daemon, r *http.Request) response.Response {
@@ -539,7 +539,7 @@ func instanceFilePost(s *state.State, inst instance.Instance, path string, r *ht
 		// Set file permissions.
 		if mode < 0 {
 			// Default mode for directories (sftp doesn't know about umask).
-			mode = 0750
+			mode = 0o755
 		}
 
 		err = client.Chmod(path, fs.FileMode(mode))

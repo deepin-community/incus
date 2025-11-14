@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
@@ -84,7 +84,7 @@ func (d *tpm) Start() (*deviceConfig.RunConfig, error) {
 	tpmDevPath := filepath.Join(d.inst.Path(), fmt.Sprintf("tpm.%s", d.name))
 
 	if !util.PathExists(tpmDevPath) {
-		err := os.Mkdir(tpmDevPath, 0700)
+		err := os.Mkdir(tpmDevPath, 0o700)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to create device path %q: %w", tpmDevPath, err)
 		}
@@ -202,10 +202,15 @@ func (d *tpm) startVM() (*deviceConfig.RunConfig, error) {
 		},
 	}
 
-	proc, err := subprocess.NewProcess("swtpm", []string{"socket", "--tpm2", "--tpmstate", fmt.Sprintf("dir=%s", tpmDevPath), "--ctrl", fmt.Sprintf("type=unixio,path=%s", socketPath)}, "", "")
+	// Delete any leftover socket.
+	_ = os.Remove(socketPath)
+
+	proc, err := subprocess.NewProcess("swtpm", []string{"socket", "--tpm2", "--tpmstate", fmt.Sprintf("dir=%s", tpmDevPath), "--ctrl", fmt.Sprintf("type=unixio,path=swtpm-%s.sock", d.name)}, "", "")
 	if err != nil {
 		return nil, err
 	}
+
+	proc.Cwd = tpmDevPath
 
 	// Start the TPM emulator.
 	err = proc.Start(context.Background())
@@ -223,6 +228,21 @@ func (d *tpm) startVM() (*deviceConfig.RunConfig, error) {
 	err = proc.Save(pidPath)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to save swtpm state for device %q: %w", d.name, err)
+	}
+
+	// Wait for the socket to be available.
+	exists := false
+	for i := 0; i < 20; i++ {
+		if util.PathExists(socketPath) {
+			exists = true
+			break
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !exists {
+		return nil, fmt.Errorf("swtpm socket didn't appear within 2s")
 	}
 
 	revert.Success()

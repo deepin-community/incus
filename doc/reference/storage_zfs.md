@@ -39,7 +39,7 @@ Note that this method might have ramifications for restoring snapshots.
 See {ref}`storage-zfs-limitations` below.
 
 Incus automatically enables trimming support on all newly created pools on ZFS 0.8 or later.
-This increases the lifetime of SSDs by allowing better block re-use by the controller, and it also allows to free space on the root file system when using a loop-backed ZFS pool.
+This increases the lifetime of SSDs by allowing better block reuse by the controller, and it also allows to free space on the root file system when using a loop-backed ZFS pool.
 If you are running a ZFS version earlier than 0.8 and want to enable trimming, upgrade to at least version 0.8.
 Then use the following commands to make sure that trimming is automatically enabled for the ZFS pool in the future and trim all currently unused space:
 
@@ -109,6 +109,9 @@ Key                     | Type      | Condition                 | Default       
 :--                     | :---      | :--------                 | :------                                        | :----------
 `block.filesystem`      | string    | block-based volume with content type `filesystem` (`zfs.block_mode` enabled) | same as `volume.block.filesystem`              | {{block_filesystem}}
 `block.mount_options`   | string    | block-based volume with content type `filesystem` (`zfs.block_mode` enabled) | same as `volume.block.mount_options`           | Mount options for block-backed file system volumes
+`initial.gid`           | int       | custom volume with content type `filesystem`  | same as `volume.initial.uid` or `0`           | GID of the volume owner in the instance
+`initial.mode`          | int       | custom volume with content type `filesystem`  | same as `volume.initial.mode` or `711`        | Mode  of the volume in the instance
+`initial.uid`           | int       | custom volume with content type `filesystem`  | same as `volume.initial.gid` or `0`           | UID of the volume owner in the instance
 `security.shared`       | bool      | custom block volume       | same as `volume.security.shared` or `false`    | Enable sharing the volume across multiple instances
 `security.shifted`      | bool      | custom volume             | same as `volume.security.shifted` or `false`   | {{enable_ID_shifting}}
 `security.unmapped`     | bool      | custom volume             | same as `volume.security.unmapped` or `false`  | Disable ID mapping for the volume
@@ -116,7 +119,7 @@ Key                     | Type      | Condition                 | Default       
 `snapshots.expiry`      | string    | custom volume             | same as `volume.snapshots.expiry`              | {{snapshot_expiry_format}}
 `snapshots.pattern`     | string    | custom volume             | same as `volume.snapshots.pattern` or `snap%d` | {{snapshot_pattern_format}} [^*]
 `snapshots.schedule`    | string    | custom volume             | same as `snapshots.schedule`                   | {{snapshot_schedule_format}}
-`zfs.blocksize`         | string    |                           | same as `volume.zfs.blocksize`                 | Size of the ZFS block in range from 512 to 16 MiB (must be power of 2) - for block volume, a maximum value of 128 KiB will be used even if a higher value is set
+`zfs.blocksize`         | string    |                           | same as `volume.zfs.blocksize`                 | Size of the ZFS block in range from 512 bytes to 16 MiB (must be power of 2) - for block volume, a maximum value of 128 KiB will be used even if a higher value is set
 `zfs.block_mode`        | bool      |                           | same as `volume.zfs.block_mode`                | Whether to use a formatted `zvol` rather than a {spellexception}`dataset` (`zfs.block_mode` can be set only for custom storage volumes; use `volume.zfs.block_mode` to enable ZFS block mode for all storage volumes in the pool, including instance volumes)
 `zfs.delegate`          | bool      | ZFS 2.2 or higher         | same as `volume.zfs.delegate`                  | Controls whether to delegate the ZFS dataset and anything underneath it to the container(s) using it. Allows the use of the `zfs` command in the container.
 `zfs.remove_snapshots`  | bool      |                           | same as `volume.zfs.remove_snapshots` or `false` | Remove snapshots as needed

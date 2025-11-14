@@ -2,8 +2,10 @@ package drivers
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"os/exec"
@@ -13,13 +15,13 @@ import (
 
 	"github.com/lxc/incus/v6/internal/instancewriter"
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/rsync"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	"github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
@@ -160,7 +162,7 @@ func (d *lvm) CreateVolumeFromCopy(vol Volume, srcVol Volume, copySnapshots bool
 
 // CreateVolumeFromMigration creates a volume being sent via a migration.
 func (d *lvm) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, volTargetArgs migration.VolumeTargetArgs, preFiller *VolumeFiller, op *operations.Operation) error {
-	if d.clustered && volTargetArgs.ClusterMoveSourceName != "" {
+	if d.clustered && volTargetArgs.ClusterMoveSourceName != "" && volTargetArgs.StoragePool == "" {
 		err := vol.EnsureMountPath()
 		if err != nil {
 			return err
@@ -227,7 +229,7 @@ func (d *lvm) DeleteVolume(vol Volume, op *operations.Operation) error {
 		// Remove the volume from the storage device.
 		mountPath := vol.MountPath()
 		err = os.RemoveAll(mountPath)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("Error removing LVM logical volume mount path %q: %w", mountPath, err)
 		}
 
@@ -454,7 +456,7 @@ func (d *lvm) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op
 			}
 
 			if inUse {
-				return ErrInUse // We don't allow online shrinking of filesytem volumes.
+				return ErrInUse // We don't allow online shrinking of filesystem volumes.
 			}
 
 			// Activate volume if needed.
@@ -552,6 +554,27 @@ func (d *lvm) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op
 			return err
 		}
 
+		// On thick pools, discard the blocks in the additional space when the volume is grown.
+		if !d.usesThinpool() && oldSizeBytes < sizeBytes {
+			// Activate the volume for discarding.
+			activated, err := d.activateVolume(vol)
+			if err != nil {
+				return err
+			}
+
+			if activated {
+				defer func() {
+					_, _ = d.deactivateVolume(vol)
+				}()
+			}
+
+			// Discard the new blocks.
+			err = linux.ClearBlock(volDevPath, oldSizeBytes)
+			if err != nil {
+				return err
+			}
+		}
+
 		// Move the VM GPT alt header to end of disk if needed (not needed in unsafe resize mode as it is
 		// expected the caller will do all necessary post resize actions themselves).
 		if vol.IsVMBlock() && !allowUnsafeResize {
@@ -567,6 +590,7 @@ func (d *lvm) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op
 				}()
 			}
 
+			// Move the GPT alt header.
 			err = d.moveGPTAltHeader(volDevPath)
 			if err != nil {
 				return err
@@ -642,7 +666,7 @@ func (d *lvm) ListVolumes() ([]Volume, error) {
 
 		// Unescape raw LVM name to storage volume name. Safe to do now we know we are not dealing
 		// with snapshot volumes.
-		volName = strings.Replace(volName, lvmEscapedHyphen, "-", -1)
+		volName = strings.ReplaceAll(volName, lvmEscapedHyphen, "-")
 
 		contentType := ContentTypeFS
 		if volType == VolumeTypeCustom && strings.HasSuffix(volName, lvmISOVolSuffix) {
@@ -682,7 +706,7 @@ func (d *lvm) ListVolumes() ([]Volume, error) {
 		return nil, fmt.Errorf("Failed getting volume list: %v: %w", strings.TrimSpace(string(errMsg)), err)
 	}
 
-	volList := make([]Volume, len(vols))
+	volList := make([]Volume, 0, len(vols))
 	for _, v := range vols {
 		volList = append(volList, v)
 	}
@@ -901,7 +925,7 @@ func (d *lvm) RenameVolume(vol Volume, newVolName string, op *operations.Operati
 
 // MigrateVolume sends a volume for migration.
 func (d *lvm) MigrateVolume(vol Volume, conn io.ReadWriteCloser, volSrcArgs *migration.VolumeSourceArgs, op *operations.Operation) error {
-	if d.clustered && volSrcArgs.ClusterMove {
+	if d.clustered && volSrcArgs.ClusterMove && !volSrcArgs.StorageMove {
 		// Ensure the volume allows shared access.
 		if vol.volType == VolumeTypeVM || vol.IsCustomBlock() {
 			// Block volume.
@@ -1021,7 +1045,7 @@ func (d *lvm) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) err
 	// Remove the snapshot mount path from the storage device.
 	snapPath := snapVol.MountPath()
 	err = os.RemoveAll(snapPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Error removing LVM snapshot mount path %q: %w", snapPath, err)
 	}
 
@@ -1388,7 +1412,7 @@ func (d *lvm) RestoreVolume(vol Volume, snapshotName string, op *operations.Oper
 		err = snapVol.MountTask(func(srcMountPath string, op *operations.Operation) error {
 			if snapVol.IsVMBlock() || snapVol.contentType == ContentTypeFS {
 				bwlimit := d.config["rsync.bwlimit"]
-				d.Logger().Debug("Copying fileystem volume", logger.Ctx{"sourcePath": srcMountPath, "targetPath": mountPath, "bwlimit": bwlimit})
+				d.Logger().Debug("Copying filesystem volume", logger.Ctx{"sourcePath": srcMountPath, "targetPath": mountPath, "bwlimit": bwlimit})
 				_, err := rsync.LocalCopy(srcMountPath, mountPath, bwlimit, true)
 				if err != nil {
 					return err

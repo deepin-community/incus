@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -163,6 +165,13 @@ var instanceAccessCmd = APIEndpoint{
 	Get: APIEndpointAction{Handler: instanceAccess, AccessHandler: allowPermission(auth.ObjectTypeInstance, auth.EntitlementCanView, "name")},
 }
 
+var instanceDebugMemoryCmd = APIEndpoint{
+	Name: "instanceDebugMemory",
+	Path: "instances/{name}/debug/memory",
+
+	Get: APIEndpointAction{Handler: instanceDebugMemoryGet, AccessHandler: allowPermission(auth.ObjectTypeInstance, auth.EntitlementCanEdit, "name")},
+}
+
 type instanceAutostartList []instance.Instance
 
 func (slice instanceAutostartList) Len() int {
@@ -200,7 +209,7 @@ func instanceShouldAutoStart(inst instance.Instance) bool {
 
 func instancesStart(s *state.State, instances []instance.Instance) {
 	// Check if the cluster is currently evacuated.
-	if s.DB.Cluster.LocalNodeIsEvacuated() {
+	if s.ServerClustered && s.DB.Cluster.LocalNodeIsEvacuated() {
 		return
 	}
 
@@ -233,7 +242,7 @@ func instancesStart(s *state.State, instances []instance.Instance) {
 		instLogger := logger.AddContext(logger.Ctx{"project": inst.Project().Name, "instance": inst.Name()})
 
 		// Try to start the instance.
-		var attempt = 0
+		attempt := 0
 		for {
 			attempt++
 
@@ -326,12 +335,12 @@ func instancesOnDisk(s *state.State) ([]instance.Instance, error) {
 	instanceTypeNames := make(map[instancetype.Type][]os.DirEntry, 2)
 
 	instanceTypeNames[instancetype.Container], err = os.ReadDir(instancePaths[instancetype.Container])
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 
 	instanceTypeNames[instancetype.VM], err = os.ReadDir(instancePaths[instancetype.VM])
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 

@@ -2,7 +2,9 @@ package resources
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,10 +16,12 @@ import (
 	"github.com/lxc/incus/v6/shared/api"
 )
 
-var devDiskByPath = "/dev/disk/by-path"
-var devDiskByID = "/dev/disk/by-id"
-var runUdevData = "/run/udev/data"
-var sysClassBlock = "/sys/class/block"
+var (
+	devDiskByPath = "/dev/disk/by-path"
+	devDiskByID   = "/dev/disk/by-id"
+	runUdevData   = "/run/udev/data"
+	sysClassBlock = "/sys/class/block"
+)
 
 func storageAddDriveInfo(devicePath string, disk *api.ResourcesStorageDisk) error {
 	// Attempt to open the device path
@@ -165,7 +169,7 @@ func GetStorage() (*api.ResourcesStorage, error) {
 			// Device node
 			diskDev, err := os.ReadFile(filepath.Join(entryPath, "dev"))
 			if err != nil {
-				if os.IsNotExist(err) {
+				if errors.Is(err, fs.ErrNotExist) {
 					// This happens on multipath devices, just skip as we only care about the main node.
 					continue
 				}

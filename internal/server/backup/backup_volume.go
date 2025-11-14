@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/project"
 	"github.com/lxc/incus/v6/internal/server/state"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -71,7 +71,7 @@ func (b *VolumeBackup) Rename(newName string) error {
 
 	// Create the new backup path if doesn't exist.
 	if !util.PathExists(newParentBackupsPath) {
-		err := os.MkdirAll(newParentBackupsPath, 0700)
+		err := os.MkdirAll(newParentBackupsPath, 0o700)
 		if err != nil {
 			return err
 		}

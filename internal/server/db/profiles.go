@@ -61,7 +61,7 @@ func (c *ClusterTx) GetProfile(ctx context.Context, project, name string) (int64
 	profile := profiles[0]
 	id := int64(profile.ID)
 
-	result, err := profile.ToAPI(ctx, c.tx, nil)
+	result, err := profile.ToAPI(ctx, c.tx, nil, nil)
 	if err != nil {
 		return -1, nil, err
 	}
@@ -78,14 +78,20 @@ func (c *ClusterTx) GetProfiles(ctx context.Context, projectName string, profile
 		return nil, err
 	}
 
+	// Get all the profile configs.
+	profileConfigs, err := cluster.GetAllProfileConfigs(ctx, c.Tx())
+	if err != nil {
+		return nil, err
+	}
+
 	// Get all the profile devices.
-	profileDevices, err := cluster.GetDevices(ctx, c.Tx(), "profile")
+	profileDevices, err := cluster.GetAllProfileDevices(ctx, c.Tx())
 	if err != nil {
 		return nil, err
 	}
 
 	for i, profile := range dbProfiles {
-		apiProfile, err := profile.ToAPI(ctx, c.tx, profileDevices)
+		apiProfile, err := profile.ToAPI(ctx, c.tx, profileConfigs, profileDevices)
 		if err != nil {
 			return nil, err
 		}

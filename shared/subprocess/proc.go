@@ -27,6 +27,7 @@ type Process struct {
 	Name     string         `yaml:"name"`
 	Args     []string       `yaml:"args,flow"`
 	Apparmor string         `yaml:"apparmor"`
+	Cwd      string         `yaml:"cwd"`
 	PID      int64          `yaml:"pid"`
 	Stdin    io.ReadCloser  `yaml:"-"`
 	Stdout   io.WriteCloser `yaml:"-"`
@@ -153,6 +154,11 @@ func (p *Process) start(ctx context.Context, fds []*os.File) error {
 	cmd.Stderr = p.Stderr
 	cmd.Stdin = p.Stdin
 	cmd.SysProcAttr = p.SysProcAttr
+
+	if p.Cwd != "" {
+		cmd.Dir = p.Cwd
+	}
+
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
@@ -265,7 +271,7 @@ func (p *Process) Save(path string) error {
 		return fmt.Errorf("Unable to serialize process struct to YAML: %w", err)
 	}
 
-	err = os.WriteFile(path, dat, 0644)
+	err = os.WriteFile(path, dat, 0o644)
 	if err != nil {
 		return fmt.Errorf("Unable to write to file '%s': %w", path, err)
 	}
