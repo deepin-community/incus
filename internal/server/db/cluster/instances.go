@@ -15,40 +15,40 @@ import (
 
 // Code generation directives.
 //
-//go:generate -command mapper incus-generate db mapper -t instances.mapper.go
-//go:generate mapper reset -i -b "//go:build linux && cgo && !agent"
+//generate-database:mapper target instances.mapper.go
+//generate-database:mapper reset -i -b "//go:build linux && cgo && !agent"
 //
-//go:generate mapper stmt -e instance objects
-//go:generate mapper stmt -e instance objects-by-ID
-//go:generate mapper stmt -e instance objects-by-Project
-//go:generate mapper stmt -e instance objects-by-Project-and-Type
-//go:generate mapper stmt -e instance objects-by-Project-and-Type-and-Node
-//go:generate mapper stmt -e instance objects-by-Project-and-Type-and-Node-and-Name
-//go:generate mapper stmt -e instance objects-by-Project-and-Type-and-Name
-//go:generate mapper stmt -e instance objects-by-Project-and-Name
-//go:generate mapper stmt -e instance objects-by-Project-and-Name-and-Node
-//go:generate mapper stmt -e instance objects-by-Project-and-Node
-//go:generate mapper stmt -e instance objects-by-Type
-//go:generate mapper stmt -e instance objects-by-Type-and-Name
-//go:generate mapper stmt -e instance objects-by-Type-and-Name-and-Node
-//go:generate mapper stmt -e instance objects-by-Type-and-Node
-//go:generate mapper stmt -e instance objects-by-Node
-//go:generate mapper stmt -e instance objects-by-Node-and-Name
-//go:generate mapper stmt -e instance objects-by-Name
-//go:generate mapper stmt -e instance id
-//go:generate mapper stmt -e instance create
-//go:generate mapper stmt -e instance rename
-//go:generate mapper stmt -e instance delete-by-Project-and-Name
-//go:generate mapper stmt -e instance update
+//generate-database:mapper stmt -e instance objects
+//generate-database:mapper stmt -e instance objects-by-ID
+//generate-database:mapper stmt -e instance objects-by-Project
+//generate-database:mapper stmt -e instance objects-by-Project-and-Type
+//generate-database:mapper stmt -e instance objects-by-Project-and-Type-and-Node
+//generate-database:mapper stmt -e instance objects-by-Project-and-Type-and-Node-and-Name
+//generate-database:mapper stmt -e instance objects-by-Project-and-Type-and-Name
+//generate-database:mapper stmt -e instance objects-by-Project-and-Name
+//generate-database:mapper stmt -e instance objects-by-Project-and-Name-and-Node
+//generate-database:mapper stmt -e instance objects-by-Project-and-Node
+//generate-database:mapper stmt -e instance objects-by-Type
+//generate-database:mapper stmt -e instance objects-by-Type-and-Name
+//generate-database:mapper stmt -e instance objects-by-Type-and-Name-and-Node
+//generate-database:mapper stmt -e instance objects-by-Type-and-Node
+//generate-database:mapper stmt -e instance objects-by-Node
+//generate-database:mapper stmt -e instance objects-by-Node-and-Name
+//generate-database:mapper stmt -e instance objects-by-Name
+//generate-database:mapper stmt -e instance id
+//generate-database:mapper stmt -e instance create
+//generate-database:mapper stmt -e instance rename
+//generate-database:mapper stmt -e instance delete-by-Project-and-Name
+//generate-database:mapper stmt -e instance update
 //
-//go:generate mapper method -i -e instance GetMany references=Config,Device
-//go:generate mapper method -i -e instance GetOne
-//go:generate mapper method -i -e instance ID
-//go:generate mapper method -i -e instance Exists
-//go:generate mapper method -i -e instance Create references=Config,Device
-//go:generate mapper method -i -e instance Rename
-//go:generate mapper method -i -e instance DeleteOne-by-Project-and-Name
-//go:generate mapper method -i -e instance Update references=Config,Device
+//generate-database:mapper method -i -e instance GetMany references=Config,Device
+//generate-database:mapper method -i -e instance GetOne
+//generate-database:mapper method -i -e instance ID
+//generate-database:mapper method -i -e instance Exists
+//generate-database:mapper method -i -e instance Create references=Config,Device
+//generate-database:mapper method -i -e instance Rename
+//generate-database:mapper method -i -e instance DeleteOne-by-Project-and-Name
+//generate-database:mapper method -i -e instance Update references=Config,Device
 
 // Instance is a value object holding db-related details about an instance.
 type Instance struct {
@@ -77,14 +77,21 @@ type InstanceFilter struct {
 }
 
 // ToAPI converts the database Instance to API type.
-func (i *Instance) ToAPI(ctx context.Context, tx *sql.Tx, instanceDevices map[int][]Device, profileDevices map[int][]Device) (*api.Instance, error) {
+func (i *Instance) ToAPI(ctx context.Context, tx *sql.Tx, instanceDevices map[int][]Device, profileConfigs map[int]map[string]string, profileDevices map[int][]Device) (*api.Instance, error) {
 	profiles, err := GetInstanceProfiles(ctx, tx, i.ID)
 	if err != nil {
 		return nil, err
 	}
 
+	if profileConfigs == nil {
+		profileConfigs, err = GetAllProfileConfigs(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	if profileDevices == nil {
-		profileDevices, err = GetDevices(ctx, tx, "profile")
+		profileDevices, err = GetAllProfileDevices(ctx, tx)
 		if err != nil {
 			return nil, err
 		}
@@ -93,7 +100,7 @@ func (i *Instance) ToAPI(ctx context.Context, tx *sql.Tx, instanceDevices map[in
 	apiProfiles := make([]api.Profile, 0, len(profiles))
 	profileNames := make([]string, 0, len(profiles))
 	for _, p := range profiles {
-		apiProfile, err := p.ToAPI(ctx, tx, profileDevices)
+		apiProfile, err := p.ToAPI(ctx, tx, profileConfigs, profileDevices)
 		if err != nil {
 			return nil, err
 		}
@@ -150,4 +157,14 @@ func (i *Instance) ToAPI(ctx context.Context, tx *sql.Tx, instanceDevices map[in
 		Type:            i.Type.String(),
 		Project:         i.Project,
 	}, nil
+}
+
+// GetAllInstanceConfigs returns a map of all instance configurations, keyed by database ID.
+func GetAllInstanceConfigs(ctx context.Context, tx *sql.Tx) (map[int]map[string]string, error) {
+	return GetConfig(ctx, tx, "instances", "instance")
+}
+
+// GetAllInstanceDevices returns a map of all instance devices, keyed by database ID.
+func GetAllInstanceDevices(ctx context.Context, tx *sql.Tx) (map[int][]Device, error) {
+	return GetDevices(ctx, tx, "instances", "instance")
 }

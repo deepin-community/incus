@@ -30,10 +30,12 @@ import (
 	"github.com/lxc/incus/v6/shared/ws"
 )
 
-const execWSControl = -1
-const execWSStdin = 0
-const execWSStdout = 1
-const execWSStderr = 2
+const (
+	execWSControl = -1
+	execWSStdin   = 0
+	execWSStdout  = 1
+	execWSStderr  = 2
+)
 
 var execCmd = APIEndpoint{
 	Name: "exec",
@@ -360,7 +362,7 @@ func (s *execWs) Do(op *operations.Operation) error {
 	if err != nil {
 		exitStatus := -1
 
-		if errors.Is(err, exec.ErrNotFound) || os.IsNotExist(err) {
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 			exitStatus = 127
 		} else if errors.Is(err, fs.ErrPermission) {
 			exitStatus = 126

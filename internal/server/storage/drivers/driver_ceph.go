@@ -9,20 +9,22 @@ import (
 	"strings"
 
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
 
-var cephVersion string
-var cephLoaded bool
+var (
+	cephVersion string
+	cephLoaded  bool
+)
 
 type ceph struct {
 	common
@@ -392,7 +394,7 @@ func (d *ceph) GetResources() (*api.ResourcesStoragePool, error) {
 }
 
 // MigrationType returns the type of transfer methods to be used when doing migrations between pools in preference order.
-func (d *ceph) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool) []localMigration.Type {
+func (d *ceph) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool, clusterMove bool, storageMove bool) []localMigration.Type {
 	var rsyncFeatures []string
 
 	// Do not pass compression argument to rsync if the associated

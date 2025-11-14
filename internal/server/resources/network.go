@@ -1,7 +1,9 @@
 package resources
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -502,7 +504,6 @@ func GetNetworkState(name string) (*api.NetworkState, error) {
 
 	network := api.NetworkState{
 		Addresses: []api.NetworkStateAddress{},
-		Counters:  api.NetworkStateCounters{},
 		Hwaddr:    netIf.HardwareAddr.String(),
 		Mtu:       netIf.MTU,
 		State:     netState,
@@ -701,7 +702,7 @@ func GetNetworkState(name string) (*api.NetworkState, error) {
 		return nil, err
 	}
 
-	network.Counters = *counters
+	network.Counters = counters
 
 	return &network, nil
 }
@@ -713,7 +714,7 @@ func GetNetworkCounters(name string) (*api.NetworkStateCounters, error) {
 	// Get counters
 	content, err := os.ReadFile("/proc/net/dev")
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return &counters, nil
 		}
 

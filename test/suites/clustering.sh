@@ -318,10 +318,10 @@ test_clustering_membership() {
   # Set cluster token expiry to 30 seconds
   INCUS_DIR="${INCUS_ONE_DIR}" incus config set cluster.join_token_expiry=30S
 
-  # Generate a join token for an eigth and ninth node
+  # Generate a join token for an eighth and ninth node
   token_valid=$(INCUS_DIR="${INCUS_ONE_DIR}" incus cluster add node8 --quiet)
 
-  # Spawn an eigth node, using join token.
+  # Spawn an eighth node, using join token.
   setup_clustering_netns 8
   INCUS_EIGHT_DIR=$(mktemp -d -p "${TEST_DIR}" XXX)
   chmod +x "${INCUS_EIGHT_DIR}"
@@ -739,7 +739,8 @@ test_clustering_storage() {
 
   # The 'source' config key is omitted when showing the cluster
   # configuration, and included when showing the node-specific one.
-  ! INCUS_DIR="${INCUS_TWO_DIR}" incus storage show pool1 | grep -q source || false
+  ! INCUS_DIR="${INCUS_TWO_DIR}" incus storage show pool1 | grep -q source: || false
+
   source1="$(basename "${INCUS_ONE_DIR}")"
   source2="$(basename "${INCUS_TWO_DIR}")"
   if [ "${poolDriver}" = "ceph" ]; then
@@ -1136,7 +1137,7 @@ test_clustering_network() {
   INCUS_DIR="${INCUS_ONE_DIR}" incus admin sql global "SELECT nodes.name,networks_nodes.state FROM nodes JOIN networks_nodes ON networks_nodes.node_id = nodes.id JOIN networks ON networks.id = networks_nodes.network_id WHERE networks.name = '${net}' AND nodes.name = 'node1'" | grep "| node1 | 0     |"
   INCUS_DIR="${INCUS_ONE_DIR}" incus admin sql global "SELECT nodes.name,networks_nodes.state FROM nodes JOIN networks_nodes ON networks_nodes.node_id = nodes.id JOIN networks ON networks.id = networks_nodes.network_id WHERE networks.name = '${net}' AND nodes.name = 'node2'" | grep "| node2 | 0     |"
 
-  # Run network create on other node2 (still excpect to fail on node1, but expect node2 create to succeed).
+  # Run network create on other node2 (still expect to fail on node1, but expect node2 create to succeed).
   ! INCUS_DIR="${INCUS_TWO_DIR}" incus network create "${net}" || false
 
   # Check each node status (expect node1 to be pending and node2 to be created).
@@ -2749,7 +2750,7 @@ test_clustering_image_refresh() {
     # Copy the public image to each project
     INCUS_DIR="${INCUS_ONE_DIR}" incus image copy public:testimage local: --alias testimage --target-project "${project}"
 
-    # Diable autoupdate for testimage in project foo
+    # Disable autoupdate for testimage in project foo
     if [ "${project}" = "foo" ]; then
       auto_update=false
     else
@@ -2782,7 +2783,7 @@ test_clustering_image_refresh() {
 
   # Trigger image refresh on all nodes
   for incus_dir in "${INCUS_ONE_DIR}" "${INCUS_TWO_DIR}" "${INCUS_THREE_DIR}"; do
-    INCUS_DIR="${incus_dir}" incus query /internal/testing/image-refresh &
+    INCUS_DIR="${incus_dir}" incus query /internal/debug/image-refresh &
     pids="$! ${pids}"
   done
 
@@ -2820,7 +2821,7 @@ test_clustering_image_refresh() {
   # Trigger image refresh on all nodes. This shouldn't do anything as the image
   # is already up-to-date.
   for incus_dir in "${INCUS_ONE_DIR}" "${INCUS_TWO_DIR}" "${INCUS_THREE_DIR}"; do
-    INCUS_DIR="${incus_dir}" incus query /internal/testing/image-refresh &
+    INCUS_DIR="${incus_dir}" incus query /internal/debug/image-refresh &
     pids="$! ${pids}"
   done
 
@@ -2846,7 +2847,7 @@ test_clustering_image_refresh() {
 
   # Trigger image refresh on all nodes
   for incus_dir in "${INCUS_ONE_DIR}" "${INCUS_TWO_DIR}" "${INCUS_THREE_DIR}"; do
-    INCUS_DIR="${incus_dir}" incus query /internal/testing/image-refresh &
+    INCUS_DIR="${incus_dir}" incus query /internal/debug/image-refresh &
     pids="$! ${pids}"
   done
 
@@ -3274,7 +3275,7 @@ test_clustering_remove_members() {
   INCUS_DIR="${INCUS_ONE_DIR}" incus cluster rm node4
   INCUS_DIR="${INCUS_ONE_DIR}" incus cluster rm node5
 
-  # Ensure the remaining node is working and node2, node3, node4,node5 successful reomve from cluster
+  # Ensure the remaining node is working and node2, node3, node4,node5 successful remove from cluster
   ! INCUS_DIR="${INCUS_ONE_DIR}" incus cluster list | grep -q "node2" || false
   ! INCUS_DIR="${INCUS_ONE_DIR}" incus cluster list | grep -q "node3" || false
   ! INCUS_DIR="${INCUS_ONE_DIR}" incus cluster list | grep -q "node4" || false
@@ -3284,7 +3285,7 @@ test_clustering_remove_members() {
   # Start node 6
   INCUS_NETNS="${ns6}" respawn_incus "${INCUS_SIX_DIR}" true
 
-  # make sure node6 is a spare ndoe
+  # make sure node6 is a spare node
   INCUS_DIR="${INCUS_ONE_DIR}" incus cluster list | grep -q "node6"
   ! INCUS_DIR="${INCUS_ONE_DIR}" incus cluster show node6 | grep -qE "\- database-standy$|\- database-leader$|\- database$" || false
 
@@ -3443,8 +3444,9 @@ test_clustering_groups() {
   ! incus cluster group remove cluster:node1 default || false
 
   # Create new cluster group which should be empty
-  incus cluster group create cluster:foobar
+  incus cluster group create cluster:foobar --description "Test description"
   [ "$(incus query cluster:/1.0/cluster/groups/foobar | jq '.members | length')" -eq 0 ]
+  [ "$(incus query cluster:/1.0/cluster/groups/foobar | jq '.description == "Test description"')" = "true" ]
 
   # Copy both description and members from default group
   incus cluster group show cluster:default | incus cluster group edit cluster:foobar

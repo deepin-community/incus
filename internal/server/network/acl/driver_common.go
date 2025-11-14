@@ -11,9 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	"github.com/lxc/incus/v6/internal/server/cluster/request"
 	"github.com/lxc/incus/v6/internal/server/db"
@@ -23,6 +22,7 @@ import (
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
@@ -30,8 +30,10 @@ import (
 // Define type for rule directions.
 type ruleDirection string
 
-const ruleDirectionIngress ruleDirection = "ingress"
-const ruleDirectionEgress ruleDirection = "egress"
+const (
+	ruleDirectionIngress ruleDirection = "ingress"
+	ruleDirectionEgress  ruleDirection = "egress"
+)
 
 // ReservedNetworkSubects contains a list of reserved network peer names (those starting with @ character) that
 // cannot be used when to name peering connections. Otherwise peer connections wouldn't be able to be referenced
@@ -39,13 +41,17 @@ const ruleDirectionEgress ruleDirection = "egress"
 var ReservedNetworkSubects = []string{"internal", "external"}
 
 // Define reserved ACL subjects.
-const ruleSubjectInternal = "@internal"
-const ruleSubjectExternal = "@external"
+const (
+	ruleSubjectInternal = "@internal"
+	ruleSubjectExternal = "@external"
+)
 
 // Define aliases for reserved ACL subjects. This is to allow earlier deprecated names that used the "#" prefix.
 // They were deprecated to avoid confusion with YAML comments. So "#internal" and "#external" should not be used.
-var ruleSubjectInternalAliases = []string{ruleSubjectInternal, "#internal"}
-var ruleSubjectExternalAliases = []string{ruleSubjectExternal, "#external"}
+var (
+	ruleSubjectInternalAliases = []string{ruleSubjectInternal, "#internal"}
+	ruleSubjectExternalAliases = []string{ruleSubjectExternal, "#external"}
+)
 
 // ValidActions defines valid actions for rules.
 var ValidActions = []string{"allow", "allow-stateless", "drop", "reject"}
@@ -263,7 +269,7 @@ func (d *common) validateConfigMap(config map[string]string, rules map[string]fu
 
 	// Run the validator against each field.
 	for k, validator := range rules {
-		checkedFields[k] = struct{}{} //Mark field as checked.
+		checkedFields[k] = struct{}{} // Mark field as checked.
 		err := validator(config[k])
 		if err != nil {
 			return fmt.Errorf("Invalid value for config option %q: %w", k, err)
@@ -626,11 +632,17 @@ func (d *common) Update(config *api.NetworkACLPut, clientType request.ClientType
 
 	// Separate out OVN networks from non-OVN networks. This is because OVN networks share ACL config, and
 	// so changes are not applied entirely on a per-network basis and need to be treated differently.
+	// Separate the bridge networks used indirectly by NIC devices. This is because the ACL rules need to be
+	// applied to the bridge interface, not the network.
 	aclOVNNets := map[string]NetworkACLUsage{}
+	aclBridgeNICs := map[string]NetworkACLUsage{}
 	for k, v := range aclNets {
 		if v.Type == "ovn" {
 			delete(aclNets, k)
 			aclOVNNets[k] = v
+		} else if v.Type == "bridge" && v.DeviceName != "" {
+			delete(aclNets, k)
+			aclBridgeNICs[k] = v
 		} else if v.Type != "bridge" {
 			return fmt.Errorf("Unsupported network ACL type %q", v.Type)
 		}
@@ -641,6 +653,14 @@ func (d *common) Update(config *api.NetworkACLPut, clientType request.ClientType
 		err = FirewallApplyACLRules(d.state, d.logger, d.projectName, aclNet)
 		if err != nil {
 			return err
+		}
+	}
+
+	// If there are affected bridge NICs, apply the ACL changes to the bridge interface filter.
+	if len(aclBridgeNICs) > 0 {
+		err := BridgeUpdateACLs(d.state, d.logger, d.projectName, aclBridgeNICs)
+		if err != nil {
+			return fmt.Errorf("Failed updating bridge NIC ACL: %w", err)
 		}
 	}
 

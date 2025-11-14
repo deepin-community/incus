@@ -8,9 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	"github.com/lxc/incus/v6/internal/server/cluster/request"
 	"github.com/lxc/incus/v6/internal/server/db"
@@ -21,6 +20,7 @@ import (
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
@@ -238,7 +238,7 @@ func (d *zone) validateConfigMap(config map[string]string, rules map[string]func
 
 	// Run the validator against each field.
 	for k, validator := range rules {
-		checkedFields[k] = struct{}{} //Mark field as checked.
+		checkedFields[k] = struct{}{} // Mark field as checked.
 		err := validator(config[k])
 		if err != nil {
 			return fmt.Errorf("Invalid value for config option %q: %w", k, err)

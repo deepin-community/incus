@@ -20,13 +20,13 @@ import (
 	dqlite "github.com/cowsql/go-cowsql"
 	client "github.com/cowsql/go-cowsql/client"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/certificate"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/response"
 	"github.com/lxc/incus/v6/internal/server/state"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/tcp"
 	localtls "github.com/lxc/incus/v6/shared/tls"
 	"github.com/lxc/incus/v6/shared/util"
@@ -154,10 +154,18 @@ func setDqliteVersionHeader(request *http.Request) {
 // These handlers might return 404, either because this server is a
 // non-clustered member not available over the network or because it is not a
 // database node part of the dqlite cluster.
-func (g *Gateway) HandlerFuncs(heartbeatHandler HeartbeatHandler, trustedCerts func() map[certificate.Type]map[string]x509.Certificate) map[string]http.HandlerFunc {
+func (g *Gateway) HandlerFuncs(heartbeatHandler HeartbeatHandler, trustedCerts func() (map[certificate.Type]map[string]x509.Certificate, error)) map[string]http.HandlerFunc {
 	database := func(w http.ResponseWriter, r *http.Request) {
 		g.lock.RLock()
-		if !tlsCheckCert(r, g.networkCert, g.state().ServerCert(), trustedCerts()) {
+
+		certs, err := trustedCerts()
+		if err != nil {
+			g.lock.RUnlock()
+			http.Error(w, "403 invalid client certificate", http.StatusForbidden)
+			return
+		}
+
+		if !tlsCheckCert(r, g.networkCert, g.state().ServerCert(), certs) {
 			g.lock.RUnlock()
 			http.Error(w, "403 invalid client certificate", http.StatusForbidden)
 			return
@@ -197,7 +205,7 @@ func (g *Gateway) HandlerFuncs(heartbeatHandler HeartbeatHandler, trustedCerts f
 			return
 		}
 
-		// Handle heatbeats (these normally come from leader, but can come from joining nodes too).
+		// Handle heartbeats (these normally come from leader, but can come from joining nodes too).
 		if r.Method == "PUT" {
 			if g.shutdownCtx.Err() != nil {
 				logger.Warn("Rejecting heartbeat request as shutting down")
@@ -388,7 +396,7 @@ func (g *Gateway) DialFunc() client.DialFunc {
 		// leader is ourselves, and we were recently elected. In that case
 		// trigger a full heartbeat now: it will be a no-op if we aren't
 		// actually leaders.
-		go g.heartbeat(g.ctx, hearbeatInitial)
+		go g.heartbeat(g.ctx, heartbeatInitial)
 
 		return conn, nil
 	}
@@ -569,7 +577,7 @@ func (g *Gateway) Sync() {
 	dir := filepath.Join(g.db.Dir(), "global")
 	for _, file := range files {
 		path := filepath.Join(dir, file.Name)
-		err := os.WriteFile(path, file.Data, 0600)
+		err := os.WriteFile(path, file.Data, 0o600)
 		if err != nil {
 			logger.Warnf("Failed to dump database file %s: %v", file.Name, err)
 		}
@@ -1064,7 +1072,7 @@ func dqliteNetworkDial(ctx context.Context, name string, addr string, g *Gateway
 
 	err = request.Write(conn)
 	if err != nil {
-		return nil, fmt.Errorf("Failed sending HTTP requrest to %q: %w", request.URL, err)
+		return nil, fmt.Errorf("Failed sending HTTP request to %q: %w", request.URL, err)
 	}
 
 	response, err := http.ReadResponse(bufio.NewReader(conn), request)

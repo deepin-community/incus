@@ -8,8 +8,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/lxc/incus/v6/client"
-	"github.com/lxc/incus/v6/internal/revert"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/server/acme"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/cluster"
@@ -23,6 +22,7 @@ import (
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	localtls "github.com/lxc/incus/v6/shared/tls"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -145,7 +145,7 @@ func updateClusterCertificate(ctx context.Context, s *state.State, gateway *clus
 		reverter.Add(func() {
 			// If distributing the new certificate fails, store the certificate. This new file will
 			// be considered when running the auto renewal again.
-			err := os.WriteFile(newClusterCertFilename, []byte(req.ClusterCertificate), 0600)
+			err := os.WriteFile(newClusterCertFilename, []byte(req.ClusterCertificate), 0o600)
 			if err != nil {
 				logger.Error("Failed storing new certificate", logger.Ctx{"err": err})
 			}

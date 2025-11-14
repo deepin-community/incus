@@ -1,5 +1,0 @@
-# Flagged spelling errors come from other golang packages
-incus-migrate: spelling-error-in-binary
-
-# Ignore error about long field length
-incus-migrate: field-too-long

@@ -102,8 +102,7 @@ func instancePatch(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Validate the ETag
-	etag := []any{c.Architecture(), c.LocalConfig(), c.LocalDevices(), c.IsEphemeral(), c.Profiles()}
-	err = localUtil.EtagCheck(r, etag)
+	err = localUtil.EtagCheck(r, c.ETag())
 	if err != nil {
 		return response.PreconditionFailed(err)
 	}
@@ -192,13 +191,18 @@ func instancePatch(d *Daemon, r *http.Request) response.Response {
 			return err
 		}
 
-		profileDevices, err := cluster.GetDevices(ctx, tx.Tx(), "profile")
+		profileConfigs, err := cluster.GetAllProfileConfigs(ctx, tx.Tx())
+		if err != nil {
+			return err
+		}
+
+		profileDevices, err := cluster.GetAllProfileDevices(ctx, tx.Tx())
 		if err != nil {
 			return err
 		}
 
 		for _, profile := range profiles {
-			apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileDevices)
+			apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileConfigs, profileDevices)
 			if err != nil {
 				return err
 			}

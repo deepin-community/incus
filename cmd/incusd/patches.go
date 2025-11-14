@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	"github.com/lxc/incus/v6/internal/server/certificate"
 	"github.com/lxc/incus/v6/internal/server/cluster"
@@ -28,6 +27,7 @@ import (
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -85,6 +85,7 @@ var patches = []patch{
 	{name: "storage_zfs_unset_invalid_block_settings_v2", stage: patchPostDaemonStorage, run: patchStorageZfsUnsetInvalidBlockSettingsV2},
 	{name: "runtime_directory", stage: patchPostDaemonStorage, run: patchRuntimeDirectory},
 	{name: "lvm_node_force_reuse", stage: patchPostDaemonStorage, run: patchLvmForceReuseKey},
+	{name: "auth_openfga_viewer", stage: patchPostNetworks, run: patchGenericAuthorization},
 }
 
 type patch struct {
@@ -133,6 +134,10 @@ func patchesApply(d *Daemon, stage patchStage) error {
 	for _, patch := range patches {
 		if patch.stage == patchNoStageSet {
 			return fmt.Errorf("Patch %q has no stage set: %d", patch.name, patch.stage)
+		}
+
+		if patch.stage != stage {
+			continue
 		}
 
 		if slices.Contains(appliedPatches, patch.name) {
@@ -653,7 +658,7 @@ func patchMoveBackupsInstances(name string, d *Daemon) error {
 
 	backupsPath := internalUtil.VarPath("backups", "instances")
 
-	err := os.MkdirAll(backupsPath, 0700)
+	err := os.MkdirAll(backupsPath, 0o700)
 	if err != nil {
 		return fmt.Errorf("Failed creating instances backup directory %q: %w", backupsPath, err)
 	}
@@ -678,6 +683,10 @@ func patchMoveBackupsInstances(name string, d *Daemon) error {
 	}
 
 	return nil
+}
+
+func patchGenericAuthorization(name string, d *Daemon) error {
+	return d.authorizer.ApplyPatch(d.shutdownCtx, name)
 }
 
 func patchGenericStorage(name string, d *Daemon) error {
@@ -1206,7 +1215,7 @@ func patchRuntimeDirectory(name string, d *Daemon) error {
 			continue
 		}
 
-		err = os.MkdirAll(inst.RunPath(), 0700)
+		err = os.MkdirAll(inst.RunPath(), 0o700)
 		if err != nil && !os.IsExist(err) {
 			return fmt.Errorf("Failed to create runtime directory for %q in project %q: %w", inst.Name(), inst.Project(), err)
 		}

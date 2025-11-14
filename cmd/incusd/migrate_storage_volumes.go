@@ -14,6 +14,7 @@ import (
 	"github.com/lxc/incus/v6/internal/migration"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
+	"github.com/lxc/incus/v6/internal/server/project"
 	"github.com/lxc/incus/v6/internal/server/state"
 	storagePools "github.com/lxc/incus/v6/internal/server/storage"
 	storageDrivers "github.com/lxc/incus/v6/internal/server/storage/drivers"
@@ -70,7 +71,7 @@ func newStorageMigrationSource(volumeOnly bool, pushTarget *api.StorageVolumePos
 func (s *migrationSourceWs) DoStorage(state *state.State, projectName string, poolName string, volName string, migrateOp *operations.Operation) error {
 	l := logger.AddContext(logger.Ctx{"project": projectName, "pool": poolName, "volume": volName, "push": s.pushOperationURL != ""})
 
-	ctx, cancel := context.WithTimeout(state.ShutdownCtx, time.Second*10)
+	ctx, cancel := context.WithTimeout(state.ShutdownCtx, time.Second*30)
 	defer cancel()
 
 	l.Info("Waiting for migration connections on source")
@@ -99,11 +100,46 @@ func (s *migrationSourceWs) DoStorage(state *state.State, projectName string, po
 		return fmt.Errorf("Failed generating volume migration config: %w", err)
 	}
 
+	dbContentType, err := storagePools.VolumeContentTypeNameToContentType(srcConfig.Volume.ContentType)
+	if err != nil {
+		return err
+	}
+
+	contentType, err := storagePools.VolumeDBContentTypeToContentType(dbContentType)
+	if err != nil {
+		return err
+	}
+
+	volStorageName := project.StorageVolume(projectName, volName)
+	vol := pool.GetVolume(storageDrivers.VolumeTypeCustom, contentType, volStorageName, srcConfig.Volume.Config)
+
+	var volSize int64
+
+	if contentType == storageDrivers.ContentTypeBlock {
+		err = vol.MountTask(func(mountPath string, op *operations.Operation) error {
+			volDiskPath, err := pool.Driver().GetVolumeDiskPath(vol)
+			if err != nil {
+				return err
+			}
+
+			volSize, err = storageDrivers.BlockDiskSizeBytes(volDiskPath)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		}, nil)
+		if err != nil {
+			return err
+		}
+	}
+
 	// The refresh argument passed to MigrationTypes() is always set
 	// to false here. The migration source/sender doesn't need to care whether
 	// or not it's doing a refresh as the migration sink/receiver will know
 	// this, and adjust the migration types accordingly.
-	poolMigrationTypes = pool.MigrationTypes(storageDrivers.ContentType(srcConfig.Volume.ContentType), false, !s.volumeOnly)
+	// The same applies for clusterMove and storageMove, which are set to the most optimized defaults.
+	poolMigrationTypes = pool.MigrationTypes(storageDrivers.ContentType(srcConfig.Volume.ContentType), false, !s.volumeOnly, true, false)
 	if len(poolMigrationTypes) == 0 {
 		return fmt.Errorf("No source migration types available")
 	}
@@ -114,6 +150,7 @@ func (s *migrationSourceWs) DoStorage(state *state.State, projectName string, po
 	// Offer to send index header.
 	indexHeaderVersion := localMigration.IndexHeaderVersion
 	offerHeader.IndexHeaderVersion = &indexHeaderVersion
+	offerHeader.VolumeSize = &volSize
 
 	// Only send snapshots when requested.
 	if !s.volumeOnly {
@@ -122,6 +159,14 @@ func (s *migrationSourceWs) DoStorage(state *state.State, projectName string, po
 
 		for i := range srcConfig.VolumeSnapshots {
 			offerHeader.SnapshotNames = append(offerHeader.SnapshotNames, srcConfig.VolumeSnapshots[i].Name)
+
+			// Set size for snapshot volume
+			snapSize, err := storagePools.CalculateVolumeSnapshotSize(projectName, pool, contentType, storageDrivers.VolumeTypeCustom, volName, srcConfig.VolumeSnapshots[i].Name)
+			if err != nil {
+				return err
+			}
+
+			srcConfig.VolumeSnapshots[i].Config["size"] = fmt.Sprintf("%d", snapSize)
 			offerHeader.Snapshots = append(offerHeader.Snapshots, volumeSnapshotToProtobuf(srcConfig.VolumeSnapshots[i]))
 		}
 	}
@@ -208,9 +253,10 @@ func newStorageMigrationSink(args *migrationSinkArgs) (*migrationSink, error) {
 		migrationFields: migrationFields{
 			volumeOnly: args.VolumeOnly,
 		},
-		url:     args.URL,
-		push:    args.Push,
-		refresh: args.Refresh,
+		url:                 args.URL,
+		push:                args.Push,
+		refresh:             args.Refresh,
+		refreshExcludeOlder: args.RefreshExcludeOlder,
 	}
 
 	secretNames := []string{api.SecretNameControl, api.SecretNameFilesystem}
@@ -243,7 +289,7 @@ func newStorageMigrationSink(args *migrationSinkArgs) (*migrationSink, error) {
 func (c *migrationSink) DoStorage(state *state.State, projectName string, poolName string, req *api.StorageVolumesPost, op *operations.Operation) error {
 	l := logger.AddContext(logger.Ctx{"project": projectName, "pool": poolName, "volume": req.Name, "push": c.push})
 
-	ctx, cancel := context.WithTimeout(state.ShutdownCtx, time.Second*10)
+	ctx, cancel := context.WithTimeout(state.ShutdownCtx, time.Second*30)
 	defer cancel()
 
 	l.Info("Waiting for migration connections on target")
@@ -293,10 +339,12 @@ func (c *migrationSink) DoStorage(state *state.State, projectName string, poolNa
 	// Refresh needs to be set.
 	offerHeader.Refresh = &c.refresh
 
+	clusterMove := req.Source.Location != ""
+
 	// Extract the source's migration type and then match it against our pool's
 	// supported types and features. If a match is found the combined features list
 	// will be sent back to requester.
-	respTypes, err := localMigration.MatchTypes(offerHeader, storagePools.FallbackMigrationType(contentType), pool.MigrationTypes(contentType, c.refresh, !c.volumeOnly))
+	respTypes, err := localMigration.MatchTypes(offerHeader, storagePools.FallbackMigrationType(contentType), pool.MigrationTypes(contentType, c.refresh, !c.volumeOnly, clusterMove, poolName != "" && req.Source.Pool != poolName || !clusterMove))
 	if err != nil {
 		return err
 	}
@@ -316,28 +364,31 @@ func (c *migrationSink) DoStorage(state *state.State, projectName string, poolNa
 	respHeader.SnapshotNames = offerHeader.SnapshotNames
 	respHeader.Snapshots = offerHeader.Snapshots
 	respHeader.Refresh = &c.refresh
+	respHeader.VolumeSize = offerHeader.VolumeSize
 
 	// Translate the legacy MigrationSinkArgs to a VolumeTargetArgs suitable for use
 	// with the new storage layer.
 	myTarget = func(conn io.ReadWriteCloser, op *operations.Operation, args migrationSinkArgs) error {
 		volTargetArgs := localMigration.VolumeTargetArgs{
-			IndexHeaderVersion: respHeader.GetIndexHeaderVersion(),
-			Name:               req.Name,
-			Config:             req.Config,
-			Description:        req.Description,
-			MigrationType:      respTypes[0],
-			TrackProgress:      true,
-			ContentType:        req.ContentType,
-			Refresh:            args.Refresh,
-			VolumeOnly:         args.VolumeOnly,
+			IndexHeaderVersion:  respHeader.GetIndexHeaderVersion(),
+			Name:                req.Name,
+			Config:              req.Config,
+			Description:         req.Description,
+			MigrationType:       respTypes[0],
+			TrackProgress:       true,
+			ContentType:         req.ContentType,
+			Refresh:             args.Refresh,
+			RefreshExcludeOlder: args.RefreshExcludeOlder,
+			VolumeSize:          args.VolumeSize,
+			VolumeOnly:          args.VolumeOnly,
 		}
 
 		// A zero length Snapshots slice indicates volume only migration in
 		// VolumeTargetArgs. So if VoluneOnly was requested, do not populate them.
 		if !args.VolumeOnly {
-			volTargetArgs.Snapshots = make([]string, 0, len(args.Snapshots))
+			volTargetArgs.Snapshots = make([]*migration.Snapshot, 0, len(args.Snapshots))
 			for _, snap := range args.Snapshots {
-				volTargetArgs.Snapshots = append(volTargetArgs.Snapshots, *snap.Name)
+				volTargetArgs.Snapshots = append(volTargetArgs.Snapshots, &migration.Snapshot{Name: snap.Name, LocalConfig: snap.LocalConfig})
 			}
 		}
 
@@ -351,7 +402,7 @@ func (c *migrationSink) DoStorage(state *state.State, projectName string, poolNa
 		for _, sourceSnap := range sourceSnapshots {
 			sourceSnapshotComparable = append(sourceSnapshotComparable, storagePools.ComparableSnapshot{
 				Name:         sourceSnap.GetName(),
-				CreationDate: time.Unix(sourceSnap.GetCreationDate(), 0),
+				CreationDate: time.Unix(0, sourceSnap.GetCreationDate()),
 			})
 		}
 
@@ -373,7 +424,7 @@ func (c *migrationSink) DoStorage(state *state.State, projectName string, poolNa
 		}
 
 		// Compare the two sets.
-		syncSourceSnapshotIndexes, deleteTargetSnapshotIndexes := storagePools.CompareSnapshots(sourceSnapshotComparable, targetSnapshotsComparable)
+		syncSourceSnapshotIndexes, deleteTargetSnapshotIndexes := storagePools.CompareSnapshots(sourceSnapshotComparable, targetSnapshotsComparable, c.refreshExcludeOlder)
 
 		// Delete the extra local snapshots first.
 		for _, deleteTargetSnapshotIndex := range deleteTargetSnapshotIndexes {
@@ -419,10 +470,12 @@ func (c *migrationSink) DoStorage(state *state.State, projectName string, poolNa
 			// as part of MigrationSinkArgs below.
 			rsyncFeatures := respHeader.GetRsyncFeaturesSlice()
 			args := migrationSinkArgs{
-				RsyncFeatures: rsyncFeatures,
-				Snapshots:     respHeader.Snapshots,
-				VolumeOnly:    c.volumeOnly,
-				Refresh:       c.refresh,
+				RsyncFeatures:       rsyncFeatures,
+				Snapshots:           respHeader.Snapshots,
+				VolumeOnly:          c.volumeOnly,
+				VolumeSize:          *respHeader.VolumeSize,
+				Refresh:             c.refresh,
+				RefreshExcludeOlder: c.refreshExcludeOlder,
 			}
 
 			fsConn, err := c.conns[api.SecretNameFilesystem].WebsocketIO(state.ShutdownCtx)
@@ -498,8 +551,7 @@ func volumeSnapshotToProtobuf(vol *api.StorageVolumeSnapshot) *migration.Snapsho
 		LocalDevices: []*migration.Device{},
 		Architecture: proto.Int32(0),
 		Stateful:     proto.Bool(false),
-		CreationDate: proto.Int64(0),
-		LastUsedDate: proto.Int64(0),
-		ExpiryDate:   proto.Int64(0),
+		CreationDate: proto.Int64(vol.CreatedAt.UnixNano()),
+		ExpiryDate:   proto.Int64(vol.CreatedAt.UnixNano()),
 	}
 }

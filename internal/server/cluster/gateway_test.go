@@ -22,6 +22,10 @@ import (
 	localtls "github.com/lxc/incus/v6/shared/tls"
 )
 
+func trustedCerts() (map[certificate.Type]map[string]x509.Certificate, error) {
+	return nil, nil
+}
+
 // Basic creation and shutdown. By default, the gateway runs an in-memory gRPC
 // server.
 func TestGateway_Single(t *testing.T) {
@@ -36,10 +40,6 @@ func TestGateway_Single(t *testing.T) {
 
 	gateway := newGateway(t, node, cert, s)
 	defer func() { _ = gateway.Shutdown() }()
-
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
-		return nil
-	}
 
 	handlerFuncs := gateway.HandlerFuncs(nil, trustedCerts)
 	assert.Len(t, handlerFuncs, 1)
@@ -101,10 +101,6 @@ func TestGateway_SingleWithNetworkAddress(t *testing.T) {
 	gateway := newGateway(t, node, cert, s)
 	defer func() { _ = gateway.Shutdown() }()
 
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
-		return nil
-	}
-
 	for path, handler := range gateway.HandlerFuncs(nil, trustedCerts) {
 		mux.HandleFunc(path, handler)
 	}
@@ -145,10 +141,6 @@ func TestGateway_NetworkAuth(t *testing.T) {
 
 	gateway := newGateway(t, node, cert, s)
 	defer func() { _ = gateway.Shutdown() }()
-
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
-		return nil
-	}
 
 	for path, handler := range gateway.HandlerFuncs(nil, trustedCerts) {
 		mux.HandleFunc(path, handler)
@@ -199,7 +191,7 @@ func TestGateway_RaftNodesNotLeader(t *testing.T) {
 
 // Create a new test Gateway with the given parameters, and ensure no error happens.
 func newGateway(t *testing.T, node *db.Node, networkCert *localtls.CertInfo, s *state.State) *cluster.Gateway {
-	require.NoError(t, os.Mkdir(filepath.Join(node.Dir(), "global"), 0755))
+	require.NoError(t, os.Mkdir(filepath.Join(node.Dir(), "global"), 0o755))
 	stateFunc := func() *state.State { return s }
 	gateway, err := cluster.NewGateway(context.Background(), node, networkCert, stateFunc, cluster.Latency(0.2), cluster.LogLevel("TRACE"))
 	require.NoError(t, err)

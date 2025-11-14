@@ -64,6 +64,7 @@ Key                                  | Type      | Condition             | Defau
 `bridge.external_interfaces`         | string    | -                     | -                         | Comma-separated list of unconfigured network interfaces to include in the bridge
 `bridge.hwaddr`                      | string    | -                     | -                         | MAC address for the bridge
 `bridge.mtu`                         | integer   | -                     | `1500`                    | Bridge MTU (default varies if tunnel in use)
+`dns.nameservers`                    | string    | -                     | IPv4 and IPv6 address     | DNS server IPs to advertise to DHCP clients and via Router Advertisements. Both IPv4 and IPv6 addresses get pushed via DHCP, and IPv6 addresses are also advertised as RDNSS via RA.
 `dns.domain`                         | string    | -                     | `incus`                   | Domain to advertise to DHCP clients and use for DNS resolution
 `dns.mode`                           | string    | -                     | `managed`                 | DNS registration mode: `none` for no DNS record, `managed` for Incus-generated static records or `dynamic` for client-generated records
 `dns.search`                         | string    | -                     | -                         | Full comma-separated domain search list, defaulting to `dns.domain` value
@@ -75,6 +76,7 @@ Key                                  | Type      | Condition             | Defau
 `ipv4.dhcp.expiry`                   | string    | IPv4 DHCP             | `1h`                      | When to expire DHCP leases
 `ipv4.dhcp.gateway`                  | string    | IPv4 DHCP             | IPv4 address              | Address of the gateway for the subnet
 `ipv4.dhcp.ranges`                   | string    | IPv4 DHCP             | all addresses             | Comma-separated list of IP ranges to use for DHCP (FIRST-LAST format)
+`ipv4.dhcp.routes`                   | string    | IPv4 DHCP             | -                         | Static routes to provide via DHCP option 121, as a comma-separated list of alternating subnets (CIDR) and gateway addresses (same syntax as dnsmasq)
 `ipv4.firewall`                      | bool      | IPv4 address          | `true`                    | Whether to generate filtering firewall rules for this network
 `ipv4.nat`                           | bool      | IPv4 address          | `false` (initial value on creation if `ipv4.address` is set to `auto`: `true`) | Whether to NAT
 `ipv4.nat.address`                   | string    | IPv4 address          | -                         | The source address used for outbound traffic from the bridge
@@ -113,7 +115,7 @@ Key                                  | Type      | Condition             | Defau
 ```{note}
 The `bridge.external_interfaces` option supports an extended format allowing the creation of missing VLAN interfaces.
 The extended format is `<interfaceName>/<parentInterfaceName>/<vlanId>`.
-When the external interface is added to the list with the extended format, the system will automatically create the interface upon the network's creation and subsequently delete it when the network is terminated. The system verifies that the <interfaceName> does not already exist. If the interface name is in use with a different parent or VLAN ID, or if the creation of the interface is unsuccessful, the system will revert with an error message.
+When the external interface is added to the list with the extended format, the system will automatically create the interface upon the network's creation and subsequently delete it when the network is terminated. The system verifies that the `<interfaceName>` does not already exist. If the interface name is in use with a different parent or VLAN ID, or if the creation of the interface is unsuccessful, the system will revert with an error message.
 ```
 
 (network-bridge-features)=

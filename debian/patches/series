@@ -1,3 +1,16 @@
 001-skip-TestConvertNetworkConfig.patch
 002-adjust-import-paths.patch
-0003-Compile-against-go-criu-v7.patch
+003-Compile-against-go-criu-v7.patch
+004-apparmor-4x-userns.patch
+005-cherry-pick-qemu-socket-cleanup.patch
+006-cherry-pick-agent-mount-retry.patch
+007-cherry-pick-usb-hotplug-fix.patch
+100-CVE-2025-54293.patch
+101-CVE-2025-54287.patch
+102-CVE-2025-54288.patch
+103-CVE-2025-54286.patch
+104-CVE-2025-54290_CVE-2025-54291.patch
+105-CVE-2025-54289.patch
+106a-GHSA-56mx-8g9f-5crf.patch
+106b-GHSA-56mx-8g9f-5crf.patch
+106c-GHSA-56mx-8g9f-5crf.patch

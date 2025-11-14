@@ -1,7 +1,9 @@
 package drivers
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,12 +15,12 @@ import (
 	"time"
 
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	"github.com/lxc/incus/v6/internal/server/state"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
@@ -27,11 +29,15 @@ import (
 
 const lvmVgPoolMarker = "incus_pool" // Indicator tag used to mark volume groups as in use.
 
-var lvmExtentSize map[string]int64
-var lvmExtentSizeMu sync.Mutex
+var (
+	lvmExtentSize   map[string]int64
+	lvmExtentSizeMu sync.Mutex
+)
 
-var lvmLoaded bool
-var lvmVersion string
+var (
+	lvmLoaded  bool
+	lvmVersion string
+)
 
 type lvm struct {
 	common
@@ -101,7 +107,15 @@ func (d *lvm) init(s *state.State, name string, config map[string]string, log lo
 	d.common.init(s, name, config, log, volIDFunc, commonRules)
 
 	if d.clustered && d.config != nil {
-		d.config["lvm.vg_name"] = d.config["source"]
+		_, exists := d.config["lvm.vg_name"]
+		if !exists {
+			sourceType := d.getSourceType()
+			if sourceType == lvmSourceTypeDefault || sourceType == lvmSourceTypePhysicalDevice {
+				d.config["lvm.vg_name"] = d.name
+			} else if sourceType == lvmSourceTypeVolumeGroup {
+				d.config["lvm.vg_name"] = d.config["source"]
+			}
+		}
 	}
 }
 
@@ -133,6 +147,7 @@ func (d *lvm) Info() Info {
 		MountedRoot:                  false,
 		Buckets:                      !d.isRemote(),
 		Deactivate:                   d.isRemote(),
+		ZeroUnpack:                   !d.usesThinpool(),
 	}
 }
 
@@ -150,7 +165,6 @@ func (d *lvm) FillConfig() error {
 func (d *lvm) Create() error {
 	d.config["volatile.initial_source"] = d.config["source"]
 
-	defaultSource := loopFilePath(d.name)
 	var err error
 	var pvExists, vgExists bool
 	var pvName string
@@ -166,12 +180,11 @@ func (d *lvm) Create() error {
 
 	var usingLoopFile bool
 
-	if d.config["source"] == "" || d.config["source"] == defaultSource {
-		if d.clustered {
-			return fmt.Errorf("Clustered LVM only supports pre-existing shared VGs")
-		}
+	sourceType := d.getSourceType()
 
+	if sourceType == lvmSourceTypeDefault {
 		usingLoopFile = true
+		defaultSource := loopFilePath(d.name)
 
 		// We are using an internal loopback file.
 		d.config["source"] = defaultSource
@@ -233,11 +246,7 @@ func (d *lvm) Create() error {
 		if vgExists {
 			return fmt.Errorf("A volume group already exists called %q", d.config["lvm.vg_name"])
 		}
-	} else if filepath.IsAbs(d.config["source"]) {
-		if d.clustered {
-			return fmt.Errorf("Clustered LVM only supports pre-existing shared VGs")
-		}
-
+	} else if sourceType == lvmSourceTypePhysicalDevice {
 		// We are using an existing physical device.
 		srcPath := d.config["source"]
 
@@ -282,7 +291,7 @@ func (d *lvm) Create() error {
 		if err != nil {
 			return err
 		}
-	} else if d.config["source"] != "" {
+	} else if sourceType == lvmSourceTypeVolumeGroup {
 		// We are using an existing volume group, so physical must exist already.
 		pvExists = true
 
@@ -391,7 +400,13 @@ func (d *lvm) Create() error {
 		}
 
 		// Create volume group.
-		_, err := subprocess.TryRunCommand("vgcreate", d.config["lvm.vg_name"], pvName)
+		args := []string{d.config["lvm.vg_name"], pvName}
+
+		if d.clustered {
+			args = append(args, "--shared")
+		}
+
+		_, err := subprocess.TryRunCommand("vgcreate", args...)
 		if err != nil {
 			return err
 		}
@@ -508,12 +523,8 @@ func (d *lvm) Delete(op *operations.Operation) error {
 
 		// Remove volume group if needed.
 		if removeVg {
-			if d.clustered {
-				// Wait for the locks we just released to clear.
-				time.Sleep(10 * time.Second)
-			}
-
-			_, err := subprocess.TryRunCommand("vgremove", "-f", d.config["lvm.vg_name"])
+			// When deleting a shared VG, it may take more than a minute for the previously released shared locks to clear.
+			_, err := subprocess.TryRunCommandAttemptsDuration(240, 500*time.Millisecond, "vgremove", "-f", d.config["lvm.vg_name"])
 			if err != nil {
 				return fmt.Errorf("Failed to delete the volume group for the lvm storage pool: %w", err)
 			}
@@ -548,7 +559,7 @@ func (d *lvm) Delete(op *operations.Operation) error {
 
 		// This is a loop file so deconfigure the associated loop device.
 		err = os.Remove(d.config["source"])
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("Error removing LVM pool loop file %q: %w", d.config["source"], err)
 		}
 
@@ -651,7 +662,7 @@ func (d *lvm) Update(changedConfig map[string]string) error {
 		}
 
 		// Resize loop file
-		f, err := os.OpenFile(loopPath, os.O_RDWR, 0600)
+		f, err := os.OpenFile(loopPath, os.O_RDWR, 0o600)
 		if err != nil {
 			return err
 		}
@@ -702,7 +713,7 @@ func (d *lvm) Mount() (bool, error) {
 		return false, fmt.Errorf("Cannot mount pool as %q is not specified", "lvm.vg_name")
 	}
 
-	// Check if VG exists before we do anthing, this will indicate if its our mount or not.
+	// Check if VG exists before we do anything, this will indicate if its our mount or not.
 	vgExists, _, _ := d.volumeGroupExists(d.config["lvm.vg_name"])
 	ourMount := !vgExists
 
@@ -771,7 +782,7 @@ func (d *lvm) Mount() (bool, error) {
 }
 
 // Unmount unmounts the storage pool (this does nothing).
-// LVM doesn't currently support unmounting, please see https://github.com/lxc/incus/issues/9278
+// LVM doesn't currently support unmounting, please see https://github.com/canonical/lxd/issues/9278
 func (d *lvm) Unmount() (bool, error) {
 	if d.clustered {
 		_, err := subprocess.RunCommand("vgchange", "--lockstop", d.config["lvm.vg_name"])

@@ -1,3 +1,15 @@
+Installation
+============
+
+To install Incus with support for creating both containers and virtual machines, run:
+
+    sudo apt install incus
+
+If you only wish to create containers in Incus and don't want the additional dependencies
+required for running virtual machines, you can install just the base package:
+
+    sudo apt install incus-base
+
 Incus initialization
 ====================
 
@@ -9,8 +21,8 @@ section. Otherwise, after installing Incus you must perform an initial configura
 Migrating from LXD
 ==================
 
-Incus includes a tool named `lxd-to-incus` which can be used to convert an existing
-LXD installation into an Incus one.
+Incus includes a tool named `lxd-to-incus`, included in the "incus-extra" package,
+which can be used to convert an existing LXD installation into an Incus one.
 
 For this to work properly, you should install Incus but not initialize it. Instead,
 make sure that both `incus info` and `lxc info` both work properly, then run
@@ -55,6 +67,39 @@ paths or devices to any instance as well as tweak the security features on any
 instance. Therefore, you should only give access to users who would be trusted with
 root access to the host.
 
+Init scripts
+============
+
+systemd, SysV, and runit init scripts are provided, but the SysV and runit scripts
+aren't as well-tested as the systemd ones. Bug reports and patches are welcome to
+improve the Incus experience on non-systemd installs.
+
+Non-systemd required configuration
+----------------------------------
+
+When installing Incus on a non-systemd host, you must ensure that a cgroup v2
+hierarchy is mounted prior to starting Incus. One possible way to do this is to
+add a line like the following to your /etc/fstab:
+
+    cgroup2   /sys/fs/cgroup   cgroup2   rw,nosuid,nodev,noexec   0 0
+
+Additionally, the "incus-user" service is not automatically started after install to allow
+the local administrator to first run `incus admin init`. After performing initialization,
+you can then enable/start the "incus-user" service. This is needed because if "incus-user"
+starts before Incus has been configured it will create a minimal empty profile which then
+conflicts with running `incus admin init`. (Hosts running systemd avoid this by relying on
+socket-based activation for the "incus" and "incus-user" services.)
+
+Logging
+=======
+
+By default, the Incus daemon will log to /var/log/incus/incus.log. If you wish to log
+instead to the host system's configured rsyslog daemon, set USE_SYSLOG=yes in
+/etc/default/incus and restart the service.
+
+When using the runit scripts, Incus logs will always be written to
+/var/log/runit/incus/current.
+
 Storage backends
 ================
 
@@ -72,11 +117,28 @@ the Incus service so it picks up the additional storage backend(s).
 Virtual machines
 ================
 
-Incus optionally can create virtual machine instances utilizing QEMU. To enable
-this capability, on the host system install the desired qemu-system-<arch>
-package(s) and the incus-agent package. Then, restart the Incus service. You
-will now be able to create virtual machine instances by passing the `--vm` flag
-in your creation command.
+Incus optionally can create virtual machine instances that match the host's
+architecture utilizing QEMU. To enable this capability, on the host system
+ensure that the "incus" package is installed and then restart the Incus service.
+You will now be able to create virtual machine instances by passing the `--vm`
+flag in your creation command.
+
+RHEL8/9 (and derivatives)
+-------------------------
+
+RHEL8/9 do not ship the 9p kernel module, which is used to dynamically mount
+instance-specific agent configuration and the incus-agent binary into VMs. To work
+around this, Incus 0.5.1 added a new agent drive, providing those files through
+what looks like a CD-ROM drive rather than being retrieved over a networked
+filesystem.
+
+For example, to run CentOS 9-Stream, one now needs to do:
+
+    incus create images:centos/9-Stream centos --vm
+    incus config device add centos agent disk source=agent:config
+    incus start centos
+
+For further details, please see the Incus 0.5.1 release notes (https://discuss.linuxcontainers.org/t/incus-0-5-1-has-been-released/18848).
 
 Known issues
 ============

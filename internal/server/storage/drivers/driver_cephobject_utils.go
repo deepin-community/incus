@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 )
 
@@ -34,7 +34,6 @@ func (d *cephobject) radosgwadmin(ctx context.Context, args ...string) (string, 
 // If no user exists returns api.StatusError with status code set to http.StatusNotFound.
 func (d *cephobject) radosgwadminGetUser(ctx context.Context, user string) (*S3Credentials, map[string]S3Credentials, error) {
 	out, err := d.radosgwadmin(ctx, "user", "info", "--uid", user)
-
 	if err != nil {
 		status, _ := linux.ExitStatus(err)
 		if status == 22 {
