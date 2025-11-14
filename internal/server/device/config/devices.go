@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/util"
 )
 
 // Device represents an instance device.
@@ -13,13 +14,7 @@ type Device map[string]string
 
 // Clone returns a copy of the Device.
 func (device Device) Clone() Device {
-	copy := make(map[string]string, len(device))
-
-	for k, v := range device {
-		copy[k] = v
-	}
-
-	return copy
+	return util.CloneMap(device)
 }
 
 // Validate accepts a map of field/validation functions to run against the device's config.
@@ -144,11 +139,6 @@ func (list Devices) Update(newlist Devices, updateFields func(Device, Device) []
 
 	// Detect which devices have changed or been removed in in new list.
 	for key, d := range list {
-		// Always skip user keys.
-		if strings.HasPrefix(key, "user.") {
-			continue
-		}
-
 		if !newlist.Contains(key, d) {
 			rmlist[key] = d
 		}
@@ -156,11 +146,6 @@ func (list Devices) Update(newlist Devices, updateFields func(Device, Device) []
 
 	// Detect which devices have changed or been added in in new list.
 	for key, d := range newlist {
-		// Always skip user keys.
-		if strings.HasPrefix(key, "user.") {
-			continue
-		}
-
 		if !list.Contains(key, d) {
 			addlist[key] = d
 		}
@@ -176,6 +161,14 @@ func (list Devices) Update(newlist Devices, updateFields func(Device, Device) []
 
 		// Detect keys different between old and new device and append to the all changed keys list.
 		allChangedKeys = append(allChangedKeys, deviceEqualsDiffKeys(oldDevice, newDevice)...)
+
+		// Remove 'user.' fields that can be live-updated without adding/removing the device from instance.
+		for k := range d {
+			if strings.HasPrefix(k, "user.") {
+				delete(oldDevice, k)
+				delete(newDevice, k)
+			}
+		}
 
 		// Remove any fields that can be live-updated without adding/removing the device from instance.
 		if updateFields != nil {

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -22,6 +24,7 @@ type cmdImageAlias struct {
 	image  *cmdImage
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdImageAlias) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("alias")
@@ -47,7 +50,7 @@ func (c *cmdImageAlias) Command() *cobra.Command {
 
 	// Workaround for subcommand usage errors. See: https://github.com/spf13/cobra/issues/706
 	cmd.Args = cobra.NoArgs
-	cmd.Run = func(cmd *cobra.Command, args []string) { _ = cmd.Usage() }
+	cmd.Run = func(cmd *cobra.Command, _ []string) { _ = cmd.Usage() }
 	return cmd
 }
 
@@ -56,29 +59,53 @@ type cmdImageAliasCreate struct {
 	global     *cmdGlobal
 	image      *cmdImage
 	imageAlias *cmdImageAlias
+
+	flagDescription string
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdImageAliasCreate) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("create", i18n.G("[<remote>:]<alias> <fingerprint>"))
+	cmd.Aliases = []string{"add"}
 	cmd.Short = i18n.G("Create aliases for existing images")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Create aliases for existing images`))
 
+	cmd.Flags().StringVar(&c.flagDescription, "description", "", i18n.G("Image alias description")+"``")
+
 	cmd.RunE = c.Run
+
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) > 1 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+
+		if len(args) == 0 {
+			return c.global.cmpRemotes(toComplete, true)
+		}
+
+		remote, _, found := strings.Cut(args[0], ":")
+		if !found {
+			remote = ""
+		}
+
+		return c.global.cmpImageFingerprintsFromRemote(toComplete, remote)
+	}
 
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdImageAliasCreate) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 2, 2)
+	exit, err := c.global.checkArgs(cmd, args, 2, 2)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -86,13 +113,14 @@ func (c *cmdImageAliasCreate) Run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Alias name missing"))
+		return errors.New(i18n.G("Alias name missing"))
 	}
 
 	// Create the alias
 	alias := api.ImageAliasesPost{}
 	alias.Name = resource.name
 	alias.Target = args[1]
+	alias.Description = c.flagDescription
 
 	return resource.server.CreateImageAlias(alias)
 }
@@ -104,28 +132,38 @@ type cmdImageAliasDelete struct {
 	imageAlias *cmdImageAlias
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdImageAliasDelete) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("delete", i18n.G("[<remote>:]<alias>"))
-	cmd.Aliases = []string{"rm"}
+	cmd.Aliases = []string{"rm", "remove"}
 	cmd.Short = i18n.G("Delete image aliases")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Delete image aliases`))
 
 	cmd.RunE = c.Run
 
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) > 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+
+		return c.global.cmpImages(toComplete)
+	}
+
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdImageAliasDelete) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 1)
+	exit, err := c.global.checkArgs(cmd, args, 1, 1)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -133,7 +171,7 @@ func (c *cmdImageAliasDelete) Run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Alias name missing"))
+		return errors.New(i18n.G("Alias name missing"))
 	}
 
 	// Delete the alias
@@ -150,6 +188,7 @@ type cmdImageAliasList struct {
 	flagColumns string
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdImageAliasList) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("list", i18n.G("[<remote>:] [<filters>...]"))
@@ -176,10 +215,22 @@ Pre-defined column shorthand chars:
   f - Fingerprint
   t - Type
   d - Description`))
-	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G("Format (csv|json|table|yaml|compact)")+"``")
+	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", c.global.defaultListFormat(), i18n.G(`Format (csv|json|table|yaml|compact|markdown), use suffix ",noheader" to disable headers and ",header" to enable it if missing, e.g. csv,header`)+"``")
 	cmd.Flags().StringVarP(&c.flagColumns, "columns", "c", defaultImageAliasColumns, i18n.G("Columns")+"``")
 
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		return cli.ValidateFlagFormatForListOutput(cmd.Flag("format").Value.String())
+	}
+
 	cmd.RunE = c.Run
+
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) > 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+
+		return c.global.cmpRemotes(toComplete, true)
+	}
 
 	return cmd
 }
@@ -246,9 +297,10 @@ func (c *cmdImageAliasList) descriptionColumntData(imageAlias api.ImageAliasesEn
 	return imageAlias.Description
 }
 
+// Run runs the actual command logic.
 func (c *cmdImageAliasList) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 0, -1)
+	exit, err := c.global.checkArgs(cmd, args, 0, -1)
 	if exit {
 		return err
 	}
@@ -316,7 +368,7 @@ func (c *cmdImageAliasList) Run(cmd *cobra.Command, args []string) error {
 		header = append(header, column.Name)
 	}
 
-	return cli.RenderTable(c.flagFormat, header, data, aliases)
+	return cli.RenderTable(os.Stdout, c.flagFormat, header, data, aliases)
 }
 
 // Rename.
@@ -326,6 +378,7 @@ type cmdImageAliasRename struct {
 	imageAlias *cmdImageAlias
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdImageAliasRename) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("rename", i18n.G("[<remote>:]<alias> <new-name>"))
@@ -336,18 +389,27 @@ func (c *cmdImageAliasRename) Command() *cobra.Command {
 
 	cmd.RunE = c.Run
 
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) > 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+
+		return c.global.cmpImages(toComplete)
+	}
+
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdImageAliasRename) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 2, 2)
+	exit, err := c.global.checkArgs(cmd, args, 2, 2)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -355,7 +417,7 @@ func (c *cmdImageAliasRename) Run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Alias name missing"))
+		return errors.New(i18n.G("Alias name missing"))
 	}
 
 	// Rename the alias

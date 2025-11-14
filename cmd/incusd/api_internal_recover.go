@@ -10,7 +10,6 @@ import (
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
 	internalRecover "github.com/lxc/incus/v6/internal/recover"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	backupConfig "github.com/lxc/incus/v6/internal/server/backup/config"
@@ -27,6 +26,7 @@ import (
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/osarch"
+	"github.com/lxc/incus/v6/shared/revert"
 )
 
 // Define API endpoints for recover actions.
@@ -80,7 +80,12 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 			return err
 		}
 
-		profileDevices, err := dbCluster.GetDevices(ctx, tx.Tx(), "profile")
+		profileConfigs, err := dbCluster.GetAllProfileConfigs(ctx, tx.Tx())
+		if err != nil {
+			return err
+		}
+
+		profileDevices, err := dbCluster.GetAllProfileDevices(ctx, tx.Tx())
 		if err != nil {
 			return err
 		}
@@ -92,7 +97,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 				projectProfiles[profile.Project] = []*api.Profile{}
 			}
 
-			apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileDevices)
+			apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileConfigs, profileDevices)
 			if err != nil {
 				return err
 			}
@@ -114,8 +119,8 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 
 	res := internalRecover.ValidateResult{}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// addDependencyError adds an error to the list of dependency errors if not already present in list.
 	addDependencyError := func(err error) {
@@ -140,7 +145,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 				// If the pool DB record doesn't exist, and we are clustered, then don't proceed
 				// any further as we do not support pool DB record recovery when clustered.
 				if s.ServerClustered {
-					return response.BadRequest(fmt.Errorf("Storage pool recovery not supported when clustered"))
+					return response.BadRequest(errors.New("Storage pool recovery not supported when clustered"))
 				}
 
 				// If pool doesn't exist in DB, initialize a temporary pool with the supplied info.
@@ -191,7 +196,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 				}
 			}()
 
-			revert.Add(func() {
+			reverter.Add(func() {
 				cleanupPool := pools[pool.Name()]
 				_, _ = cleanupPool.Unmount() // Defer won't do it if record exists, so unmount on failure.
 			})
@@ -314,7 +319,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 
 	// Create the pools themselves.
 	for _, pool := range pools {
-		// Create missing storage pool DB record if neeed.
+		// Create missing storage pool DB record if needed.
 		if pool.ID() == storagePools.PoolIDTemporary {
 			var instPoolVol *backupConfig.Config // Instance volume used for new pool record.
 			var poolID int64                     // Pool ID of created pool record.
@@ -353,7 +358,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 				}
 			}
 
-			revert.Add(func() {
+			reverter.Add(func() {
 				_ = dbStoragePoolDeleteAndUpdateCache(context.Background(), s, pool.Name())
 			})
 
@@ -396,7 +401,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 				if poolVol.Container != nil || poolVol.Bucket != nil {
 					continue // Skip instance volumes and buckets.
 				} else if poolVol.Container == nil && poolVol.Volume == nil {
-					return response.SmartError(fmt.Errorf("Volume is neither instance nor custom volume"))
+					return response.SmartError(errors.New("Volume is neither instance nor custom volume"))
 				}
 
 				// Import custom volume and any snapshots.
@@ -405,7 +410,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 					return response.SmartError(fmt.Errorf("Failed importing custom volume %q in project %q: %w", poolVol.Volume.Name, projectName, err))
 				}
 
-				revert.Add(cleanup)
+				reverter.Add(cleanup)
 			}
 
 			// Recover unknown buckets.
@@ -421,7 +426,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 					return response.SmartError(fmt.Errorf("Failed importing bucket %q in project %q: %w", poolVol.Bucket.Name, projectName, err))
 				}
 
-				revert.Add(cleanup)
+				reverter.Add(cleanup)
 			}
 		}
 	}
@@ -459,7 +464,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 					return response.SmartError(fmt.Errorf("Failed creating instance %q record in project %q: %w", poolVol.Container.Name, projectName, err))
 				}
 
-				revert.Add(cleanup)
+				reverter.Add(cleanup)
 
 				// Recover instance volume snapshots.
 				for _, poolInstSnap := range poolVol.Snapshots {
@@ -477,7 +482,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 						return response.SmartError(fmt.Errorf("Failed creating instance %q snapshot %q record in project %q: %w", poolVol.Container.Name, poolInstSnap.Name, projectName, err))
 					}
 
-					revert.Add(cleanup)
+					reverter.Add(cleanup)
 				}
 
 				// Recreate instance mount path and symlinks (must come after snapshot recovery).
@@ -486,7 +491,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 					return response.SmartError(fmt.Errorf("Failed importing instance %q in project %q: %w", poolVol.Container.Name, projectName, err))
 				}
 
-				revert.Add(cleanup)
+				reverter.Add(cleanup)
 
 				// Reinitialize the instance's root disk quota even if no size specified (allows the storage driver the
 				// opportunity to reinitialize the quota based on the new storage volume's DB ID).
@@ -501,7 +506,7 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 		}
 	}
 
-	revert.Success()
+	reverter.Success()
 	return response.EmptySyncResponse
 }
 
@@ -509,16 +514,16 @@ func internalRecoverScan(ctx context.Context, s *state.State, userPools []api.St
 // Returns a revert fail function that can be used to undo this function if a subsequent step fails.
 func internalRecoverImportInstance(s *state.State, pool storagePools.Pool, projectName string, poolVol *backupConfig.Config, profiles []api.Profile) (instance.Instance, revert.Hook, error) {
 	if poolVol.Container == nil {
-		return nil, nil, fmt.Errorf("Pool volume is not an instance volume")
+		return nil, nil, errors.New("Pool volume is not an instance volume")
 	}
 
 	// Add root device if needed.
 	if poolVol.Container.Devices == nil {
-		poolVol.Container.Devices = make(map[string]map[string]string, 0)
+		poolVol.Container.Devices = make(map[string]map[string]string)
 	}
 
 	if poolVol.Container.ExpandedDevices == nil {
-		poolVol.Container.ExpandedDevices = make(map[string]map[string]string, 0)
+		poolVol.Container.ExpandedDevices = make(map[string]map[string]string)
 	}
 
 	internalImportRootDevicePopulate(pool.Name(), poolVol.Container.Devices, poolVol.Container.ExpandedDevices, profiles)
@@ -529,7 +534,7 @@ func internalRecoverImportInstance(s *state.State, pool storagePools.Pool, proje
 	}
 
 	if dbInst.Type < 0 {
-		return nil, nil, fmt.Errorf("Invalid instance type")
+		return nil, nil, errors.New("Invalid instance type")
 	}
 
 	inst, instOp, cleanup, err := instance.CreateInternal(s, *dbInst, nil, false, true)
@@ -545,21 +550,21 @@ func internalRecoverImportInstance(s *state.State, pool storagePools.Pool, proje
 // internalRecoverImportInstance recreates the database records for an instance snapshot.
 func internalRecoverImportInstanceSnapshot(s *state.State, pool storagePools.Pool, projectName string, poolVol *backupConfig.Config, snap *api.InstanceSnapshot, profiles []api.Profile) (revert.Hook, error) {
 	if poolVol.Container == nil || snap == nil {
-		return nil, fmt.Errorf("Pool volume is not an instance volume")
+		return nil, errors.New("Pool volume is not an instance volume")
 	}
 
 	// Add root device if needed.
 	if snap.Devices == nil {
-		snap.Devices = make(map[string]map[string]string, 0)
+		snap.Devices = make(map[string]map[string]string)
 	}
 
 	if snap.ExpandedDevices == nil {
-		snap.ExpandedDevices = make(map[string]map[string]string, 0)
+		snap.ExpandedDevices = make(map[string]map[string]string)
 	}
 
 	internalImportRootDevicePopulate(pool.Name(), snap.Devices, snap.ExpandedDevices, profiles)
 
-	arch, err := osarch.ArchitectureId(snap.Architecture)
+	arch, err := osarch.ArchitectureID(snap.Architecture)
 	if err != nil {
 		return nil, err
 	}

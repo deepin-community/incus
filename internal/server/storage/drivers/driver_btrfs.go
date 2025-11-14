@@ -1,7 +1,9 @@
 package drivers
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,22 +13,24 @@ import (
 
 	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
 
-var btrfsVersion string
-var btrfsLoaded bool
-var btrfsPropertyForce bool
+var (
+	btrfsVersion       string
+	btrfsLoaded        bool
+	btrfsPropertyForce bool
+)
 
 type btrfs struct {
 	common
@@ -65,7 +69,7 @@ func (d *btrfs) load() error {
 
 		count, err := fmt.Sscanf(strings.SplitN(out, " ", 2)[1], "v%s\n", &btrfsVersion)
 		if err != nil || count != 1 {
-			return fmt.Errorf("The 'btrfs' tool isn't working properly")
+			return errors.New("The 'btrfs' tool isn't working properly")
 		}
 	}
 
@@ -138,8 +142,8 @@ func (d *btrfs) Create() error {
 	// Store the provided source as we are likely to be mangling it.
 	d.config["volatile.initial_source"] = d.config["source"]
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	err := d.FillConfig()
 	if err != nil {
@@ -162,7 +166,7 @@ func (d *btrfs) Create() error {
 			return fmt.Errorf("Failed to create the sparse file: %w", err)
 		}
 
-		revert.Add(func() { _ = os.Remove(d.config["source"]) })
+		reverter.Add(func() { _ = os.Remove(d.config["source"]) })
 
 		// Format the file.
 		_, err = makeFSType(d.config["source"], "btrfs", &mkfsOptions{Label: d.name})
@@ -210,7 +214,7 @@ func (d *btrfs) Create() error {
 
 			// Check that the provided subvolume is empty.
 			if hasSubvolumes {
-				return fmt.Errorf("Requested btrfs subvolume exists but is not empty")
+				return errors.New("Requested btrfs subvolume exists but is not empty")
 			}
 		} else {
 			// New btrfs subvolume on existing btrfs filesystem.
@@ -236,7 +240,7 @@ func (d *btrfs) Create() error {
 
 				// Delete the current directory to replace by subvolume.
 				err := os.Remove(cleanSource)
-				if err != nil && !os.IsNotExist(err) {
+				if err != nil && !errors.Is(err, fs.ErrNotExist) {
 					return fmt.Errorf("Failed to remove %q: %w", cleanSource, err)
 				}
 			}
@@ -248,10 +252,10 @@ func (d *btrfs) Create() error {
 			}
 		}
 	} else {
-		return fmt.Errorf(`Invalid "source" property`)
+		return errors.New(`Invalid "source" property`)
 	}
 
-	revert.Success()
+	reverter.Success()
 	return nil
 }
 
@@ -302,7 +306,7 @@ func (d *btrfs) Delete(op *operations.Operation) error {
 		}
 
 		// And re-create as an empty directory to make the backend happy.
-		err = os.Mkdir(mountPath, 0700)
+		err = os.Mkdir(mountPath, 0o700)
 		if err != nil {
 			return fmt.Errorf("Failed creating directory %q: %w", mountPath, err)
 		}
@@ -311,7 +315,7 @@ func (d *btrfs) Delete(op *operations.Operation) error {
 	// Delete any loop file we may have used.
 	loopPath := loopFilePath(d.name)
 	err = os.Remove(loopPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed removing loop file %q: %w", loopPath, err)
 	}
 
@@ -355,11 +359,11 @@ func (d *btrfs) Update(changedConfig map[string]string) error {
 		loopPath := loopFilePath(d.name)
 
 		if d.config["source"] != loopPath {
-			return fmt.Errorf("Cannot resize non-loopback pools")
+			return errors.New("Cannot resize non-loopback pools")
 		}
 
 		// Resize loop file
-		f, err := os.OpenFile(loopPath, os.O_RDWR, 0600)
+		f, err := os.OpenFile(loopPath, os.O_RDWR, 0o600)
 		if err != nil {
 			return err
 		}
@@ -484,7 +488,7 @@ func (d *btrfs) GetResources() (*api.ResourcesStoragePool, error) {
 }
 
 // MigrationType returns the type of transfer methods to be used when doing migrations between pools in preference order.
-func (d *btrfs) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool) []localMigration.Type {
+func (d *btrfs) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool, clusterMove bool, storageMove bool) []localMigration.Type {
 	var rsyncFeatures []string
 	btrfsFeatures := []string{migration.BTRFSFeatureMigrationHeader, migration.BTRFSFeatureSubvolumes, migration.BTRFSFeatureSubvolumeUUIDs}
 

@@ -2,13 +2,13 @@ package device
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
-	"os"
 	"strings"
 	"time"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
@@ -16,13 +16,14 @@ import (
 	"github.com/lxc/incus/v6/internal/server/network"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
 
-var nicRoutedIPGateway = map[string]string{
-	"ipv4": "169.254.0.1",
-	"ipv6": "fe80::1",
+var nicRoutedIPGateway = map[string]net.IP{
+	"ipv4": net.IPv4(169, 254, 0, 1),                                  // 169.254.0.1
+	"ipv6": {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}, // fe80::1
 }
 
 type nicRouted struct {
@@ -59,34 +60,227 @@ func (d *nicRouted) validateConfig(instConf instance.ConfigReader) error {
 
 	requiredFields := []string{}
 	optionalFields := []string{
+		// gendoc:generate(entity=devices, group=nic_routed, key=name)
+		//
+		// ---
+		//  type: string
+		//  default: kernel assigned
+		//  shortdesc: The name of the interface inside the instance
 		"name",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=parent)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: The name of the parent host device to join the instance to
 		"parent",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=mtu)
+		//
+		// ---
+		//  type: integer
+		//  default: parent MTU
+		//  shortdesc: The Maximum Transmit Unit (MTU) of the new interface
 		"mtu",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=queue.tx.length)
+		//
+		// ---
+		//  type: integer
+		//  shortdesc: The transmit queue length for the NIC
 		"queue.tx.length",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=hwaddr)
+		//
+		// ---
+		//  type: string
+		//  default: randomly assigned
+		//  shortdesc: The MAC address of the new interface
 		"hwaddr",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=host_name)
+		//
+		// ---
+		//  type: string
+		//  default: randomly assigned
+		//  shortdesc: The name of the interface on the host
 		"host_name",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=vlan)
+		//
+		// ---
+		//  type: integer
+		//  shortdesc: The VLAN ID to attach to
 		"vlan",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=limits.ingress)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: I/O limit in bit/s for incoming traffic (various suffixes supported, see {ref}instances-limit-units)
 		"limits.ingress",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=limits.egress)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: I/O limit in bit/s for outgoing traffic (various suffixes supported, see {ref}instances-limit-units)
 		"limits.egress",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=limits.max)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: I/O limit in bit/s for both incoming and outgoing traffic (same as setting both limits.ingress and limits.egress)
 		"limits.max",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=limits.priority)
+		//
+		// ---
+		//  type: integer
+		//  shortdesc: The priority for outgoing traffic, to be used by the kernel queuing discipline to prioritize network packets
 		"limits.priority",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=ipv4.gateway)
+		//
+		// ---
+		//  type: string
+		//  default: auto
+		//  shortdesc: Whether to add an automatic default IPv4 gateway (can be `auto` or `none`)
 		"ipv4.gateway",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=ipv6.gateway)
+		//
+		// ---
+		//  type: string
+		//  default: auto
+		//  shortdesc: Whether to add an automatic default IPv6 gateway (can be `auto` or `none`)
 		"ipv6.gateway",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=ipv4.routes)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: Comma-delimited list of IPv4 static routes to add on host to NIC (without L2 ARP/NDP proxy)
 		"ipv4.routes",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=ipv6.routes)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: Comma-delimited list of IPv6 static routes to add on host to NIC (without L2 ARP/NDP proxy)
 		"ipv6.routes",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=ipv4.host_address)
+		//
+		// ---
+		//  type: string
+		//  default: `169.254.0.1`
+		//  shortdesc: The IPv4 address to add to the host-side `veth` interface
 		"ipv4.host_address",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=ipv6.host_address)
+		//
+		// ---
+		//  type: string
+		//  default: `fe80::1`
+		//  shortdesc: The IPv6 address to add to the host-side `veth` interface
 		"ipv6.host_address",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=ipv4.host_table)
+		//
+		// The custom policy routing table ID to add IPv4 static routes to (in addition to the main routing table)
+		//
+		// ---
+		//  type: integer
+		//  shortdesc: Deprecated: Use `ipv4.host_tables` instead
 		"ipv4.host_table",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=ipv6.host_table)
+		//
+		// The custom policy routing table ID to add IPv6 static routes to (in addition to the main routing table)
+		//
+		// ---
+		//  type: integer
+		//  shortdesc: Deprecated: Use `ipv6.host_tables` instead
 		"ipv6.host_table",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=ipv4.host_tables)
+		//
+		// ---
+		//  type: string
+		//  default: 254
+		//  shortdesc: Comma-delimited list of routing tables IDs to add IPv4 static routes to
+		"ipv4.host_tables",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=ipv6.host_tables)
+		//
+		// ---
+		//  type: string
+		//  default: 254
+		//  shortdesc: Comma-delimited list of routing tables IDs to add IPv6 static routes to
+		"ipv6.host_tables",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=gvrp)
+		//
+		// ---
+		//  type: bool
+		//  default: false
+		//  shortdesc: Register VLAN using GARP VLAN Registration Protocol
 		"gvrp",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=vrf)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: The VRF on the host in which the host-side interface and routes are created
+		"vrf",
+
+		// gendoc:generate(entity=devices, group=nic_routed, key=io.bus)
+		//
+		// ---
+		//  type: string
+		//  default: `virtio`
+		//  shortdesc: Override the bus for the device (can be `virtio` or `usb`) (VM only)
+		"io.bus",
 	}
 
 	rules := nicValidationRules(requiredFields, optionalFields, instConf)
+
+	// gendoc:generate(entity=devices, group=nic_routed, key=ipv4.address)
+	//
+	// ---
+	//  type: string
+	//  shortdesc: Comma-delimited list of IPv4 static addresses to add to the instance
 	rules["ipv4.address"] = validate.Optional(validate.IsListOf(validate.IsNetworkAddressV4))
+
+	// gendoc:generate(entity=devices, group=nic_routed, key=ipv6.address)
+	//
+	// ---
+	//  type: string
+	//  shortdesc: Comma-delimited list of IPv6 static addresses to add to the instance
 	rules["ipv6.address"] = validate.Optional(validate.IsListOf(validate.IsNetworkAddressV6))
-	rules["gvrp"] = validate.Optional(validate.IsBool)
+
+	// gendoc:generate(entity=devices, group=nic_routed, key=ipv4.neighbor_probe)
+	//
+	// ---
+	//  type: bool
+	//  default: true
+	//  shortdesc: Whether to probe the parent network for IP address availability
 	rules["ipv4.neighbor_probe"] = validate.Optional(validate.IsBool)
+
+	// gendoc:generate(entity=devices, group=nic_routed, key=ipv6.neighbor_probe)
+	//
+	// ---
+	//  type: bool
+	//  default: true
+	//  shortdesc: Whether to probe the parent network for IP address availability
 	rules["ipv6.neighbor_probe"] = validate.Optional(validate.IsBool)
+
+	rules["ipv4.host_tables"] = validate.Optional(validate.IsListOf(validate.IsInRange(0, 255)))
+	rules["ipv6.host_tables"] = validate.Optional(validate.IsListOf(validate.IsInRange(0, 255)))
+	rules["gvrp"] = validate.Optional(validate.IsBool)
+	rules["vrf"] = validate.Optional(validate.IsAny)
 
 	err = d.config.Validate(rules)
 	if err != nil {
@@ -119,7 +313,7 @@ func (d *nicRouted) validateConfig(instConf instance.ConfigReader) error {
 
 	// Ensure that VLAN setting is only used with parent setting.
 	if d.config["parent"] == "" && d.config["vlan"] != "" {
-		return fmt.Errorf("The vlan setting can only be used when combined with a parent interface")
+		return errors.New("The vlan setting can only be used when combined with a parent interface")
 	}
 
 	return nil
@@ -128,7 +322,7 @@ func (d *nicRouted) validateConfig(instConf instance.ConfigReader) error {
 // validateEnvironment checks the runtime environment for correctness.
 func (d *nicRouted) validateEnvironment() error {
 	if d.inst.Type() == instancetype.Container && d.config["name"] == "" {
-		return fmt.Errorf("Requires name property to start")
+		return errors.New("Requires name property to start")
 	}
 
 	if d.config["parent"] != "" {
@@ -185,11 +379,11 @@ func (d *nicRouted) validateEnvironment() error {
 
 			if sysctlVal != "1\n" {
 				// Replace . in parent name with / for sysctl formatting.
-				return fmt.Errorf("Routed mode requires sysctl net.ipv4.conf.%s.forwarding=1", strings.Replace(d.effectiveParentName, ".", "/", -1))
+				return fmt.Errorf("Routed mode requires sysctl net.ipv4.conf.%s.forwarding=1", strings.ReplaceAll(d.effectiveParentName, ".", "/"))
 			}
 		}
 
-		// Check necessary devic specific sysctls are configured for use with l2proxy parent for routed mode.
+		// Check necessary device specific sysctls are configured for use with l2proxy parent for routed mode.
 		if d.config["ipv6.address"] != "" {
 			ipv6FwdPath := fmt.Sprintf("net/ipv6/conf/%s/forwarding", d.effectiveParentName)
 			sysctlVal, err := localUtil.SysctlGet(ipv6FwdPath)
@@ -199,7 +393,7 @@ func (d *nicRouted) validateEnvironment() error {
 
 			if sysctlVal != "1\n" {
 				// Replace . in parent name with / for sysctl formatting.
-				return fmt.Errorf("Routed mode requires sysctl net.ipv6.conf.%s.forwarding=1", strings.Replace(d.effectiveParentName, ".", "/", -1))
+				return fmt.Errorf("Routed mode requires sysctl net.ipv6.conf.%s.forwarding=1", strings.ReplaceAll(d.effectiveParentName, ".", "/"))
 			}
 
 			ipv6ProxyNdpPath := fmt.Sprintf("net/ipv6/conf/%s/proxy_ndp", d.effectiveParentName)
@@ -210,8 +404,15 @@ func (d *nicRouted) validateEnvironment() error {
 
 			if sysctlVal != "1\n" {
 				// Replace . in parent name with / for sysctl formatting.
-				return fmt.Errorf("Routed mode requires sysctl net.ipv6.conf.%s.proxy_ndp=1", strings.Replace(d.effectiveParentName, ".", "/", -1))
+				return fmt.Errorf("Routed mode requires sysctl net.ipv6.conf.%s.proxy_ndp=1", strings.ReplaceAll(d.effectiveParentName, ".", "/"))
 			}
+		}
+	}
+
+	if d.config["vrf"] != "" {
+		// Check if the vrf interface exists.
+		if !network.InterfaceExists(d.config["vrf"]) {
+			return fmt.Errorf("VRF %q doesn't exist", d.config["vrf"])
 		}
 	}
 
@@ -275,8 +476,8 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 	networkCreateSharedDeviceLock.Lock()
 	defer networkCreateSharedDeviceLock.Unlock()
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	saveData := make(map[string]string)
 
@@ -292,7 +493,7 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 
 		// If we created a VLAN interface, we need to setup the sysctls on that interface.
 		if util.IsTrue(saveData["last_state.created"]) {
-			revert.Add(func() {
+			reverter.Add(func() {
 				_ = networkRemoveInterfaceIfNeeded(d.state, d.effectiveParentName, d.inst, d.config["parent"], d.config["vlan"])
 			})
 
@@ -341,7 +542,7 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 		return nil, err
 	}
 
-	revert.Add(func() { _ = network.InterfaceRemove(saveData["host_name"]) })
+	reverter.Add(func() { _ = network.InterfaceRemove(saveData["host_name"]) })
 
 	// Populate device config with volatile fields if needed.
 	networkVethFillFromVolatile(d.config, saveData)
@@ -354,13 +555,13 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 
 	// Attempt to disable IPv6 router advertisement acceptance from instance.
 	err = localUtil.SysctlSet(fmt.Sprintf("net/ipv6/conf/%s/accept_ra", saveData["host_name"]), "0")
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 
 	// Prevent source address spoofing by requiring a return path.
 	err = localUtil.SysctlSet(fmt.Sprintf("net/ipv4/conf/%s/rp_filter", saveData["host_name"]), "1")
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 
@@ -388,8 +589,11 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 			// halt whilst ARP/NDP is re-detected (which is what happens with just neighbour proxies).
 			addr := &ip.Addr{
 				DevName: saveData["host_name"],
-				Address: fmt.Sprintf("%s/%d", d.ipHostAddress(keyPrefix), subnetSize),
-				Family:  ipFamilyArg,
+				Address: &net.IPNet{
+					IP:   d.ipHostAddress(keyPrefix),
+					Mask: net.CIDRMask(subnetSize, subnetSize),
+				},
+				Family: ipFamilyArg,
 			}
 
 			err = addr.Add()
@@ -404,31 +608,67 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 			}
 		}
 
+		getTables := func() []string {
+			// New plural form – honour exactly what the user gives.
+			v := d.config[fmt.Sprintf("%s.host_tables", keyPrefix)]
+			if v != "" {
+				return util.SplitNTrimSpace(v, ",", -1, true)
+			}
+
+			// Legacy – single key: include it plus 254.
+			v = d.config[fmt.Sprintf("%s.host_table", keyPrefix)]
+			if v != "" {
+				if v == "254" {
+					return []string{"254"} // user asked for main only
+				}
+
+				return []string{v, "254"} // custom + main
+			}
+
+			// Default – main only.
+			return []string{"254"}
+		}
+
+		tables := getTables()
+
 		// Perform per-address host-side configuration (static routes and neighbour proxy entries).
 		for _, addrStr := range addresses {
-			// Apply host-side static routes to main routing table.
-			r := ip.Route{
-				DevName: saveData["host_name"],
-				Route:   fmt.Sprintf("%s/%d", addrStr, subnetSize),
-				Table:   "main",
-				Family:  ipFamilyArg,
+			// Apply host-side static routes to main routing table or VRF.
+
+			address := net.ParseIP(addrStr)
+			if address == nil {
+				return nil, fmt.Errorf("Invalid address %q", addrStr)
 			}
 
-			err = r.Add()
-			if err != nil {
-				return nil, fmt.Errorf("Failed adding host route %q: %w", r.Route, err)
-			}
-
-			// Add host-side static routes to instance IPs to custom routing table if specified.
-			// This is in addition to the static route added to the main routing table, which is still
-			// critical to ensure that reverse path filtering doesn't kick in blocking traffic from
-			// the instance.
-			if d.config[fmt.Sprintf("%s.host_table", keyPrefix)] != "" {
+			// If a VRF is set we still add a route into the VRF's own table (empty Table value).
+			if d.config["vrf"] != "" {
 				r := ip.Route{
 					DevName: saveData["host_name"],
-					Route:   fmt.Sprintf("%s/%d", addrStr, subnetSize),
-					Table:   d.config[fmt.Sprintf("%s.host_table", keyPrefix)],
-					Family:  ipFamilyArg,
+					Route: &net.IPNet{
+						IP:   address,
+						Mask: net.CIDRMask(subnetSize, subnetSize),
+					},
+					Table:  "",
+					Family: ipFamilyArg,
+					VRF:    d.config["vrf"],
+				}
+
+				err = r.Add()
+				if err != nil {
+					return nil, fmt.Errorf("Failed adding host route %q: %w", r.Route, err)
+				}
+			}
+
+			// Add routes to all requested tables.
+			for _, tbl := range tables {
+				r := ip.Route{
+					DevName: saveData["host_name"],
+					Route: &net.IPNet{
+						IP:   address,
+						Mask: net.CIDRMask(subnetSize, subnetSize),
+					},
+					Table:  tbl,
+					Family: ipFamilyArg,
 				}
 
 				err = r.Add()
@@ -449,7 +689,7 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 					return nil, fmt.Errorf("Failed adding neighbour proxy %q to %q: %w", np.Addr.String(), np.DevName, err)
 				}
 
-				revert.Add(func() { _ = np.Delete() })
+				reverter.Add(func() { _ = np.Delete() })
 			}
 		}
 
@@ -459,20 +699,49 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 			if len(addresses) == 0 {
 				return nil, fmt.Errorf("%s.routes requires %s.address to be set", keyPrefix, keyPrefix)
 			}
+
+			viaAddress := net.ParseIP(addresses[0])
+			if viaAddress == nil {
+				return nil, fmt.Errorf("Invalid address %q", addresses[0])
+			}
+
 			// Add routes
 			for _, routeStr := range routes {
-				// Apply host-side static routes to main routing table.
-				r := ip.Route{
-					DevName: saveData["host_name"],
-					Route:   routeStr,
-					Table:   "main",
-					Family:  ipFamilyArg,
-					Via:     addresses[0],
+				route, err := ip.ParseIPNet(routeStr)
+				if err != nil {
+					return nil, fmt.Errorf("Invalid route %q: %w", routeStr, err)
+				}
+				// If a VRF is set we still add a route into the VRF's own table (empty Table value).
+				if d.config["vrf"] != "" {
+					r := ip.Route{
+						DevName: saveData["host_name"],
+						Route:   route,
+						Table:   "",
+						Family:  ipFamilyArg,
+						Via:     viaAddress,
+						VRF:     d.config["vrf"],
+					}
+
+					err = r.Add()
+					if err != nil {
+						return nil, fmt.Errorf("Failed adding route %q: %w", r.Route, err)
+					}
 				}
 
-				err = r.Add()
-				if err != nil {
-					return nil, fmt.Errorf("Failed adding route %q: %w", r.Route, err)
+				// Add routes to all requested tables.
+				for _, tbl := range tables {
+					r := ip.Route{
+						DevName: saveData["host_name"],
+						Route:   route,
+						Table:   tbl,
+						Family:  ipFamilyArg,
+						Via:     viaAddress,
+					}
+
+					err = r.Add()
+					if err != nil {
+						return nil, fmt.Errorf("Failed adding route %q to table %q: %w", r.Route, r.Table, err)
+					}
 				}
 			}
 		}
@@ -493,6 +762,10 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 		{Key: "hwaddr", Value: d.config["hwaddr"]},
 	}
 
+	if d.config["io.bus"] == "usb" {
+		runConf.UseUSBBus = true
+	}
+
 	if d.inst.Type() == instancetype.Container {
 		for _, keyPrefix := range []string{"ipv4", "ipv6"} {
 			ipAddresses := util.SplitNTrimSpace(d.config[fmt.Sprintf("%s.address", keyPrefix)], ",", -1, true)
@@ -500,7 +773,7 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 			// Use a fixed address as the auto next-hop default gateway if using this IP family.
 			if len(ipAddresses) > 0 && nicHasAutoGateway(d.config[fmt.Sprintf("%s.gateway", keyPrefix)]) {
 				runConf.NetworkInterface = append(runConf.NetworkInterface,
-					deviceConfig.RunConfigItem{Key: fmt.Sprintf("%s.gateway", keyPrefix), Value: d.ipHostAddress(keyPrefix)},
+					deviceConfig.RunConfigItem{Key: fmt.Sprintf("%s.gateway", keyPrefix), Value: d.ipHostAddress(keyPrefix).String()},
 				)
 			}
 
@@ -528,7 +801,8 @@ func (d *nicRouted) Start() (*deviceConfig.RunConfig, error) {
 		}...)
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return &runConf, nil
 }
 
@@ -667,10 +941,10 @@ func (d *nicRouted) postStop() error {
 	return nil
 }
 
-func (d *nicRouted) ipHostAddress(ipFamily string) string {
+func (d *nicRouted) ipHostAddress(ipFamily string) net.IP {
 	key := fmt.Sprintf("%s.host_address", ipFamily)
 	if d.config[key] != "" {
-		return d.config[key]
+		return net.ParseIP(d.config[key])
 	}
 
 	return nicRoutedIPGateway[ipFamily]

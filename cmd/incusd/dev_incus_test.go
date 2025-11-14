@@ -23,7 +23,7 @@ type DevIncusDialer struct {
 	Path string
 }
 
-func (d DevIncusDialer) DevIncusDial(ctx context.Context, network, path string) (net.Conn, error) {
+func (d DevIncusDialer) DevIncusDial(context.Context, string, string) (net.Conn, error) {
 	addr, err := net.ResolveUnixAddr("unix", d.Path)
 	if err != nil {
 		return nil, err
@@ -50,12 +50,12 @@ func setupDir() error {
 		return err
 	}
 
-	err = os.Chmod(testDir, 0700)
+	err = os.Chmod(testDir, 0o700)
 	if err != nil {
 		return err
 	}
 
-	_ = os.MkdirAll(fmt.Sprintf("%s/devIncus", testDir), 0755)
+	_ = os.MkdirAll(fmt.Sprintf("%s/devIncus", testDir), 0o755)
 
 	return os.Setenv("INCUS_DIR", testDir)
 }
@@ -169,7 +169,7 @@ func TestHttpRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(string(resp), pidNotInContainerErr.Error()) {
+	if !strings.Contains(string(resp), errPIDNotInContainer.Error()) {
 		t.Fatal("resp error not expected: ", string(resp))
 	}
 }

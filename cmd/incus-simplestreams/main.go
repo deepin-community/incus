@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -62,6 +62,9 @@ func main() {
 	verifyCmd := cmdVerify{global: &globalCmd}
 	app.AddCommand(verifyCmd.Command())
 
+	pruneCmd := cmdPrune{global: &globalCmd}
+	app.AddCommand(pruneCmd.Command())
+
 	// Run the main command and handle errors.
 	err := app.Execute()
 	if err != nil {
@@ -78,7 +81,7 @@ func (c *cmdGlobal) CheckArgs(cmd *cobra.Command, args []string, minArgs int, ma
 			return true, nil
 		}
 
-		return true, fmt.Errorf("Invalid number of arguments")
+		return true, errors.New("Invalid number of arguments")
 	}
 
 	return false, nil

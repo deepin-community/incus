@@ -2,7 +2,6 @@ package cluster_test
 
 import (
 	"context"
-	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,7 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lxc/incus/v6/internal/server/certificate"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	clusterConfig "github.com/lxc/incus/v6/internal/server/cluster/config"
 	"github.com/lxc/incus/v6/internal/server/db"
@@ -21,6 +19,7 @@ import (
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/osarch"
 	localtls "github.com/lxc/incus/v6/shared/tls"
+	"github.com/lxc/incus/v6/shared/tls/tlstest"
 )
 
 // After a heartbeat request is completed, the leader updates the heartbeat
@@ -33,7 +32,7 @@ func TestHeartbeat(t *testing.T) {
 	f.Grow()
 	f.Grow()
 
-	time.Sleep(1 * time.Second) // Wait for join notifiation triggered heartbeats to complete.
+	time.Sleep(1 * time.Second) // Wait for join notification triggered heartbeats to complete.
 
 	leader := f.Leader()
 	leaderState := f.State(leader)
@@ -205,7 +204,7 @@ func (f *heartbeatFixture) node() (*state.State, *cluster.Gateway, string) {
 	state, cleanup := state.NewTestState(f.t)
 	f.cleanups = append(f.cleanups, cleanup)
 
-	serverCert := localtls.TestingKeyPair()
+	serverCert := tlstest.TestingKeyPair(f.t)
 	state.ServerCert = func() *localtls.CertInfo { return serverCert }
 
 	gateway := newGateway(f.t, state.DB.Node, serverCert, state)
@@ -213,10 +212,6 @@ func (f *heartbeatFixture) node() (*state.State, *cluster.Gateway, string) {
 
 	mux := http.NewServeMux()
 	server := newServer(serverCert, mux)
-
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
-		return nil
-	}
 
 	for path, handler := range gateway.HandlerFuncs(nil, trustedCerts) {
 		mux.HandleFunc(path, handler)

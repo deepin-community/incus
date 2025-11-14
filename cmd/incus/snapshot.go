@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/instance"
@@ -24,6 +25,7 @@ type cmdSnapshot struct {
 	global *cmdGlobal
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdSnapshot) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("snapshot")
@@ -57,7 +59,7 @@ func (c *cmdSnapshot) Command() *cobra.Command {
 
 	// Workaround for subcommand usage errors. See: https://github.com/spf13/cobra/issues/706
 	cmd.Args = cobra.NoArgs
-	cmd.Run = func(cmd *cobra.Command, args []string) { _ = cmd.Usage() }
+	cmd.Run = func(cmd *cobra.Command, _ []string) { _ = cmd.Usage() }
 	return cmd
 }
 
@@ -68,12 +70,15 @@ type cmdSnapshotCreate struct {
 
 	flagStateful bool
 	flagNoExpiry bool
+	flagExpiry   string
 	flagReuse    bool
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdSnapshotCreate) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("create", i18n.G("[<remote>:]<instance> [<snapshot name>]"))
+	cmd.Aliases = []string{"add"}
 	cmd.Short = i18n.G("Create instance snapshot")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Create instance snapshots
@@ -87,12 +92,13 @@ incus snapshot create u1 snap0 < config.yaml
 	Create a snapshot of "u1" called "snap0" with the configuration from "config.yaml".`))
 
 	cmd.Flags().BoolVar(&c.flagStateful, "stateful", false, i18n.G("Whether or not to snapshot the instance's running state"))
+	cmd.Flags().StringVar(&c.flagExpiry, "expiry", "", i18n.G("Expiry date or time span for the new snapshot"))
 	cmd.Flags().BoolVar(&c.flagNoExpiry, "no-expiry", false, i18n.G("Ignore any configured auto-expiry for the instance"))
 	cmd.Flags().BoolVar(&c.flagReuse, "reuse", false, i18n.G("If the snapshot name already exists, delete and create a new one"))
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -103,14 +109,19 @@ incus snapshot create u1 snap0 < config.yaml
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdSnapshotCreate) Run(cmd *cobra.Command, args []string) error {
 	var stdinData api.InstanceSnapshotPut
 	conf := c.global.conf
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 2)
+	exit, err := c.global.checkArgs(cmd, args, 1, 2)
 	if exit {
 		return err
+	}
+
+	if c.flagNoExpiry && c.flagExpiry != "" {
+		return errors.New(i18n.G("Can't use both --no-expiry and --expiry"))
 	}
 
 	// If stdin isn't a terminal, read text from it
@@ -139,13 +150,13 @@ func (c *cmdSnapshotCreate) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	if instance.IsSnapshot(name) {
-		if snapname == "" {
-			fields := strings.SplitN(name, instance.SnapshotDelimiter, 2)
-			name = fields[0]
-			snapname = fields[1]
-		} else {
+		if snapname != "" {
 			return fmt.Errorf(i18n.G("Invalid instance name: %s"), name)
 		}
+
+		fields := strings.SplitN(name, instance.SnapshotDelimiter, 2)
+		name = fields[0]
+		snapname = fields[1]
 	}
 
 	d, err := conf.GetInstanceServer(remote)
@@ -175,6 +186,22 @@ func (c *cmdSnapshotCreate) Run(cmd *cobra.Command, args []string) error {
 
 	if c.flagNoExpiry {
 		req.ExpiresAt = &time.Time{}
+	} else if c.flagExpiry != "" {
+		// Try to parse as a duration.
+		expiry, err := instance.GetExpiry(time.Now(), c.flagExpiry)
+		if err != nil {
+			if !errors.Is(err, instance.ErrInvalidExpiry) {
+				return err
+			}
+
+			// Fallback to date parsing.
+			expiry, err = time.Parse(dateLayout, c.flagExpiry)
+			if err != nil {
+				return err
+			}
+		}
+
+		req.ExpiresAt = &expiry
 	} else if !stdinData.ExpiresAt.IsZero() {
 		req.ExpiresAt = &stdinData.ExpiresAt
 	}
@@ -195,10 +222,11 @@ type cmdSnapshotDelete struct {
 	flagInteractive bool
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdSnapshotDelete) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("delete", i18n.G("[<remote>:]<instance> <snapshot name>"))
-	cmd.Aliases = []string{"rm"}
+	cmd.Aliases = []string{"rm", "remove"}
 	cmd.Short = i18n.G("Delete instance snapshots")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Delete instance snapshots`))
@@ -207,7 +235,7 @@ func (c *cmdSnapshotDelete) Command() *cobra.Command {
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -218,15 +246,16 @@ func (c *cmdSnapshotDelete) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdSnapshotDelete) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 2, 2)
+	exit, err := c.global.checkArgs(cmd, args, 2, 2)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -254,7 +283,7 @@ func (c *cmdSnapshotDelete) promptDelete(instName string, name string) error {
 	input = strings.TrimSuffix(input, "\n")
 
 	if !slices.Contains([]string{i18n.G("yes")}, strings.ToLower(input)) {
-		return fmt.Errorf(i18n.G("User aborted delete operation"))
+		return errors.New(i18n.G("User aborted delete operation"))
 	}
 
 	return nil
@@ -287,9 +316,11 @@ type snapshotColumn struct {
 	Data func(api.InstanceSnapshot) string
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdSnapshotList) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("list", i18n.G("[<remote>:]<instance>"))
+	cmd.Aliases = []string{"ls"}
 	cmd.Short = i18n.G("List instance snapshots")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`List instance snapshots
@@ -312,12 +343,16 @@ Pre-defined column shorthand chars:
   E - Expires At
   s - Stateful`))
 
-	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G("Format (csv|json|table|yaml|compact)")+"``")
+	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", c.global.defaultListFormat(), i18n.G(`Format (csv|json|table|yaml|compact|markdown), use suffix ",noheader" to disable headers and ",header" to enable it if missing, e.g. csv,header`)+"``")
 	cmd.Flags().StringVarP(&c.flagColumns, "columns", "c", defaultSnapshotColumns, i18n.G("Columns")+"``")
+
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		return cli.ValidateFlagFormatForListOutput(cmd.Flag("format").Value.String())
+	}
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -388,11 +423,12 @@ func (c *cmdSnapshotList) statefulColumnData(snapshot api.InstanceSnapshot) stri
 	return strStateful
 }
 
+// Run runs the actual command logic.
 func (c *cmdSnapshotList) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 1)
+	exit, err := c.global.checkArgs(cmd, args, 1, 1)
 	if exit {
 		return err
 	}
@@ -433,7 +469,7 @@ func (c *cmdSnapshotList) Run(cmd *cobra.Command, args []string) error {
 		header = append(header, column.Name)
 	}
 
-	return cli.RenderTable(c.flagFormat, header, data, snapshots)
+	return cli.RenderTable(os.Stdout, c.flagFormat, header, data, snapshots)
 }
 
 // Rename.
@@ -442,6 +478,7 @@ type cmdSnapshotRename struct {
 	snapshot *cmdSnapshot
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdSnapshotRename) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("rename", i18n.G("[<remote>:]<instance> <old snapshot name> <new snapshot name>"))
@@ -451,7 +488,7 @@ func (c *cmdSnapshotRename) Command() *cobra.Command {
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -466,11 +503,12 @@ func (c *cmdSnapshotRename) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdSnapshotRename) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 3, 3)
+	exit, err := c.global.checkArgs(cmd, args, 3, 3)
 	if exit {
 		return err
 	}
@@ -503,6 +541,7 @@ type cmdSnapshotRestore struct {
 	flagStateful bool
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdSnapshotRestore) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("restore", i18n.G("[<remote>:]<instance> <snapshot name>"))
@@ -519,7 +558,7 @@ If --stateful is passed, then the running state will be restored too.`))
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -534,11 +573,12 @@ If --stateful is passed, then the running state will be restored too.`))
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdSnapshotRestore) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 2, 2)
+	exit, err := c.global.checkArgs(cmd, args, 2, 2)
 	if exit {
 		return err
 	}
@@ -578,10 +618,9 @@ func (c *cmdSnapshotRestore) Run(cmd *cobra.Command, args []string) error {
 type cmdSnapshotShow struct {
 	global   *cmdGlobal
 	snapshot *cmdSnapshot
-
-	flagExpanded bool
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdSnapshotShow) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("show", i18n.G("[<remote>:]<instance> <snapshot>"))
@@ -591,7 +630,7 @@ func (c *cmdSnapshotShow) Command() *cobra.Command {
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -606,15 +645,16 @@ func (c *cmdSnapshotShow) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdSnapshotShow) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 2, 2)
+	exit, err := c.global.checkArgs(cmd, args, 2, 2)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}

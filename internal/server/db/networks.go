@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -199,7 +200,7 @@ func (c *ClusterTx) GetNetworkID(ctx context.Context, projectName string, name s
 	case 1:
 		return int64(ids[0]), nil
 	default:
-		return -1, fmt.Errorf("More than one network has the given name")
+		return -1, errors.New("More than one network has the given name")
 	}
 }
 
@@ -215,7 +216,7 @@ func (c *ClusterTx) GetNetworkNameAndProjectWithID(ctx context.Context, networkI
 
 	err := dbQueryRowScan(ctx, c, q, inargs, outargs)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", api.StatusErrorf(http.StatusNotFound, "Network not found")
 		}
 
@@ -305,7 +306,7 @@ func (c *ClusterTx) CreatePendingNetwork(ctx context.Context, node string, proje
 	err := query.Scan(ctx, c.tx, sql, func(scan func(dest ...any) error) error {
 		// Ensure that there is at most one network with the given name.
 		if count != 0 {
-			return fmt.Errorf("More than one network exists with the given name")
+			return errors.New("More than one network exists with the given name")
 		}
 
 		count++
@@ -316,7 +317,7 @@ func (c *ClusterTx) CreatePendingNetwork(ctx context.Context, node string, proje
 		return err
 	}
 
-	var networkID = network.id
+	networkID := network.id
 	if networkID == 0 {
 		projectID, err := cluster.GetProjectID(context.Background(), c.tx, projectName)
 		if err != nil {
@@ -333,12 +334,12 @@ func (c *ClusterTx) CreatePendingNetwork(ctx context.Context, node string, proje
 	} else {
 		// Check that the existing network is in the networkPending state.
 		if network.state != networkPending {
-			return fmt.Errorf("Network is not in pending state")
+			return errors.New("Network is not in pending state")
 		}
 
 		// Check that the existing network type matches the requested type.
 		if network.netType != netType {
-			return fmt.Errorf("Requested network type doesn't match type in existing database record")
+			return errors.New("Requested network type doesn't match type in existing database record")
 		}
 	}
 
@@ -803,7 +804,7 @@ func networkConfigAdd(tx *sql.Tx, networkID, nodeID int64, config map[string]str
 		}
 
 		var nodeIDValue any
-		if !slices.Contains(NodeSpecificNetworkConfig, k) {
+		if !IsNodeSpecificNetworkConfig(k) {
 			nodeIDValue = nil
 		} else {
 			nodeIDValue = nodeID
@@ -855,10 +856,43 @@ func (c *ClusterTx) RenameNetwork(ctx context.Context, project string, oldName s
 	return err
 }
 
-// NodeSpecificNetworkConfig lists all network config keys which are node-specific.
-var NodeSpecificNetworkConfig = []string{
+// IsNodeSpecificNetworkConfig returns true for a given network config key, if
+// the key is node-specific. Otherwise false is returned.
+func IsNodeSpecificNetworkConfig(key string) bool {
+	if slices.Contains(nodeSpecificNetworkConfig, key) {
+		return true
+	}
+
+	if nodeSpecificNetworkConfigRe.MatchString(key) {
+		return true
+	}
+
+	return false
+}
+
+// StripNodeSpecificNetworkConfig returns a new network config map with all the
+// node-specific keys removed. The source map is left unchanged.
+func StripNodeSpecificNetworkConfig(config map[string]string) map[string]string {
+	strippedConfig := make(map[string]string, len(config))
+
+	for key, value := range config {
+		if IsNodeSpecificNetworkConfig(key) {
+			continue
+		}
+
+		strippedConfig[key] = value
+	}
+
+	return strippedConfig
+}
+
+// nodeSpecificNetworkConfig lists all static network config keys which are node-specific.
+var nodeSpecificNetworkConfig = []string{
 	"bgp.ipv4.nexthop",
 	"bgp.ipv6.nexthop",
 	"bridge.external_interfaces",
 	"parent",
 }
+
+// nodeSpecificNetworkConfigRe lists dynamic network config keys which are node-specific.
+var nodeSpecificNetworkConfigRe = regexp.MustCompile(`^tunnel\.[^.]+\.(interface|local)$`)

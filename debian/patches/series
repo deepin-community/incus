@@ -1,3 +1,9 @@
 001-skip-TestConvertNetworkConfig.patch
 002-adjust-import-paths.patch
-0003-Compile-against-go-criu-v7.patch
+003-Compile-against-go-criu-v7.patch
+004-include-incusos-network-structs.patch
+005-revert-4e828ca.patch
+006-update-libovsdb-import-path.patch
+106a-GHSA-56mx-8g9f-5crf.patch
+106b-GHSA-56mx-8g9f-5crf.patch
+106c-GHSA-56mx-8g9f-5crf.patch

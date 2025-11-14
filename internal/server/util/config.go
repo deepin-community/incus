@@ -5,6 +5,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"github.com/lxc/incus/v6/shared/util"
 )
 
 // CompareConfigs compares two config maps and returns an error if they differ.
@@ -29,13 +31,7 @@ func CompareConfigs(config1, config2 map[string]string, exclude []string) error 
 		}
 
 		if config1[key] != value {
-			present := false
-			for i := range delta {
-				if delta[i] == key {
-					present = true
-					break
-				}
-			}
+			present := slices.Contains(delta, key)
 			if !present {
 				delta = append(delta, key)
 			}
@@ -52,10 +48,5 @@ func CompareConfigs(config1, config2 map[string]string, exclude []string) error 
 
 // CopyConfig creates a new map with a copy of the given config.
 func CopyConfig(config map[string]string) map[string]string {
-	copy := make(map[string]string, len(config))
-	for key, value := range config {
-		copy[key] = value
-	}
-
-	return copy
+	return util.CloneMap(config)
 }

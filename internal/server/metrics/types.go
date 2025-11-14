@@ -10,6 +10,7 @@ type Sample struct {
 type MetricSet struct {
 	set    map[MetricType][]Sample
 	labels map[string]string
+	suffix []byte
 }
 
 // MetricType is a numeric code identifying the metric.
@@ -56,7 +57,7 @@ const (
 	MemoryInactiveBytes
 	// MemoryMappedBytes represents the amount of mapped memory.
 	MemoryMappedBytes
-	//MemoryMemAvailableBytes represents the amount of available memory.
+	// MemoryMemAvailableBytes represents the amount of available memory.
 	MemoryMemAvailableBytes
 	// MemoryMemFreeBytes represents the amount of free memory.
 	MemoryMemFreeBytes

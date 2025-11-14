@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -33,6 +35,7 @@ type cmdAdd struct {
 func (c *cmdAdd) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = "add <metadata tarball> [<data file>]"
+	cmd.Aliases = []string{"import"}
 	cmd.Short = "Add an image"
 	cmd.Long = cli.FormatSection("Description",
 		`Add an image to the server
@@ -225,7 +228,7 @@ func (c *cmdAdd) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	if hdr == nil || hdr.Name != "metadata.yaml" {
-		return fmt.Errorf("Couldn't find metadata.yaml in metadata tarball")
+		return errors.New("Couldn't find metadata.yaml in metadata tarball")
 	}
 
 	// Parse the metadata.
@@ -242,13 +245,13 @@ func (c *cmdAdd) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Validate the metadata.
-	_, err = osarch.ArchitectureId(metadata.Architecture)
+	_, err = osarch.ArchitectureID(metadata.Architecture)
 	if err != nil {
 		return fmt.Errorf("Invalid architecture in metadata.yaml: %w", err)
 	}
 
 	if metadata.CreationDate == 0 {
-		return fmt.Errorf("Missing creation date in metadata.yaml")
+		return errors.New("Missing creation date in metadata.yaml")
 	}
 
 	for _, prop := range []string{"os", "release", "variant", "architecture", "description"} {
@@ -276,12 +279,12 @@ func (c *cmdAdd) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the paths if missing.
-	err = os.MkdirAll("images", 0755)
+	err = os.MkdirAll("images", 0o755)
 	if err != nil && !os.IsExist(err) {
 		return err
 	}
 
-	err = os.MkdirAll("streams/v1", 0755)
+	err = os.MkdirAll("streams/v1", 0o755)
 	if err != nil && !os.IsExist(err) {
 		return err
 	}
@@ -291,7 +294,7 @@ func (c *cmdAdd) Run(cmd *cobra.Command, args []string) error {
 
 	body, err = os.ReadFile("streams/v1/images.json")
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 
@@ -430,7 +433,7 @@ func (c *cmdAdd) Run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	err = os.WriteFile("streams/v1/images.json", body, 0644)
+	err = os.WriteFile("streams/v1/images.json", body, 0o644)
 	if err != nil {
 		return err
 	}

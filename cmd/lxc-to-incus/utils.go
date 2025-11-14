@@ -1,10 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/migration"
 	"github.com/lxc/incus/v6/shared/api"
 )
@@ -73,7 +74,7 @@ func transferRootfs(dst incus.InstanceServer, op incus.Operation, rootfs string,
 	}
 
 	if !msg.GetSuccess() {
-		return fmt.Errorf(msg.GetMessage())
+		return errors.New(msg.GetMessage())
 	}
 
 	return nil

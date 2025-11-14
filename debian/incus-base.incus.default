@@ -1,0 +1,7 @@
+PATH=/usr/libexec/incus:/usr/sbin:/usr/bin:/sbin:/bin
+INCUS_AGENT_PATH=/usr/libexec/incus
+
+# Set to yes to make incusd use syslog instead of directly writing log to /var/log/incus/incus.log
+# If you use Runit as init system, logs for Incus itself will go to /var/log/runit/incus/current,
+# regardless of the setting below
+USE_SYSLOG=no

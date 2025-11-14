@@ -2,8 +2,10 @@ package drivers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -58,7 +60,6 @@ func (d *ceph) osdPoolExists() (bool, error) {
 		"get",
 		d.config["ceph.osd.pool_name"],
 		"size")
-
 	if err != nil {
 		status, _ := linux.ExitStatus(err)
 		// If the error status code is 2, the pool definitely doesn't exist.
@@ -177,7 +178,7 @@ func (d *ceph) rbdMapVolume(vol Volume) (string, error) {
 
 	idx := strings.Index(devPath, "/dev/rbd")
 	if idx < 0 {
-		return "", fmt.Errorf("Failed to detect mapped device path")
+		return "", errors.New("Failed to detect mapped device path")
 	}
 
 	devPath = strings.TrimSpace(devPath[idx:])
@@ -203,10 +204,10 @@ again:
 		"unmap",
 		rbdVol)
 	if err != nil {
-		runError, ok := err.(subprocess.RunError)
-		if ok {
-			exitError, ok := runError.Unwrap().(*exec.ExitError)
-			if ok {
+		var runError subprocess.RunError
+		if errors.As(err, &runError) {
+			var exitError *exec.ExitError
+			if errors.As(runError.Unwrap(), &exitError) {
 				if exitError.ExitCode() == 22 {
 					// EINVAL (already unmapped).
 					if ourDeactivate {
@@ -255,10 +256,10 @@ again:
 		"unmap",
 		d.getRBDVolumeName(vol, snapshotName, false))
 	if err != nil {
-		runError, ok := err.(subprocess.RunError)
-		if ok {
-			exitError, ok := runError.Unwrap().(*exec.ExitError)
-			if ok {
+		var runError subprocess.RunError
+		if errors.As(err, &runError) {
+			var exitError *exec.ExitError
+			if errors.As(runError.Unwrap(), &exitError) {
 				if exitError.ExitCode() == 22 {
 					// EINVAL (already unmapped).
 					return nil
@@ -307,10 +308,10 @@ func (d *ceph) rbdProtectVolumeSnapshot(vol Volume, snapshotName string) error {
 		"--snap", snapshotName,
 		d.getRBDVolumeName(vol, "", false))
 	if err != nil {
-		runError, ok := err.(subprocess.RunError)
-		if ok {
-			exitError, ok := runError.Unwrap().(*exec.ExitError)
-			if ok {
+		var runError subprocess.RunError
+		if errors.As(err, &runError) {
+			var exitError *exec.ExitError
+			if errors.As(runError.Unwrap(), &exitError) {
 				if exitError.ExitCode() == 16 {
 					// EBUSY (snapshot already protected).
 					return nil
@@ -338,10 +339,10 @@ func (d *ceph) rbdUnprotectVolumeSnapshot(vol Volume, snapshotName string) error
 		"--snap", snapshotName,
 		d.getRBDVolumeName(vol, "", false))
 	if err != nil {
-		runError, ok := err.(subprocess.RunError)
-		if ok {
-			exitError, ok := runError.Unwrap().(*exec.ExitError)
-			if ok {
+		var runError subprocess.RunError
+		if errors.As(err, &runError) {
+			var exitError *exec.ExitError
+			if errors.As(runError.Unwrap(), &exitError) {
 				if exitError.ExitCode() == 22 {
 					// EBUSY (snapshot already unprotected).
 					return nil
@@ -515,7 +516,7 @@ func (d *ceph) rbdGetVolumeParent(vol Volume) (string, error) {
 
 	idx = strings.Index(msg, "\n")
 	if idx == -1 {
-		return "", fmt.Errorf("Unexpected parsing error")
+		return "", errors.New("Unexpected parsing error")
 	}
 
 	msg = msg[:idx]
@@ -573,12 +574,12 @@ func (d *ceph) rbdListVolumeSnapshots(vol Volume) ([]string, error) {
 	for _, v := range data {
 		_, ok := v["name"]
 		if !ok {
-			return []string{}, fmt.Errorf("No \"name\" property found")
+			return []string{}, errors.New("No \"name\" property found")
 		}
 
 		name, ok := v["name"].(string)
 		if !ok {
-			return []string{}, fmt.Errorf("\"name\" property did not have string type")
+			return []string{}, errors.New("\"name\" property did not have string type")
 		}
 
 		name = strings.TrimSpace(name)
@@ -883,7 +884,7 @@ func (d *ceph) parseParent(parent string) (Volume, string, error) {
 
 	fields := strings.SplitN(parent, "/", 2)
 	if len(fields) != 2 {
-		return vol, "", fmt.Errorf("Pool delimiter not found")
+		return vol, "", errors.New("Pool delimiter not found")
 	}
 
 	parentName := fields[1]
@@ -998,7 +999,7 @@ func (d *ceph) parseParent(parent string) (Volume, string, error) {
 	}
 
 	// Handle virtual-machines volumes.
-	if strings.HasPrefix(parentName, "virtual_machine_") || strings.HasPrefix(parentName, "zombie_virtual_machine_") {
+	if strings.HasPrefix(parentName, "virtual-machine_") || strings.HasPrefix(parentName, "zombie_virtual-machine_") {
 		vol.volType = VolumeTypeVM
 
 		// Split snapshot name.
@@ -1014,7 +1015,7 @@ func (d *ceph) parseParent(parent string) (Volume, string, error) {
 		}
 
 		// Remove prefix from name.
-		name = strings.SplitN(name, "virtual_machine_", 2)[1]
+		name = strings.SplitN(name, "virtual-machine_", 2)[1]
 
 		// Check for block indicator.
 		if strings.HasSuffix(name, ".block") {
@@ -1039,7 +1040,7 @@ func (d *ceph) parseParent(parent string) (Volume, string, error) {
 func (d *ceph) parseClone(clone string) (string, string, string, bool, error) {
 	fields := strings.SplitN(clone, "/", 2)
 	if len(fields) != 2 {
-		return "", "", "", false, fmt.Errorf("Pool delimiter not found")
+		return "", "", "", false, errors.New("Pool delimiter not found")
 	}
 
 	volumeName := fields[1]
@@ -1051,7 +1052,7 @@ func (d *ceph) parseClone(clone string) (string, string, string, bool, error) {
 
 	f := strings.SplitN(volumeName, "_", 2)
 	if len(f) != 2 {
-		return "", "", "", false, fmt.Errorf("Unexpected parsing error")
+		return "", "", "", false, errors.New("Unexpected parsing error")
 	}
 
 	volumeType := f[0]
@@ -1065,7 +1066,7 @@ func (d *ceph) parseClone(clone string) (string, string, string, bool, error) {
 func (d *ceph) getRBDMappedDevPath(vol Volume, mapIfMissing bool) (bool, string, error) {
 	// List all RBD devices.
 	files, err := os.ReadDir("/sys/devices/rbd")
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, "", err
 	}
 
@@ -1088,7 +1089,7 @@ func (d *ceph) getRBDMappedDevPath(vol Volume, mapIfMissing bool) (bool, string,
 		devPoolName, err := os.ReadFile(fmt.Sprintf("/sys/devices/rbd/%s/pool", fName))
 		if err != nil {
 			// Skip if no pool file.
-			if os.IsNotExist(err) {
+			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 
@@ -1104,7 +1105,7 @@ func (d *ceph) getRBDMappedDevPath(vol Volume, mapIfMissing bool) (bool, string,
 		devName, err := os.ReadFile(fmt.Sprintf("/sys/devices/rbd/%s/name", fName))
 		if err != nil {
 			// Skip if no name file.
-			if os.IsNotExist(err) {
+			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 
@@ -1123,7 +1124,7 @@ func (d *ceph) getRBDMappedDevPath(vol Volume, mapIfMissing bool) (bool, string,
 
 		// Get the snapshot name for the RBD device (if exists).
 		devSnap, err := os.ReadFile(fmt.Sprintf("/sys/devices/rbd/%s/current_snap", fName))
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return false, "", err
 		}
 

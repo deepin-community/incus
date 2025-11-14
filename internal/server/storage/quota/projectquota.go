@@ -158,7 +158,9 @@ import "C"
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,7 +171,7 @@ import (
 	"github.com/lxc/incus/v6/shared/util"
 )
 
-var errNoDevice = fmt.Errorf("Couldn't find backing device for mountpoint")
+var errNoDevice = errors.New("Couldn't find backing device for mountpoint")
 
 func devForPath(path string) (string, error) {
 	// Get major/minor
@@ -242,7 +244,7 @@ func GetProject(path string) (uint32, error) {
 func SetProject(path string, id uint32) error {
 	err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, fs.ErrNotExist) {
 				return nil
 			}
 
@@ -253,7 +255,7 @@ func SetProject(path string, id uint32) error {
 		if info.IsDir() {
 			inherit = true // Only can set FS_XFLAG_PROJINHERIT on directories.
 		} else if !info.Mode().IsRegular() {
-			// Cannot set project ID on non-regular files after file creation. Infact trying to set
+			// Cannot set project ID on non-regular files after file creation. In fact trying to set
 			// project ID on some file types just blocks forever (such as pipe files).
 			// So skip them as they don't take up disk space anyway.
 			return nil

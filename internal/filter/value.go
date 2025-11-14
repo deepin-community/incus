@@ -5,6 +5,24 @@ import (
 	"strings"
 )
 
+// DotPrefixMatch finds the shortest unambiguous identifier for a given namespace.
+func DotPrefixMatch(short string, full string) bool {
+	fullMembs := strings.Split(full, ".")
+	shortMembs := strings.Split(short, ".")
+
+	if len(fullMembs) != len(shortMembs) {
+		return false
+	}
+
+	for i := range fullMembs {
+		if !strings.HasPrefix(fullMembs[i], shortMembs[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
 // ValueOf returns the value of the given field.
 func ValueOf(obj any, field string) any {
 	value := reflect.ValueOf(obj)
@@ -14,13 +32,18 @@ func ValueOf(obj any, field string) any {
 	key := parts[0]
 	rest := strings.Join(parts[1:], ".")
 
-	var parent any
-
 	if value.Kind() == reflect.Map {
 		switch reflect.TypeOf(obj).Elem().Kind() {
 		case reflect.String:
 			m := value.Interface().(map[string]string)
+			for k, v := range m {
+				if DotPrefixMatch(field, k) {
+					return v
+				}
+			}
+
 			return m[field]
+
 		case reflect.Map:
 			for _, entry := range value.MapKeys() {
 				if entry.Interface() != key {
@@ -30,17 +53,24 @@ func ValueOf(obj any, field string) any {
 				m := value.MapIndex(entry)
 				return ValueOf(m.Interface(), rest)
 			}
+
+			return nil
+
+		default:
+			return nil
 		}
-		return nil
 	}
 
-	for i := 0; i < value.NumField(); i++ {
+	for i := range value.NumField() {
 		fieldValue := value.Field(i)
 		fieldType := typ.Field(i)
 		yaml := fieldType.Tag.Get("yaml")
 
 		if yaml == ",inline" {
-			parent = fieldValue.Interface()
+			v := ValueOf(fieldValue.Interface(), field)
+			if v != nil {
+				return v
+			}
 		}
 
 		yamlKey, _, _ := strings.Cut(yaml, ",")
@@ -52,10 +82,6 @@ func ValueOf(obj any, field string) any {
 
 			return ValueOf(v, rest)
 		}
-	}
-
-	if parent != nil {
-		return ValueOf(parent, field)
 	}
 
 	return nil

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -19,7 +20,7 @@ const connectErrorPrefix = "Unable to connect to"
 
 // RFC3493Dialer connects to the specified server and returns the connection.
 // If the connection cannot be established then an error with the connectErrorPrefix is returned.
-func RFC3493Dialer(context context.Context, network string, address string) (net.Conn, error) {
+func RFC3493Dialer(_ context.Context, network string, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err
@@ -72,7 +73,9 @@ func InitTLSConfig() *tls.Config {
 	return config
 }
 
-func finalizeTLSConfig(tlsConfig *tls.Config, tlsRemoteCert *x509.Certificate) {
+// TLSConfigWithTrustedCert sets the given remote certificate as a CA and assigns the certificate's first DNS Name as the tls.Config ServerName.
+// This lets us maintain default verification without strictly matching a request URL to the certificate SANs.
+func TLSConfigWithTrustedCert(tlsConfig *tls.Config, tlsRemoteCert *x509.Certificate) {
 	// Setup RootCA
 	if tlsConfig.RootCAs == nil {
 		tlsConfig.RootCAs, _ = systemCertPool()
@@ -88,6 +91,16 @@ func finalizeTLSConfig(tlsConfig *tls.Config, tlsRemoteCert *x509.Certificate) {
 		tlsRemoteCert.IsCA = true
 		tlsRemoteCert.KeyUsage = x509.KeyUsageCertSign
 
+		// Trust the certificate even if it's expired.
+		tlsConfig.Time = func() time.Time {
+			if tlsRemoteCert.NotBefore.IsZero() && !tlsRemoteCert.NotAfter.IsZero() {
+				// If the value is zero, it will be overwritten with time.Now, so use the epoch time instead.
+				return time.Unix(0, 0)
+			}
+
+			return tlsRemoteCert.NotBefore
+		}
+
 		// Setup the pool
 		tlsConfig.RootCAs.AddCert(tlsRemoteCert)
 
@@ -98,14 +111,16 @@ func finalizeTLSConfig(tlsConfig *tls.Config, tlsRemoteCert *x509.Certificate) {
 	}
 }
 
+// GetTLSConfig returns the TLS config for the provided remote certificate.
 func GetTLSConfig(tlsRemoteCert *x509.Certificate) (*tls.Config, error) {
 	tlsConfig := InitTLSConfig()
 
-	finalizeTLSConfig(tlsConfig, tlsRemoteCert)
+	TLSConfigWithTrustedCert(tlsConfig, tlsRemoteCert)
 
 	return tlsConfig, nil
 }
 
+// GetTLSConfigMem returns the TLS config for the provided client and server certificates.
 func GetTLSConfigMem(tlsClientCert string, tlsClientKey string, tlsClientCA string, tlsRemoteCertPEM string, insecureSkipVerify bool) (*tls.Config, error) {
 	tlsConfig := InitTLSConfig()
 
@@ -124,7 +139,7 @@ func GetTLSConfigMem(tlsClientCert string, tlsClientKey string, tlsClientCA stri
 		// Ignore any content outside of the PEM bytes we care about
 		certBlock, _ := pem.Decode([]byte(tlsRemoteCertPEM))
 		if certBlock == nil {
-			return nil, fmt.Errorf("Invalid remote certificate")
+			return nil, errors.New("Invalid remote certificate")
 		}
 
 		var err error
@@ -141,7 +156,7 @@ func GetTLSConfigMem(tlsClientCert string, tlsClientKey string, tlsClientCA stri
 		tlsConfig.RootCAs = caPool
 	}
 
-	finalizeTLSConfig(tlsConfig, tlsRemoteCert)
+	TLSConfigWithTrustedCert(tlsConfig, tlsRemoteCert)
 
 	// Only skip TLS verification if no remote certificate is available.
 	if tlsRemoteCert == nil {

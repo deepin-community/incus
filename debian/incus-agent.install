@@ -1,2 +1,2 @@
-usr/bin/incus-agent usr/libexec/incus/
+usr/bin/incus-agent* usr/libexec/incus/
 debian/wrappers/incus-agent-setup usr/libexec/incus/

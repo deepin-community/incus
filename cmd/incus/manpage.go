@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
 
@@ -15,6 +17,7 @@ type cmdManpage struct {
 	flagAll    bool
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdManpage) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("manpage", i18n.G("<target>"))
@@ -25,14 +28,25 @@ func (c *cmdManpage) Command() *cobra.Command {
 	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "man", i18n.G("Format (man|md|rest|yaml)")+"``")
 	cmd.Flags().BoolVar(&c.flagAll, "all", false, i18n.G("Include less common commands"))
 
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		format := cmd.Flag("format").Value.String()
+		switch format {
+		case "man", "md", "rest", "yaml":
+			return nil
+		default:
+			return fmt.Errorf(`Invalid value %q for flag "--format"`, format)
+		}
+	}
+
 	cmd.RunE = c.Run
 
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdManpage) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 1)
+	exit, err := c.global.checkArgs(cmd, args, 1, 1)
 	if exit {
 		return err
 	}

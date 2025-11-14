@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -10,7 +11,7 @@ import (
 
 	"github.com/cowsql/go-cowsql/client"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/state"
 	"github.com/lxc/incus/v6/shared/logger"
@@ -75,7 +76,7 @@ func MaybeUpdate(state *state.State) error {
 	}
 
 	if state.DB.Cluster == nil {
-		return fmt.Errorf("Failed checking cluster update, state not initialized yet")
+		return errors.New("Failed checking cluster update, state not initialized yet")
 	}
 
 	err = state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -87,7 +88,6 @@ func MaybeUpdate(state *state.State) error {
 		shouldUpdate = outdated
 		return nil
 	})
-
 	if err != nil {
 		// Just log the error and return.
 		return fmt.Errorf("Failed to check if this node is out-of-date: %w", err)
@@ -110,7 +110,7 @@ func triggerUpdate() error {
 		return nil
 	}
 
-	// Wait a random amout of seconds (up to 30) in order to avoid
+	// Wait a random amount of seconds (up to 30) in order to avoid
 	// restarting all cluster members at the same time, and make the
 	// upgrade more graceful.
 	wait := time.Duration(rand.Intn(30)) * time.Second
@@ -133,7 +133,7 @@ func triggerUpdate() error {
 // raft configuration. It's used for upgrading a cluster from a version without roles support.
 func UpgradeMembersWithoutRole(gateway *Gateway, members []db.NodeInfo) error {
 	nodes, err := gateway.currentRaftNodes()
-	if err == ErrNotLeader {
+	if errors.Is(err, ErrNotLeader) {
 		return nil
 	}
 

@@ -3,6 +3,7 @@ package drivers
 import (
 	"bufio"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -12,9 +13,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/project"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -32,7 +33,7 @@ const iptablesCommentPrefix = "generated for"
 // As its own locking mechanism isn't always available.
 var ebtablesMu sync.Mutex
 
-// Xtables is an implmentation of Incus firewall using {ip, ip6, eb}tables.
+// Xtables is an implementation of Incus firewall using {ip, ip6, eb}tables.
 type Xtables struct{}
 
 // String returns the driver name.
@@ -124,13 +125,7 @@ func (d Xtables) iptablesInUse(iptablesCmd string) bool {
 		return false
 	}
 
-	for _, table := range []string{"filter", "nat", "mangle", "raw"} {
-		if tableIsUse(table) {
-			return true
-		}
-	}
-
-	return false
+	return slices.ContainsFunc([]string{"filter", "nat", "mangle", "raw"}, tableIsUse)
 }
 
 // ebtablesInUse returns whether the ebtables backend command has any rules defined.
@@ -171,7 +166,7 @@ func (d Xtables) networkForwardIPTablesComment(networkName string) string {
 
 // networkSetupNICFilteringChain creates the NIC filtering chain if it doesn't exist, and adds the jump rules to
 // the INPUT and FORWARD filter chains. Must be called after networkSetupForwardingPolicy so that the rules are
-// prepended before the default fowarding policy rules.
+// prepended before the default forwarding policy rules.
 func (d Xtables) networkSetupNICFilteringChain(networkName string, ipVersion uint) error {
 	chain := fmt.Sprintf("%s_%s", iptablesChainNICFilterPrefix, networkName)
 
@@ -233,8 +228,8 @@ func (d Xtables) networkSetupACLFilteringChains(networkName string) error {
 		}
 
 		// Prepend baseline services rules for network.
-		// Unlike OVN networks, we add the rules first before the ACL candidate rules, aa we can't
-		// indentify "INPUT" and "OUTPUT" chain traffic once we have jumped into the ACL chain. At this
+		// Unlike OVN networks, we add the rules first before the ACL candidate rules, as we can't
+		// identify "INPUT" and "OUTPUT" chain traffic once we have jumped into the ACL chain. At this
 		// point it becomes indistinguishable from FORWARD traffic. So unlike OVN an ACL rule cannot be
 		// used to block baseline service traffic.
 
@@ -335,7 +330,6 @@ func (d Xtables) networkSetupForwardingPolicy(networkName string, ipVersion uint
 	}
 
 	err = d.iptablesPrepend(ipVersion, comment, "filter", "FORWARD", "-o", networkName, "-j", forwardType)
-
 	if err != nil {
 		return err
 	}
@@ -390,7 +384,8 @@ func (d Xtables) networkSetupICMPDHCPDNSAccess(networkName string, ipVersion uin
 			{"4", networkName, "filter", "INPUT", "-i", networkName, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"},
 			{"4", networkName, "filter", "OUTPUT", "-o", networkName, "-p", "udp", "--sport", "67", "-j", "ACCEPT"},
 			{"4", networkName, "filter", "OUTPUT", "-o", networkName, "-p", "udp", "--sport", "53", "-j", "ACCEPT"},
-			{"4", networkName, "filter", "OUTPUT", "-o", networkName, "-p", "tcp", "--sport", "53", "-j", "ACCEPT"}}
+			{"4", networkName, "filter", "OUTPUT", "-o", networkName, "-p", "tcp", "--sport", "53", "-j", "ACCEPT"},
+		}
 
 		// Allow core ICMPv4 to/from Incus host.
 		for _, icmpType := range []int{3, 11, 12} {
@@ -404,7 +399,8 @@ func (d Xtables) networkSetupICMPDHCPDNSAccess(networkName string, ipVersion uin
 			{"6", networkName, "filter", "INPUT", "-i", networkName, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"},
 			{"6", networkName, "filter", "OUTPUT", "-o", networkName, "-p", "udp", "--sport", "547", "-j", "ACCEPT"},
 			{"6", networkName, "filter", "OUTPUT", "-o", networkName, "-p", "udp", "--sport", "53", "-j", "ACCEPT"},
-			{"6", networkName, "filter", "OUTPUT", "-o", networkName, "-p", "tcp", "--sport", "53", "-j", "ACCEPT"}}
+			{"6", networkName, "filter", "OUTPUT", "-o", networkName, "-p", "tcp", "--sport", "53", "-j", "ACCEPT"},
+		}
 
 		// Allow core ICMPv6 to/from Incus host.
 		for _, icmpType := range []int{1, 2, 3, 4, 133, 135, 136, 143} {
@@ -416,7 +412,7 @@ func (d Xtables) networkSetupICMPDHCPDNSAccess(networkName string, ipVersion uin
 			rules = append(rules, []string{"6", networkName, "filter", "OUTPUT", "-o", networkName, "-p", "icmpv6", "-m", "icmp6", "--icmpv6-type", fmt.Sprintf("%d", icmpType), "-j", "ACCEPT"})
 		}
 	} else {
-		return fmt.Errorf("Invalid IP version")
+		return errors.New("Invalid IP version")
 	}
 
 	comment := d.networkIPTablesComment(networkName)
@@ -661,7 +657,7 @@ func (d Xtables) aclRuleCriteriaToArgs(networkName string, ipVersion uint, rule 
 		}
 
 		if rule.ICMPCode != "" && rule.ICMPType == "" {
-			return nil, nil, fmt.Errorf("Invalid use of ICMP code without ICMP type")
+			return nil, nil, errors.New("Invalid use of ICMP code without ICMP type")
 		}
 
 		args = append(args, "-p", protoName)
@@ -810,7 +806,11 @@ func (d Xtables) instanceDeviceIPTablesComment(projectName string, instanceName 
 // If the parent bridge is managed by Incus then parentManaged argument should be true so that the rules added can
 // use the iptablesChainACLFilterPrefix chain. If not they are added to the main filter chains directly (which only
 // works for unmanaged bridges because those don't support ACLs).
-func (d Xtables) InstanceSetupBridgeFilter(projectName string, instanceName string, deviceName string, parentName string, hostName string, hwAddr string, IPv4Nets []*net.IPNet, IPv6Nets []*net.IPNet, parentManaged bool) error {
+func (d Xtables) InstanceSetupBridgeFilter(projectName string, instanceName string, deviceName string, parentName string, hostName string, hwAddr string, IPv4Nets []*net.IPNet, IPv6Nets []*net.IPNet, IPv4DNS []string, IPv6DNS []string, parentManaged bool, macFiltering bool, aclRules []ACLRule) error {
+	if len(aclRules) > 0 {
+		return errors.New("ACL rules not supported for xtables bridge filtering")
+	}
+
 	comment := d.instanceDeviceIPTablesComment(projectName, instanceName, deviceName)
 
 	rules := d.generateFilterEbtablesRules(hostName, hwAddr, IPv4Nets, IPv6Nets)
@@ -906,22 +906,22 @@ func (d Xtables) InstanceClearBridgeFilter(projectName string, instanceName stri
 // InstanceSetupProxyNAT creates DNAT rules for proxy devices.
 func (d Xtables) InstanceSetupProxyNAT(projectName string, instanceName string, deviceName string, forward *AddressForward) error {
 	if forward.ListenAddress == nil {
-		return fmt.Errorf("Listen address is required")
+		return errors.New("Listen address is required")
 	}
 
 	if forward.TargetAddress == nil {
-		return fmt.Errorf("Target address is required")
+		return errors.New("Target address is required")
 	}
 
 	listenPortsLen := len(forward.ListenPorts)
 	if listenPortsLen <= 0 {
-		return fmt.Errorf("At least 1 listen port must be supplied")
+		return errors.New("At least 1 listen port must be supplied")
 	}
 
 	// If multiple target ports supplied, check they match the listen port(s) count.
 	targetPortsLen := len(forward.TargetPorts)
 	if targetPortsLen != 1 && targetPortsLen != listenPortsLen {
-		return fmt.Errorf("Mismatch between listen port(s) and target port(s) count")
+		return errors.New("Mismatch between listen port(s) and target port(s) count")
 	}
 
 	ipVersion := uint(4)
@@ -932,9 +932,10 @@ func (d Xtables) InstanceSetupProxyNAT(projectName string, instanceName string, 
 	listenAddressStr := forward.ListenAddress.String()
 	targetAddressStr := forward.TargetAddress.String()
 
-	revert := revert.New()
-	defer revert.Fail()
-	revert.Add(func() { _ = d.InstanceClearProxyNAT(projectName, instanceName, deviceName) })
+	reverter := revert.New()
+	defer reverter.Fail()
+
+	reverter.Add(func() { _ = d.InstanceClearProxyNAT(projectName, instanceName, deviceName) })
 
 	comment := d.instanceDeviceIPTablesComment(projectName, instanceName, deviceName)
 
@@ -977,7 +978,8 @@ func (d Xtables) InstanceSetupProxyNAT(projectName string, instanceName string, 
 		}
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return nil
 }
 
@@ -1218,7 +1220,7 @@ func (d Xtables) iptablesAdd(ipVersion uint, comment string, table string, metho
 	} else if ipVersion == 6 {
 		cmd = "ip6tables"
 	} else {
-		return fmt.Errorf("Invalid IP version")
+		return errors.New("Invalid IP version")
 	}
 
 	_, err := exec.LookPath(cmd)
@@ -1259,7 +1261,7 @@ func (d Xtables) iptablesClear(ipVersion uint, comments []string, fromTables ...
 		cmd = "ip6tables"
 		tablesFile = "/proc/self/net/ip6_tables_names"
 	} else {
-		return fmt.Errorf("Invalid IP version")
+		return errors.New("Invalid IP version")
 	}
 
 	// Detect kernels that lack IPv6 support.
@@ -1280,7 +1282,7 @@ func (d Xtables) iptablesClear(ipVersion uint, comments []string, fromTables ...
 		if err != nil {
 			logger.Warnf("Failed getting list of tables from %q, assuming all requested tables exist", tablesFile)
 		} else {
-			tables = []string{} // Initialize the tables slice indcating we were able to open the tables file.
+			tables = []string{} // Initialize the tables slice indicating we were able to open the tables file.
 			scanner := bufio.NewScanner(file)
 			for scanner.Scan() {
 				tables = append(tables, scanner.Text())
@@ -1432,7 +1434,7 @@ func (d Xtables) iptablesChainExists(ipVersion uint, table string, chain string)
 	} else if ipVersion == 6 {
 		cmd = "ip6tables"
 	} else {
-		return false, false, fmt.Errorf("Invalid IP version")
+		return false, false, errors.New("Invalid IP version")
 	}
 
 	_, err := exec.LookPath(cmd)
@@ -1463,7 +1465,7 @@ func (d Xtables) iptablesChainCreate(ipVersion uint, table string, chain string)
 	} else if ipVersion == 6 {
 		cmd = "ip6tables"
 	} else {
-		return fmt.Errorf("Invalid IP version")
+		return errors.New("Invalid IP version")
 	}
 
 	// Attempt to create chain in table.
@@ -1483,7 +1485,7 @@ func (d Xtables) iptablesChainDelete(ipVersion uint, table string, chain string,
 	} else if ipVersion == 6 {
 		cmd = "ip6tables"
 	} else {
-		return fmt.Errorf("Invalid IP version")
+		return errors.New("Invalid IP version")
 	}
 
 	// Attempt to flush rules from chain in table.
@@ -1575,6 +1577,11 @@ func (d Xtables) NetworkApplyForwards(networkName string, rules []AddressForward
 			targetAddressStr := rule.TargetAddress.String()
 
 			if rule.Protocol != "" {
+				// We don't support SNAT here yet.
+				if rule.SNAT {
+					return errors.New("SNAT port rules are not supported under xtables")
+				}
+
 				if len(rule.TargetPorts) == 0 {
 					rule.TargetPorts = rule.ListenPorts
 				}
@@ -1648,5 +1655,6 @@ func (d Xtables) NetworkApplyForwards(networkName string, rules []AddressForward
 	}
 
 	reverter.Success()
+
 	return nil
 }

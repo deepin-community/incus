@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/instance"
@@ -17,21 +19,23 @@ import (
 type cmdCopy struct {
 	global *cmdGlobal
 
-	flagNoProfiles        bool
-	flagProfile           []string
-	flagConfig            []string
-	flagDevice            []string
-	flagEphemeral         bool
-	flagInstanceOnly      bool
-	flagMode              string
-	flagStateless         bool
-	flagStorage           string
-	flagTarget            string
-	flagTargetProject     string
-	flagRefresh           bool
-	flagAllowInconsistent bool
+	flagNoProfiles          bool
+	flagProfile             []string
+	flagConfig              []string
+	flagDevice              []string
+	flagEphemeral           bool
+	flagInstanceOnly        bool
+	flagMode                string
+	flagStateless           bool
+	flagStorage             string
+	flagTarget              string
+	flagTargetProject       string
+	flagRefresh             bool
+	flagRefreshExcludeOlder bool
+	flagAllowInconsistent   bool
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdCopy) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("copy", i18n.G("[<remote>:]<source>[/<snapshot>] [[<remote>:]<destination>]"))
@@ -61,15 +65,16 @@ The pull transfer mode is the default as it is compatible with all server versio
 	cmd.Flags().StringVar(&c.flagTargetProject, "target-project", "", i18n.G("Copy to a project different from the source")+"``")
 	cmd.Flags().BoolVar(&c.flagNoProfiles, "no-profiles", false, i18n.G("Create the instance with no profiles applied"))
 	cmd.Flags().BoolVar(&c.flagRefresh, "refresh", false, i18n.G("Perform an incremental copy"))
+	cmd.Flags().BoolVar(&c.flagRefreshExcludeOlder, "refresh-exclude-older", false, i18n.G("During incremental copy, exclude source snapshots earlier than latest target snapshot"))
 	cmd.Flags().BoolVar(&c.flagAllowInconsistent, "allow-inconsistent", false, i18n.G("Ignore copy errors for volatile files"))
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
 
 		if len(args) == 1 {
-			return c.global.cmpRemotes(false)
+			return c.global.cmpRemotes(toComplete, false)
 		}
 
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -93,12 +98,12 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 
 	// Make sure we have an instance or snapshot name
 	if sourceName == "" {
-		return fmt.Errorf(i18n.G("You must specify a source instance name"))
+		return errors.New(i18n.G("You must specify a source instance name"))
 	}
 
 	// Don't allow refreshing without profiles.
 	if c.flagRefresh && c.flagNoProfiles {
-		return fmt.Errorf(i18n.G("--no-profiles cannot be used with --refresh"))
+		return errors.New(i18n.G("--no-profiles cannot be used with --refresh"))
 	}
 
 	// If the instance is being copied to a different remote and no destination name is
@@ -110,7 +115,7 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 
 	// Ensure that a destination name is provided.
 	if destName == "" {
-		return fmt.Errorf(i18n.G("You must specify a destination instance name"))
+		return errors.New(i18n.G("You must specify a destination instance name"))
 	}
 
 	// Connect to the source host
@@ -139,7 +144,7 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 
 	// Confirm that --target is only used with a cluster
 	if c.flagTarget != "" && !dest.IsClustered() {
-		return fmt.Errorf(i18n.G("To use --target, the destination remote must be a cluster"))
+		return errors.New(i18n.G("To use --target, the destination remote must be a cluster"))
 	}
 
 	// Parse the config overrides
@@ -164,7 +169,7 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 
 	if instance.IsSnapshot(sourceName) {
 		if instanceOnly {
-			return fmt.Errorf(i18n.G("--instance-only can't be passed when the source is a snapshot"))
+			return errors.New(i18n.G("--instance-only can't be passed when the source is a snapshot"))
 		}
 
 		// Prepare the instance creation request
@@ -175,7 +180,7 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 		}
 
 		if c.flagRefresh {
-			return fmt.Errorf(i18n.G("--refresh can only be used with instances"))
+			return errors.New(i18n.G("--refresh can only be used with instances"))
 		}
 
 		// Copy of a snapshot into a new instance
@@ -193,9 +198,7 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 		}
 
 		// Allow setting additional config keys
-		for key, value := range configMap {
-			entry.Config[key] = value
-		}
+		maps.Copy(entry.Config, configMap)
 
 		// Allow setting device overrides
 		for k, m := range deviceMap {
@@ -204,22 +207,24 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 				continue
 			}
 
-			for key, value := range m {
-				entry.Devices[k][key] = value
+			if m["type"] == "none" {
+				// When overriding with "none" type, clear the entire device.
+				entry.Devices[k] = map[string]string{"type": "none"}
+				continue
 			}
+
+			maps.Copy(entry.Devices[k], m)
 		}
 
 		// Allow overriding the ephemeral status
-		if ephemeral == 1 {
+		switch ephemeral {
+		case 1:
 			entry.Ephemeral = true
-		} else if ephemeral == 0 {
+		case 0:
 			entry.Ephemeral = false
 		}
 
 		rootDiskDeviceKey, _, _ := instance.GetRootDiskDevice(entry.Devices)
-		if err != nil {
-			return err
-		}
 
 		if rootDiskDeviceKey != "" && pool != "" {
 			entry.Devices[rootDiskDeviceKey]["pool"] = pool
@@ -256,12 +261,13 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 	} else {
 		// Prepare the instance creation request
 		args := incus.InstanceCopyArgs{
-			Name:              destName,
-			Live:              stateful,
-			InstanceOnly:      instanceOnly,
-			Mode:              mode,
-			Refresh:           c.flagRefresh,
-			AllowInconsistent: c.flagAllowInconsistent,
+			Name:                destName,
+			Live:                stateful,
+			InstanceOnly:        instanceOnly,
+			Mode:                mode,
+			Refresh:             c.flagRefresh,
+			RefreshExcludeOlder: c.flagRefreshExcludeOlder,
+			AllowInconsistent:   c.flagAllowInconsistent,
 		}
 
 		// Copy of an instance into a new instance
@@ -284,9 +290,7 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 		}
 
 		// Allow setting additional config keys
-		for key, value := range configMap {
-			entry.Config[key] = value
-		}
+		maps.Copy(entry.Config, configMap)
 
 		// Allow setting device overrides
 		for k, m := range deviceMap {
@@ -295,15 +299,20 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 				continue
 			}
 
-			for key, value := range m {
-				entry.Devices[k][key] = value
+			if m["type"] == "none" {
+				// When overriding with "none" type, clear the entire device.
+				entry.Devices[k] = map[string]string{"type": "none"}
+				continue
 			}
+
+			maps.Copy(entry.Devices[k], m)
 		}
 
 		// Allow overriding the ephemeral status
-		if ephemeral == 1 {
+		switch ephemeral {
+		case 1:
 			entry.Ephemeral = true
-		} else if ephemeral == 0 {
+		case 0:
 			entry.Ephemeral = false
 		}
 
@@ -431,11 +440,12 @@ func (c *cmdCopy) copyInstance(conf *config.Config, sourceResource string, destR
 	return nil
 }
 
+// Run runs the actual command logic.
 func (c *cmdCopy) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 2)
+	exit, err := c.global.checkArgs(cmd, args, 1, 2)
 	if exit {
 		return err
 	}
@@ -456,7 +466,7 @@ func (c *cmdCopy) Run(cmd *cobra.Command, args []string) error {
 	keepVolatile := c.flagRefresh
 	instanceOnly := c.flagInstanceOnly
 
-	// If not target name is specified, one will be chosed by the server
+	// If target name is not specified, one will be chosen by the server
 	if len(args) < 2 {
 		return c.copyInstance(conf, args[0], "", keepVolatile, ephem, stateful, instanceOnly, mode, c.flagStorage, false)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -10,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/shared/api"
@@ -26,6 +27,7 @@ type cmdMonitor struct {
 	flagFormat      string
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdMonitor) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("monitor", i18n.G("[<remote>:]"))
@@ -55,6 +57,7 @@ incus monitor --type=lifecycle
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdMonitor) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
@@ -62,7 +65,7 @@ func (c *cmdMonitor) Run(cmd *cobra.Command, args []string) error {
 	var remote string
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 0, 1)
+	exit, err := c.global.checkArgs(cmd, args, 0, 1)
 	if exit {
 		return err
 	}
@@ -77,7 +80,7 @@ func (c *cmdMonitor) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	if c.flagFormat != "pretty" && c.flagLogLevel != "" {
-		return fmt.Errorf(i18n.G("Log level filtering can only be used with pretty formatting"))
+		return errors.New(i18n.G("Log level filtering can only be used with pretty formatting"))
 	}
 
 	// Connect to the event source.
@@ -151,7 +154,13 @@ func (c *cmdMonitor) Run(cmd *cobra.Command, args []string) error {
 
 			entry := &logrus.Entry{Logger: logger}
 			entry.Data = c.unpackCtx(record.Ctx)
-			entry.Message = record.Msg
+
+			if event.Type == "logging" && d.IsClustered() {
+				entry.Message = fmt.Sprintf("[%s] %s", event.Location, record.Msg)
+			} else {
+				entry.Message = record.Msg
+			}
+
 			entry.Time = record.Time
 			entry.Level = msgLevel
 			format := logrus.TextFormatter{FullTimestamp: true, PadLevelText: true}
@@ -183,13 +192,15 @@ func (c *cmdMonitor) Run(cmd *cobra.Command, args []string) error {
 
 		// And now print the result.
 		var render []byte
-		if c.flagFormat == "yaml" {
+		switch c.flagFormat {
+		case "yaml":
 			render, err = yaml.Marshal(&rawEvent)
 			if err != nil {
 				chError <- err
 				return
 			}
-		} else if c.flagFormat == "json" {
+
+		case "json":
 			render, err = json.Marshal(&rawEvent)
 			if err != nil {
 				chError <- err

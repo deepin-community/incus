@@ -2,24 +2,23 @@ package scriptlet
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strconv"
 
 	"go.starlark.net/starlark"
 
-	"github.com/lxc/incus/v6/internal/instance"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	"github.com/lxc/incus/v6/internal/server/db"
 	dbCluster "github.com/lxc/incus/v6/internal/server/db/cluster"
-	"github.com/lxc/incus/v6/internal/server/instance/drivers/qemudefault"
-	"github.com/lxc/incus/v6/internal/server/resources"
+	internalInstance "github.com/lxc/incus/v6/internal/server/instance"
 	scriptletLoad "github.com/lxc/incus/v6/internal/server/scriptlet/load"
+	"github.com/lxc/incus/v6/internal/server/scriptlet/log"
 	"github.com/lxc/incus/v6/internal/server/state"
-	storageDrivers "github.com/lxc/incus/v6/internal/server/storage/drivers"
 	"github.com/lxc/incus/v6/shared/api"
 	apiScriptlet "github.com/lxc/incus/v6/shared/api/scriptlet"
 	"github.com/lxc/incus/v6/shared/logger"
-	"github.com/lxc/incus/v6/shared/units"
+	"github.com/lxc/incus/v6/shared/resources"
+	"github.com/lxc/incus/v6/shared/scriptlet"
 )
 
 // InstancePlacementRun runs the instance placement scriptlet and returns the chosen cluster member target.
@@ -27,7 +26,7 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	logFunc := createLogger(l, "Instance placement scriptlet")
+	logFunc := log.CreateLogger(l, "Instance placement scriptlet")
 
 	var targetMember *db.NodeInfo
 
@@ -47,8 +46,8 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 		}
 
 		if targetMember == nil {
-			l.Warn("Instance placement scriptlet set invalid member target", logger.Ctx{"member": memberName})
-			return starlark.String("Invalid member name"), nil
+			l.Error("Instance placement scriptlet set invalid member target", logger.Ctx{"member": memberName})
+			return nil, fmt.Errorf("Invalid member name: %s", memberName)
 		}
 
 		l.Info("Instance placement scriptlet set member target", logger.Ctx{"member": targetMember.Name})
@@ -83,7 +82,7 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 			}
 
 			if targetMember == nil {
-				return starlark.String("Invalid member name"), nil
+				return nil, fmt.Errorf("Invalid member name: %s", memberName)
 			}
 
 			client, err := cluster.Connect(targetMember.Address, s.Endpoints.NetworkCert(), s.ServerCert(), nil, true)
@@ -97,9 +96,9 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 			}
 		}
 
-		rv, err := StarlarkMarshal(res)
+		rv, err := scriptlet.StarlarkMarshal(res)
 		if err != nil {
-			return nil, fmt.Errorf("Marshalling member resources for %q failed: %w", memberName, err)
+			return nil, fmt.Errorf("Marshalling cluster member resources for %q failed: %w", memberName, err)
 		}
 
 		return rv, nil
@@ -132,7 +131,7 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 			}
 
 			if targetMember == nil {
-				return starlark.String("Invalid member name"), nil
+				return nil, fmt.Errorf("Invalid member name: %s", memberName)
 			}
 
 			client, err := cluster.Connect(targetMember.Address, s.Endpoints.NetworkCert(), s.ServerCert(), nil, true)
@@ -146,9 +145,9 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 			}
 		}
 
-		rv, err := StarlarkMarshal(memberState)
+		rv, err := scriptlet.StarlarkMarshal(memberState)
 		if err != nil {
-			return nil, fmt.Errorf("Marshalling member state for %q failed: %w", memberName, err)
+			return nil, fmt.Errorf("Marshalling cluster member state for %q failed: %w", memberName, err)
 		}
 
 		return rv, nil
@@ -158,62 +157,16 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 		var err error
 		var res apiScriptlet.InstanceResources
 
-		// Parse limits.cpu.
-		if req.Config["limits.cpu"] != "" {
-			// Check if using shared CPU limits.
-			res.CPUCores, err = strconv.ParseUint(req.Config["limits.cpu"], 10, 64)
-			if err != nil {
-				// Or get count of pinned CPUs.
-				pinnedCPUs, err := resources.ParseCpuset(req.Config["limits.cpu"])
-				if err != nil {
-					return nil, fmt.Errorf("Failed parsing instance resources limits.cpu: %w", err)
-				}
-
-				res.CPUCores = uint64(len(pinnedCPUs))
-			}
-		} else if req.Type == api.InstanceTypeVM {
-			// Apply VM CPU cores defaults if not specified.
-			res.CPUCores = qemudefault.CPUCores
+		usageCPU, usageMemory, usageDisk, err := internalInstance.ResourceUsage(req.Config, req.Devices, req.Type)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to calculate instance resource usage: %w", err)
 		}
 
-		// Parse limits.memory.
-		memoryLimitStr := req.Config["limits.memory"]
+		res.CPUCores = uint64(usageCPU)
+		res.MemorySize = uint64(usageMemory)
+		res.RootDiskSize = uint64(usageDisk)
 
-		// Apply VM memory limit defaults if not specified.
-		if req.Type == api.InstanceTypeVM && memoryLimitStr == "" {
-			memoryLimitStr = qemudefault.MemSize
-		}
-
-		if memoryLimitStr != "" {
-			memoryLimit, err := units.ParseByteSizeString(memoryLimitStr)
-			if err != nil {
-				return nil, fmt.Errorf("Failed parsing instance resources limits.memory: %w", err)
-			}
-
-			res.MemorySize = uint64(memoryLimit)
-		}
-
-		// Parse root disk size.
-		_, rootDiskConfig, err := instance.GetRootDiskDevice(req.Devices)
-		if err == nil {
-			rootDiskSizeStr := rootDiskConfig["size"]
-
-			// Apply VM root disk size defaults if not specified.
-			if req.Type == api.InstanceTypeVM && rootDiskSizeStr == "" {
-				rootDiskSizeStr = storageDrivers.DefaultBlockSize
-			}
-
-			if rootDiskSizeStr != "" {
-				rootDiskSize, err := units.ParseByteSizeString(rootDiskSizeStr)
-				if err != nil {
-					return nil, fmt.Errorf("Failed parsing instance resources root disk size: %w", err)
-				}
-
-				res.RootDiskSize = uint64(rootDiskSize)
-			}
-		}
-
-		rv, err := StarlarkMarshal(res)
+		rv, err := scriptlet.StarlarkMarshal(res)
 		if err != nil {
 			return nil, fmt.Errorf("Marshalling instance resources failed: %w", err)
 		}
@@ -260,14 +213,14 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 				}
 			}
 
-			objectDevices, err := dbCluster.GetDevices(ctx, tx.Tx(), "instance")
+			objectDevices, err := dbCluster.GetAllInstanceDevices(ctx, tx.Tx())
 			if err != nil {
 				return err
 			}
 
 			// Convert the []Instances into []api.Instances.
 			for _, obj := range objects {
-				instance, err := obj.ToAPI(ctx, tx.Tx(), objectDevices, nil)
+				instance, err := obj.ToAPI(ctx, tx.Tx(), objectDevices, nil, nil)
 				if err != nil {
 					return err
 				}
@@ -281,9 +234,37 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 			return nil, err
 		}
 
-		rv, err := StarlarkMarshal(instanceList)
+		rv, err := scriptlet.StarlarkMarshal(instanceList)
 		if err != nil {
-			return nil, fmt.Errorf("Marshalling instance resources failed: %w", err)
+			return nil, fmt.Errorf("Marshalling instances failed: %w", err)
+		}
+
+		return rv, nil
+	}
+
+	getInstancesCountFunc := func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+		var projectName string
+		var locationName string
+		var includePending bool
+
+		err := starlark.UnpackArgs(b.Name(), args, kwargs, "project??", &projectName, "location??", &locationName, "pending??", &includePending)
+		if err != nil {
+			return nil, err
+		}
+
+		var count int
+
+		err = s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
+			count, err = tx.GetInstancesCount(ctx, projectName, locationName, includePending)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		rv, err := scriptlet.StarlarkMarshal(count)
+		if err != nil {
+			return nil, fmt.Errorf("Marshalling instance count failed: %w", err)
 		}
 
 		return rv, nil
@@ -369,9 +350,9 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 			return nil, err
 		}
 
-		rv, err := StarlarkMarshal(allMembersInfo)
+		rv, err := scriptlet.StarlarkMarshal(allMembersInfo)
 		if err != nil {
-			return nil, fmt.Errorf("Marshalling instance resources failed: %w", err)
+			return nil, fmt.Errorf("Marshalling cluster members failed: %w", err)
 		}
 
 		return rv, nil
@@ -404,9 +385,9 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 			return nil, err
 		}
 
-		rv, err := StarlarkMarshal(p)
+		rv, err := scriptlet.StarlarkMarshal(p)
 		if err != nil {
-			return nil, fmt.Errorf("Marshalling instance resources failed: %w", err)
+			return nil, fmt.Errorf("Marshalling project failed: %w", err)
 		}
 
 		return rv, nil
@@ -478,6 +459,7 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 		"get_cluster_member_state":     starlark.NewBuiltin("get_cluster_member_state", getClusterMemberStateFunc),
 		"get_instance_resources":       starlark.NewBuiltin("get_instance_resources", getInstanceResourcesFunc),
 		"get_instances":                starlark.NewBuiltin("get_instances", getInstancesFunc),
+		"get_instances_count":          starlark.NewBuiltin("get_instances_count", getInstancesCountFunc),
 		"get_cluster_members":          starlark.NewBuiltin("get_cluster_members", getClusterMembersFunc),
 		"get_project":                  starlark.NewBuiltin("get_project", getProjectFunc),
 	}
@@ -502,15 +484,15 @@ func InstancePlacementRun(ctx context.Context, l logger.Logger, s *state.State, 
 	// Retrieve a global variable from starlark environment.
 	instancePlacement := globals["instance_placement"]
 	if instancePlacement == nil {
-		return nil, fmt.Errorf("Scriptlet missing instance_placement function")
+		return nil, errors.New("Scriptlet missing instance_placement function")
 	}
 
-	rv, err := StarlarkMarshal(req)
+	rv, err := scriptlet.StarlarkMarshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("Marshalling request failed: %w", err)
 	}
 
-	candidateMembersv, err := StarlarkMarshal(candidateMembersInfo)
+	candidateMembersv, err := scriptlet.StarlarkMarshal(candidateMembersInfo)
 	if err != nil {
 		return nil, fmt.Errorf("Marshalling candidate members failed: %w", err)
 	}

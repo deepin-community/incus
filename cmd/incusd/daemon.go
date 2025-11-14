@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/x509"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,9 +28,7 @@ import (
 
 	internalIO "github.com/lxc/incus/v6/internal/io"
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/rsync"
-	"github.com/lxc/incus/v6/internal/server/acme"
 	"github.com/lxc/incus/v6/internal/server/apparmor"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/auth/oidc"
@@ -52,7 +49,7 @@ import (
 	"github.com/lxc/incus/v6/internal/server/instance"
 	instanceDrivers "github.com/lxc/incus/v6/internal/server/instance/drivers"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
-	"github.com/lxc/incus/v6/internal/server/loki"
+	"github.com/lxc/incus/v6/internal/server/logging"
 	"github.com/lxc/incus/v6/internal/server/network/ovn"
 	"github.com/lxc/incus/v6/internal/server/network/ovs"
 	networkZone "github.com/lxc/incus/v6/internal/server/network/zone"
@@ -80,6 +77,7 @@ import (
 	"github.com/lxc/incus/v6/shared/idmap"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/proxy"
+	"github.com/lxc/incus/v6/shared/revert"
 	localtls "github.com/lxc/incus/v6/shared/tls"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -154,10 +152,7 @@ type Daemon struct {
 	serverName      string
 	serverClustered bool
 
-	lokiClient *loki.Client
-
-	// HTTP-01 challenge provider for ACME
-	http01Provider acme.HTTP01Provider
+	loggingController *logging.Controller
 
 	// Authorization.
 	authorizer auth.Authorizer
@@ -198,7 +193,6 @@ func newDaemon(config *DaemonConfig, os *sys.OS) *Daemon {
 		devIncusEvents: devIncusEvents,
 		events:         incusEvents,
 		db:             &db.DB{},
-		http01Provider: acme.NewHTTP01Provider(),
 		os:             os,
 		setupChan:      make(chan struct{}),
 		waitReady:      cancel.New(context.Background()),
@@ -422,15 +416,50 @@ func (d *Daemon) checkTrustedClient(r *http.Request) error {
 			return err
 		}
 
-		return fmt.Errorf("Not authorized")
+		return errors.New("Not authorized")
 	}
 
 	return nil
 }
 
 // getTrustedCertificates returns trusted certificates key on DB type and fingerprint.
-func (d *Daemon) getTrustedCertificates() map[certificate.Type]map[string]x509.Certificate {
-	return d.clientCerts.GetCertificates()
+//
+// When in PKI mode, this also filters out any non-server certificate which isn't issued by the PKI.
+func (d *Daemon) getTrustedCertificates() (map[certificate.Type]map[string]x509.Certificate, error) {
+	certs := d.clientCerts.GetCertificates()
+
+	// If not in PKI mode, return all certificates.
+	if !util.PathExists(internalUtil.VarPath("server.ca")) {
+		return certs, nil
+	}
+
+	// If in PKI mode, filter certificates that aren't trusted by the CA.
+	ca, err := localtls.ReadCert(internalUtil.VarPath("server.ca"))
+	if err != nil {
+		return nil, err
+	}
+
+	certPool := x509.NewCertPool()
+	certPool.AddCert(ca)
+
+	for certType, certEntries := range certs {
+		if certType == certificate.TypeServer {
+			continue
+		}
+
+		for name, entry := range certEntries {
+			_, err := entry.Verify(x509.VerifyOptions{
+				Roots:     certPool,
+				KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			})
+			if err != nil {
+				// Skip certificates that aren't signed by the PKI.
+				delete(certs[certType], name)
+			}
+		}
+	}
+
+	return certs, nil
 }
 
 // Authenticate validates an incoming http Request
@@ -441,7 +470,10 @@ func (d *Daemon) getTrustedCertificates() map[certificate.Type]map[string]x509.C
 // Returns whether trusted or not, the username (or certificate fingerprint) of the trusted client, and the type of
 // client that has been authenticated (cluster, unix, or tls).
 func (d *Daemon) Authenticate(w http.ResponseWriter, r *http.Request) (bool, string, string, error) {
-	trustedCerts := d.getTrustedCertificates()
+	trustedCerts, err := d.getTrustedCertificates()
+	if err != nil {
+		return false, "", "", err
+	}
 
 	// Allow internal cluster traffic by checking against the trusted certfificates.
 	if r.TLS != nil {
@@ -474,17 +506,22 @@ func (d *Daemon) Authenticate(w http.ResponseWriter, r *http.Request) (bool, str
 
 	// DevIncus unix socket credentials on main API.
 	if r.RemoteAddr == "@dev_incus" {
-		return false, "", "", fmt.Errorf("Main API query can't come from /dev/incus socket")
+		return false, "", "", errors.New("Main API query can't come from /dev/incus socket")
 	}
 
 	// Cluster notification with wrong certificate.
 	if isClusterNotification(r) {
-		return false, "", "", fmt.Errorf("Cluster notification isn't using trusted server certificate")
+		return false, "", "", errors.New("Cluster notification isn't using trusted server certificate")
+	}
+
+	// Cluster internal client with wrong certificate.
+	if isClusterInternal(r) {
+		return false, "", "", errors.New("Cluster internal client isn't using trusted server certificate")
 	}
 
 	// Bad query, no TLS found.
 	if r.TLS == nil {
-		return false, "", "", fmt.Errorf("Bad/missing TLS on network query")
+		return false, "", "", errors.New("Bad/missing TLS on network query")
 	}
 
 	// Load the certificates.
@@ -595,7 +632,7 @@ func (d *Daemon) createCmd(restAPI *mux.Router, version string, c APIEndpoint) {
 			select {
 			case <-d.setupChan:
 			default:
-				response := response.Unavailable(fmt.Errorf("Daemon is starting up"))
+				response := response.Unavailable(errors.New("Daemon is starting up"))
 				_ = response.Render(w)
 				return
 			}
@@ -604,8 +641,8 @@ func (d *Daemon) createCmd(restAPI *mux.Router, version string, c APIEndpoint) {
 		// Authentication
 		trusted, username, protocol, err := d.Authenticate(w, r)
 		if err != nil {
-			_, ok := err.(*oidc.AuthError)
-			if ok {
+			var authError *oidc.AuthError
+			if errors.As(err, &authError) {
 				// Ensure the OIDC headers are set if needed.
 				if d.oidcVerifier != nil {
 					_ = d.oidcVerifier.WriteHeaders(w)
@@ -703,8 +740,8 @@ func (d *Daemon) createCmd(restAPI *mux.Router, version string, c APIEndpoint) {
 			return false
 		}
 
-		if d.shutdownCtx.Err() == context.Canceled && !allowedDuringShutdown() {
-			_ = response.Unavailable(fmt.Errorf("Shutting down")).Render(w)
+		if errors.Is(d.shutdownCtx.Err(), context.Canceled) && !allowedDuringShutdown() {
+			_ = response.Unavailable(errors.New("Shutting down")).Render(w)
 			return
 		}
 
@@ -721,6 +758,12 @@ func (d *Daemon) createCmd(restAPI *mux.Router, version string, c APIEndpoint) {
 			// If the request is not trusted, only call the handler if the action allows it.
 			if !trusted && !action.AllowUntrusted {
 				return response.Forbidden(errors.New("You must be authenticated"))
+			}
+
+			// Protect against CSRF when using UI with browser that supports Fetch metadata.
+			// Deny Sec-Fetch-Site when set to cross-origin or same-site.
+			if slices.Contains([]string{"cross-site", "same-site"}, r.Header.Get("Sec-Fetch-Site")) {
+				return response.ErrorResponse(http.StatusForbidden, "Forbidden Sec-Fetch-Site header value")
 			}
 
 			// Call the access handler if there is one.
@@ -816,7 +859,6 @@ func (d *Daemon) Init() error {
 	d.startTime = time.Now()
 
 	err := d.init()
-
 	// If an error occurred synchronously while starting up, let's try to
 	// cleanup any state we produced so far. Errors happening here will be
 	// ignored.
@@ -825,48 +867,6 @@ func (d *Daemon) Init() error {
 		_ = d.Stop(context.Background(), unix.SIGINT)
 		return err
 	}
-
-	return nil
-}
-
-func (d *Daemon) setupLoki(URL string, cert string, key string, caCert string, instanceName string, logLevel string, labels []string, types []string) error {
-	// Stop any existing loki client.
-	if d.lokiClient != nil {
-		d.lokiClient.Stop()
-	}
-
-	// Check basic requirements for starting a new client.
-	if URL == "" || logLevel == "" || len(types) == 0 {
-		return nil
-	}
-
-	// Validate the URL.
-	u, err := url.Parse(URL)
-	if err != nil {
-		return err
-	}
-
-	// Handle standalone systems.
-	var location string
-	if !d.serverClustered {
-		hostname, err := os.Hostname()
-		if err != nil {
-			return err
-		}
-
-		location = hostname
-		if instanceName == "" {
-			instanceName = hostname
-		}
-	} else if instanceName == "" {
-		instanceName = d.serverName
-	}
-
-	// Start a new client.
-	d.lokiClient = loki.NewClient(d.shutdownCtx, u, cert, key, caCert, instanceName, location, logLevel, labels, types)
-
-	// Attach the new client to the log handler.
-	d.internalListener.AddHandler("loki", d.lokiClient.HandleEvent)
 
 	return nil
 }
@@ -1111,7 +1111,7 @@ func (d *Daemon) init() error {
 	testDev := internalUtil.VarPath("devices", ".test")
 	testDevNum := int(unix.Mkdev(0, 0))
 	_ = os.Remove(testDev)
-	err = unix.Mknod(testDev, 0600|unix.S_IFCHR, testDevNum)
+	err = unix.Mknod(testDev, 0o600|unix.S_IFCHR, testDevNum)
 	if err == nil {
 		fd, err := os.Open(testDev)
 		if err != nil && os.IsPermission(err) {
@@ -1359,7 +1359,7 @@ func (d *Daemon) init() error {
 
 	// Mount the storage pools.
 	logger.Infof("Initializing storage pools")
-	err = storageStartup(d.State(), false)
+	err = storageStartup(d.State())
 	if err != nil {
 		return err
 	}
@@ -1428,21 +1428,19 @@ func (d *Daemon) init() error {
 	d.proxy = proxy.FromConfig(d.globalConfig.ProxyHTTPS(), d.globalConfig.ProxyHTTP(), d.globalConfig.ProxyIgnoreHosts())
 
 	d.gateway.HeartbeatOfflineThreshold = d.globalConfig.OfflineThreshold()
-	lokiURL, lokiUsername, lokiPassword, lokiCACert, lokiInstance, lokiLoglevel, lokiLabels, lokiTypes := d.globalConfig.LokiServer()
 	oidcIssuer, oidcClientID, oidcScope, oidcAudience, oidcClaim := d.globalConfig.OIDCServer()
 	syslogSocketEnabled := d.localConfig.SyslogSocket()
 	openfgaAPIURL, openfgaAPIToken, openfgaStoreID := d.globalConfig.OpenFGA()
 	instancePlacementScriptlet := d.globalConfig.InstancesPlacementScriptlet()
+	authorizationScriptlet := d.globalConfig.AuthorizationScriptlet()
 
 	d.endpoints.NetworkUpdateTrustedProxy(d.globalConfig.HTTPSTrustedProxy())
 	d.globalConfigMu.Unlock()
 
-	// Setup Loki logger.
-	if lokiURL != "" {
-		err = d.setupLoki(lokiURL, lokiUsername, lokiPassword, lokiCACert, lokiInstance, lokiLoglevel, lokiLabels, lokiTypes)
-		if err != nil {
-			return err
-		}
+	d.loggingController = logging.NewLoggingController(d.internalListener)
+	err = d.loggingController.Setup(d.State())
+	if err != nil {
+		return err
 	}
 
 	// Setup syslog listener.
@@ -1469,10 +1467,18 @@ func (d *Daemon) init() error {
 		}
 	}
 
+	// Setup the authorization scriptlet.
+	if authorizationScriptlet != "" {
+		err = d.setupAuthorizationScriptlet(authorizationScriptlet)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Setup BGP listener.
 	d.bgp = bgp.NewServer()
 	if bgpAddress != "" && bgpASN != 0 && bgpRouterID != "" {
-		err := d.bgp.Start(bgpAddress, uint32(bgpASN), net.ParseIP(bgpRouterID))
+		err := d.bgp.Configure(bgpAddress, uint32(bgpASN), net.ParseIP(bgpRouterID))
 		if err != nil {
 			return err
 		}
@@ -1526,7 +1532,7 @@ func (d *Daemon) init() error {
 	}
 
 	// Setup the networks.
-	if !d.db.Cluster.LocalNodeIsEvacuated() {
+	if !d.serverClustered || !d.db.Cluster.LocalNodeIsEvacuated() {
 		logger.Infof("Initializing networks")
 
 		err = networkStartup(d.State())
@@ -1719,6 +1725,9 @@ func (d *Daemon) startClusterTasks() {
 	// Perform automatic evacuation for offline cluster members
 	d.clusterTasks.Add(autoHealClusterTask(d))
 
+	// Perform automatic live-migration to alance load on cluster
+	d.clusterTasks.Add(autoRebalanceClusterTask(d))
+
 	// Start all background tasks
 	d.clusterTasks.Start(d.shutdownCtx)
 }
@@ -1746,6 +1755,10 @@ func (d *Daemon) Stop(ctx context.Context, sig os.Signal) error {
 
 	// Cancelling the context will make everyone aware that we're shutting down.
 	d.shutdownCancel()
+
+	if d.loggingController != nil {
+		d.loggingController.Shutdown()
+	}
 
 	if d.gateway != nil {
 		d.stopClusterTasks()
@@ -1790,7 +1803,7 @@ func (d *Daemon) Stop(ctx context.Context, sig os.Signal) error {
 	if sig == unix.SIGPWR || sig == unix.SIGTERM {
 		if d.db.Cluster != nil {
 			// waitForOperations will block until all operations are done, or it's forced to shut down.
-			// For the latter case, we re-use the shutdown channel which is filled when a shutdown is
+			// For the latter case, we reuse the shutdown channel which is filled when a shutdown is
 			// initiated using `shutdown`.
 			waitForOperations(ctx, d.db.Cluster, s.GlobalConfig.ShutdownTimeout())
 		}
@@ -1816,7 +1829,7 @@ func (d *Daemon) Stop(ctx context.Context, sig os.Signal) error {
 
 		// Full shutdown requested.
 		if sig == unix.SIGPWR {
-			instancesShutdown(s, instances)
+			instancesShutdown(instances)
 
 			logger.Info("Stopping networks")
 			networkShutdown(s)
@@ -1949,10 +1962,10 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 		"openfga.store.id":  storeID,
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
-	revert.Add(func() {
+	reverter.Add(func() {
 		// Reset to default authorizer.
 		d.authorizer, _ = auth.LoadAuthorizer(d.shutdownCtx, auth.DriverTLS, logger.Log, d.clientCerts)
 	})
@@ -1980,7 +1993,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 		var resources auth.Resources
 
 		err = d.db.Cluster.Transaction(d.shutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
-			err := query.Scan(ctx, tx.Tx(), "SELECT certificates.fingerprint from certificates", func(scan func(dest ...any) error) error {
+			err := query.Scan(ctx, tx.Tx(), "SELECT certificates.fingerprint FROM certificates", func(scan func(dest ...any) error) error {
 				var fingerprint string
 				err := scan(&fingerprint)
 				if err != nil {
@@ -1994,7 +2007,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 				return err
 			}
 
-			err = query.Scan(ctx, tx.Tx(), "SELECT name from storage_pools", func(scan func(dest ...any) error) error {
+			err = query.Scan(ctx, tx.Tx(), "SELECT name FROM storage_pools", func(scan func(dest ...any) error) error {
 				var storagePoolName string
 				err := scan(&storagePoolName)
 				if err != nil {
@@ -2008,7 +2021,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 				return err
 			}
 
-			err = query.Scan(ctx, tx.Tx(), "SELECT name from projects", func(scan func(dest ...any) error) error {
+			err = query.Scan(ctx, tx.Tx(), "SELECT name FROM projects", func(scan func(dest ...any) error) error {
 				var projectName string
 				err := scan(&projectName)
 				if err != nil {
@@ -2022,7 +2035,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 				return err
 			}
 
-			err = query.Scan(ctx, tx.Tx(), "SELECT images.fingerprint, projects.name from images JOIN projects ON projects.id=images.project_id", func(scan func(dest ...any) error) error {
+			err = query.Scan(ctx, tx.Tx(), "SELECT images.fingerprint, projects.name FROM images JOIN projects ON projects.id=images.project_id", func(scan func(dest ...any) error) error {
 				var imageFingerprint string
 				var projectName string
 				err := scan(&imageFingerprint, &projectName)
@@ -2037,7 +2050,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 				return err
 			}
 
-			err = query.Scan(ctx, tx.Tx(), "SELECT images_aliases.name, projects.name from images_aliases JOIN projects ON projects.id=images_aliases.project_id", func(scan func(dest ...any) error) error {
+			err = query.Scan(ctx, tx.Tx(), "SELECT images_aliases.name, projects.name FROM images_aliases JOIN projects ON projects.id=images_aliases.project_id", func(scan func(dest ...any) error) error {
 				var imageAliasName string
 				var projectName string
 				err := scan(&imageAliasName, &projectName)
@@ -2052,7 +2065,7 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 				return err
 			}
 
-			err = query.Scan(ctx, tx.Tx(), "SELECT instances.name, projects.name from instances JOIN projects ON projects.id=instances.project_id", func(scan func(dest ...any) error) error {
+			err = query.Scan(ctx, tx.Tx(), "SELECT instances.name, projects.name FROM instances JOIN projects ON projects.id=instances.project_id", func(scan func(dest ...any) error) error {
 				var instanceName string
 				var projectName string
 				err := scan(&instanceName, &projectName)
@@ -2193,7 +2206,39 @@ func (d *Daemon) setupOpenFGA(apiURL string, apiToken string, storeID string) er
 
 	d.authorizer = openfgaAuthorizer
 
-	revert.Success()
+	reverter.Success()
+	return nil
+}
+
+// Setup authorization scriptlet.
+func (d *Daemon) setupAuthorizationScriptlet(scriptlet string) error {
+	err := scriptletLoad.AuthorizationSet(scriptlet)
+	if err != nil {
+		return fmt.Errorf("Failed saving authorization scriptlet: %w", err)
+	}
+
+	if scriptlet == "" {
+		// Reset to default authorizer.
+		d.authorizer, err = auth.LoadAuthorizer(d.shutdownCtx, auth.DriverTLS, logger.Log, d.clientCerts)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	// Fail if not using the default tls or scriptlet authorizer.
+	switch d.authorizer.(type) {
+	case *auth.TLS, *auth.Scriptlet:
+		d.authorizer, err = auth.LoadAuthorizer(d.shutdownCtx, auth.DriverScriptlet, logger.Log, d.clientCerts)
+		if err != nil {
+			return err
+		}
+
+	default:
+		return errors.New("Attempting to setup scriptlet authorization while another authorizer is already set")
+	}
+
 	return nil
 }
 
@@ -2275,9 +2320,7 @@ func (d *Daemon) hasMemberStateChanged(heartbeatData *cluster.APIHeartbeat) bool
 }
 
 // heartbeatHandler handles heartbeat requests from other cluster members.
-func (d *Daemon) heartbeatHandler(w http.ResponseWriter, r *http.Request, isLeader bool, hbData *cluster.APIHeartbeat) {
-	s := d.State()
-
+func (d *Daemon) heartbeatHandler(w http.ResponseWriter, _ *http.Request, isLeader bool, hbData *cluster.APIHeartbeat) {
 	var err error
 
 	// Look for time skews.
@@ -2366,55 +2409,6 @@ func (d *Daemon) heartbeatHandler(w http.ResponseWriter, r *http.Request, isLead
 		}
 
 		logger.Debug("Partial heartbeat received")
-	}
-
-	// Refresh cluster member resource info cache.
-	var muRefresh sync.Mutex
-
-	for _, member := range hbData.Members {
-		// Ignore offline servers.
-		if !member.Online {
-			continue
-		}
-
-		if member.Name == s.ServerName {
-			continue
-		}
-
-		go func(name string, address string) {
-			muRefresh.Lock()
-			defer muRefresh.Unlock()
-
-			// Check if we have a recent local cache entry already.
-			resourcesPath := internalUtil.CachePath("resources", fmt.Sprintf("%s.yaml", name))
-			fi, err := os.Stat(resourcesPath)
-			if err == nil && fi.ModTime().Before(time.Now().Add(time.Hour)) {
-				return
-			}
-
-			// Connect to the server.
-			client, err := cluster.Connect(address, s.Endpoints.NetworkCert(), s.ServerCert(), nil, true)
-			if err != nil {
-				return
-			}
-
-			// Get the server resources.
-			resources, err := client.GetServerResources()
-			if err != nil {
-				return
-			}
-
-			// Write to cache.
-			data, err := json.Marshal(resources)
-			if err != nil {
-				return
-			}
-
-			err = os.WriteFile(resourcesPath, data, 0600)
-			if err != nil {
-				return
-			}
-		}(member.Name, member.Address)
 	}
 }
 

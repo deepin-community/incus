@@ -1,5 +1,6 @@
 #!/usr/bin/make -f
 
+include /usr/share/dpkg/architecture.mk
 include /usr/share/dpkg/pkg-info.mk
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
@@ -18,27 +19,39 @@ override_dh_auto_build:
 	# Build almost everything with dynamic linking
 	CGO_LDFLAGS_ALLOW="-Wl,-z,now" dh_auto_build
 
-	# Build incus-agent as a statically-linked binary
-	CGO_LDFLAGS_ALLOW="-Wl,-z,now" CGO_ENABLED=0 DH_GOLANG_BUILDPKG="github.com/lxc/incus/cmd/incus-agent" DH_GOLANG_EXCLUDES="" dh_auto_build
+	# Build incus-agent as a statically-linked binary. For amd64 and arm64 builds, build a variety of versions including Windows binaries.
+ifeq ($(DEB_HOST_ARCH),amd64)
+	cd _build && GOARCH=386 CGO_ENABLED=0 GOPATH=$$(pwd) GOCACHE=$$(pwd)/go-build GO111MODULE=off GOPROXY=off GOTOOLCHAIN=local go build -trimpath -v -o bin/incus-agent.linux.i686 -tags=agent,netgo github.com/lxc/incus/cmd/incus-agent
+	cd _build && GOARCH=amd64 CGO_ENABLED=0 GOPATH=$$(pwd) GOCACHE=$$(pwd)/go-build GO111MODULE=off GOPROXY=off GOTOOLCHAIN=local go build -trimpath -v -o bin/incus-agent.linux.x86_64 -tags=agent,netgo github.com/lxc/incus/cmd/incus-agent
+	cd _build && GOARCH=386 GOOS=windows CGO_ENABLED=0 GOPATH=$$(pwd) GOCACHE=$$(pwd)/go-build GO111MODULE=off GOPROXY=off GOTOOLCHAIN=local go build -trimpath -v -o bin/incus-agent.windows.i686 -tags=agent,netgo github.com/lxc/incus/cmd/incus-agent
+	cd _build && GOARCH=amd64 GOOS=windows CGO_ENABLED=0 GOPATH=$$(pwd) GOCACHE=$$(pwd)/go-build GO111MODULE=off GOPROXY=off GOTOOLCHAIN=local go build -trimpath -v -o bin/incus-agent.windows.x86_64 -tags=agent,netgo github.com/lxc/incus/cmd/incus-agent
+	cd _build/bin && ln -s incus-agent.linux.x86_64 incus-agent
+else ifeq ($(DEB_HOST_ARCH),arm64)
+	cd _build && GOARCH=arm64 CGO_ENABLED=0 GOPATH=$$(pwd) GOCACHE=$$(pwd)/go-build GO111MODULE=off GOPROXY=off GOTOOLCHAIN=local go build -trimpath -v -o bin/incus-agent.linux.aarch64 -tags=agent,netgo github.com/lxc/incus/cmd/incus-agent
+	cd _build && GOARCH=arm64 GOOS=windows CGO_ENABLED=0 GOPATH=$$(pwd) GOCACHE=$$(pwd)/go-build GO111MODULE=off GOPROXY=off GOTOOLCHAIN=local go build -trimpath -v -o bin/incus-agent.windows.aarch64 -tags=agent,netgo github.com/lxc/incus/cmd/incus-agent
+	cd _build/bin && ln -s incus-agent.linux.aarch64 incus-agent
+else
+	cd _build && CGO_ENABLED=0 GOPATH=$$(pwd) GOCACHE=$$(pwd)/go-build GO111MODULE=off GOPROXY=off GOTOOLCHAIN=local go build -trimpath -v -o bin/incus-agent -tags=agent,netgo github.com/lxc/incus/cmd/incus-agent
+endif
 
 	# Generate the man pages
 	mkdir man1/
-	TZ=UTC HOME="~" _build/bin/incus manpage man1/
-	TZ=UTC HOME="~" _build/bin/incusd manpage man1/
-	TZ=UTC HOME="~" help2man _build/bin/fuidshift -n "uid/gid shifter" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/fuidshift.1
+	TZ=UTC INCUS_CONF="_build/.config/incus" _build/bin/incus manpage man1/
+	TZ=UTC INCUS_CONF="_build/.config/incus" _build/bin/incusd manpage man1/
+	TZ=UTC help2man _build/bin/fuidshift -n "uid/gid shifter" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/fuidshift.1
 	TZ=UTC HOME="~" help2man _build/bin/lxc-to-incus -n "Convert LXC containers to Incus" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/lxc-to-incus.1
-	TZ=UTC HOME="~" help2man _build/bin/lxd-to-incus -n "Convert LXD containers to Incus" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/lxd-to-incus.1
-	TZ=UTC HOME="~" help2man _build/bin/incus-agent -n "Incus virtual machine guest agent" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-agent.1
-	TZ=UTC HOME="~" help2man _build/bin/incus-benchmark -n "Incus benchmark" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-benchmark.1
-	TZ=UTC HOME="~" help2man _build/bin/incus-migrate -n "Incus physical to instance migration tool" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-migrate.1
-	TZ=UTC HOME="~" help2man _build/bin/incus-simplestreams -n "Maintain an Incus-compatible simplestreams tree" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-simplestreams.1
-	TZ=UTC HOME="~" help2man _build/bin/incus-user -n "Incus user project daemon" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-user.1
+	TZ=UTC help2man _build/bin/lxd-to-incus -n "Convert LXD containers to Incus" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/lxd-to-incus.1
+	TZ=UTC help2man _build/bin/incus-agent -n "Incus virtual machine guest agent" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-agent.1
+	TZ=UTC help2man _build/bin/incus-benchmark -n "Incus benchmark" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-benchmark.1
+	TZ=UTC help2man _build/bin/incus-migrate -n "Incus physical to instance migration tool" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-migrate.1
+	TZ=UTC help2man _build/bin/incus-simplestreams -n "Maintain an Incus-compatible simplestreams tree" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-simplestreams.1
+	TZ=UTC help2man _build/bin/incus-user -n "Incus user project daemon" --no-info --no-discard-stderr --version-string=$(DEB_VERSION_UPSTREAM) > man1/incus-user.1
 
 	# Generate shell completions
 	mkdir completions/
-	_build/bin/incus completion bash > completions/incus
-	_build/bin/incus completion fish > completions/incus.fish
-	_build/bin/incus completion zsh > completions/_incus
+	INCUS_CONF="_build/.config/incus" _build/bin/incus completion bash > completions/incus
+	INCUS_CONF="_build/.config/incus" _build/bin/incus completion fish > completions/incus.fish
+	INCUS_CONF="_build/.config/incus" _build/bin/incus completion zsh > completions/_incus
 
 override_dh_auto_test:
 	CGO_LDFLAGS_ALLOW="-Wl,-z,now" dh_auto_test
@@ -50,14 +63,22 @@ override_dh_auto_install:
 	find ./debian -name import-busybox -delete
 
 	# Need to rename various config files here, as dh_install cannot rename files
-	install -Dpm 0644 debian/incus.dnsmasq debian/tmp/etc/dnsmasq.d-available/incus
-	install -Dpm 0644 debian/incus.logrotate debian/tmp/etc/logrotate.d/incus
-	install -Dpm 0644 debian/incus.sysctl debian/tmp/etc/sysctl.d/10-incus-inotify.conf
+	install -Dpm 0644 debian/incus-base.dnsmasq debian/tmp/etc/dnsmasq.d-available/incus
+	install -Dpm 0644 debian/incus-base.sysctl debian/tmp/etc/sysctl.d/10-incus-inotify.conf
 
 override_dh_install:
 	dh_install
-	dh_installsysusers
+	dh_installlogrotate --name incus
+	dh_installsysusers --name incus
+
+override_dh_installinit:
+	dh_installinit --name incus --no-stop-on-upgrade --no-restart-after-upgrade
+	dh_installinit --name incus-user --no-stop-on-upgrade --no-restart-after-upgrade --no-start
+	dh_installinit --name incus-startup --no-stop-on-upgrade --no-restart-after-upgrade --no-start
 
 override_dh_installsystemd:
 	# Handle start / restart manually in incus.postinst
-	dh_installsystemd --no-stop-on-upgrade --no-restart-after-upgrade --no-start
+	dh_installsystemd --name incus-startup --no-stop-on-upgrade --no-restart-after-upgrade --no-start
+	dh_installsystemd --name incus --no-stop-on-upgrade --no-restart-after-upgrade --no-start
+	dh_installsystemd --name incus-user --no-stop-on-upgrade --no-restart-after-upgrade --no-start
+	dh_installsystemd --name incus-agent --no-stop-on-upgrade --no-restart-after-upgrade --no-start

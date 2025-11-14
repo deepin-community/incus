@@ -10,9 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/sys"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
+	"github.com/lxc/incus/v6/shared/revert"
 )
 
 var rsyncProfileTpl = template.Must(template.New("rsyncProfile").Parse(`#include <tunables/global>
@@ -73,8 +73,8 @@ func RsyncWrapper(sysOS *sys.OS, cmd *exec.Cmd, sourcePath string, dstPath strin
 		return func() {}, nil
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Attempt to deref all paths.
 	if sourcePath != "" {
@@ -97,7 +97,7 @@ func RsyncWrapper(sysOS *sys.OS, cmd *exec.Cmd, sourcePath string, dstPath strin
 		return nil, fmt.Errorf("Failed to load rsync profile: %w", err)
 	}
 
-	revert.Add(func() { _ = deleteProfile(sysOS, profileName, profileName) })
+	reverter.Add(func() { _ = deleteProfile(sysOS, profileName, profileName) })
 
 	// Resolve aa-exec.
 	execPath, err := exec.LookPath("aa-exec")
@@ -116,14 +116,14 @@ func RsyncWrapper(sysOS *sys.OS, cmd *exec.Cmd, sourcePath string, dstPath strin
 		_ = deleteProfile(sysOS, profileName, profileName)
 	}
 
-	revert.Success()
+	reverter.Success()
 
 	return cleanup, nil
 }
 
 func rsyncProfileLoad(sysOS *sys.OS, sourcePath string, dstPath string) (string, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Generate a temporary profile name.
 	name := profileName("rsync", uuid.New().String())
@@ -136,12 +136,12 @@ func rsyncProfileLoad(sysOS *sys.OS, sourcePath string, dstPath string) (string,
 	}
 
 	// Write it to disk.
-	err = os.WriteFile(profilePath, []byte(content), 0600)
+	err = os.WriteFile(profilePath, []byte(content), 0o600)
 	if err != nil {
 		return "", err
 	}
 
-	revert.Add(func() { os.Remove(profilePath) })
+	reverter.Add(func() { os.Remove(profilePath) })
 
 	// Load it.
 	err = loadProfile(sysOS, name)
@@ -149,7 +149,7 @@ func rsyncProfileLoad(sysOS *sys.OS, sourcePath string, dstPath string) (string,
 		return "", err
 	}
 
-	revert.Success()
+	reverter.Success()
 	return name, nil
 }
 

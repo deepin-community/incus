@@ -5,6 +5,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -13,6 +14,7 @@ import (
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
 	"github.com/lxc/incus/v6/internal/server/db/cluster"
+	"github.com/lxc/incus/v6/internal/server/db/operationtype"
 	"github.com/lxc/incus/v6/internal/server/db/query"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
@@ -58,7 +60,7 @@ SELECT instances.name FROM instances
 // instance with the given name in the given project.
 //
 // It returns the empty string if the container is hosted on this node.
-func (c *ClusterTx) GetNodeAddressOfInstance(ctx context.Context, project string, name string, instType instancetype.Type) (string, error) {
+func (c *ClusterTx) GetNodeAddressOfInstance(ctx context.Context, project string, name string) (string, error) {
 	var stmt string
 
 	args := make([]any, 0, 4) // Expect up to 4 filters.
@@ -69,11 +71,6 @@ func (c *ClusterTx) GetNodeAddressOfInstance(ctx context.Context, project string
 	args = append(args, project)
 
 	// Instance type filter.
-	if instType != instancetype.Any {
-		filters.WriteString(" AND instances.type = ?")
-		args = append(args, instType)
-	}
-
 	if strings.Contains(name, internalInstance.SnapshotDelimiter) {
 		parts := strings.SplitN(name, internalInstance.SnapshotDelimiter, 2)
 
@@ -126,7 +123,7 @@ SELECT nodes.id, nodes.address
 	}
 
 	if rows.Next() {
-		return "", fmt.Errorf("More than one cluster member associated with instance")
+		return "", errors.New("More than one cluster member associated with instance")
 	}
 
 	err = rows.Err()
@@ -153,7 +150,7 @@ type Instance struct {
 // GetInstancesByMemberAddress returns the instances associated to each cluster member address.
 // The member address of instances running on the local member is set to the empty string, to distinguish it from
 // remote nodes. Instances whose member is down are added to the special address "0.0.0.0".
-func (c *ClusterTx) GetInstancesByMemberAddress(ctx context.Context, offlineThreshold time.Duration, projects []string, instType instancetype.Type) (map[string][]Instance, error) {
+func (c *ClusterTx) GetInstancesByMemberAddress(ctx context.Context, offlineThreshold time.Duration, projects []string) (map[string][]Instance, error) {
 	args := make([]any, 0, 2) // Expect up to 2 filters.
 	var q strings.Builder
 
@@ -170,12 +167,6 @@ func (c *ClusterTx) GetInstancesByMemberAddress(ctx context.Context, offlineThre
 	q.WriteString(fmt.Sprintf("WHERE projects.name IN %s", query.Params(len(projects))))
 	for _, project := range projects {
 		args = append(args, project)
-	}
-
-	// Instance type filter.
-	if instType != instancetype.Any {
-		q.WriteString(" AND instances.type = ?")
-		args = append(args, instType)
 	}
 
 	q.WriteString(" ORDER BY instances.id")
@@ -217,7 +208,7 @@ func (c *ClusterTx) GetInstancesByMemberAddress(ctx context.Context, offlineThre
 }
 
 // ErrInstanceListStop used as return value from InstanceList's instanceFunc when prematurely stopping the search.
-var ErrInstanceListStop = fmt.Errorf("search stopped")
+var ErrInstanceListStop = errors.New("search stopped")
 
 // InstanceList loads all instances across all projects and for each instance runs the instanceFunc passing in the
 // instance and it's project and profiles. Accepts optional filter arguments to specify a subset of instances.
@@ -534,8 +525,14 @@ func (c *ClusterTx) instanceProfilesFill(ctx context.Context, snapshotsMode bool
 		return fmt.Errorf("Failed loading profiles: %w", err)
 	}
 
+	// Get all the profile configs.
+	profileConfigs, err := cluster.GetAllProfileConfigs(context.TODO(), c.Tx())
+	if err != nil {
+		return fmt.Errorf("Failed loading profile configs: %w", err)
+	}
+
 	// Get all the profile devices.
-	profileDevices, err := cluster.GetDevices(context.TODO(), c.Tx(), "profile")
+	profileDevices, err := cluster.GetAllProfileDevices(context.TODO(), c.Tx())
 	if err != nil {
 		return fmt.Errorf("Failed loading profile devices: %w", err)
 	}
@@ -549,7 +546,7 @@ func (c *ClusterTx) instanceProfilesFill(ctx context.Context, snapshotsMode bool
 			continue
 		}
 
-		profilesByID[profile.ID], err = profile.ToAPI(context.TODO(), c.tx, profileDevices)
+		profilesByID[profile.ID], err = profile.ToAPI(context.TODO(), c.tx, profileConfigs, profileDevices)
 		if err != nil {
 			return err
 		}
@@ -611,7 +608,7 @@ func (c *ClusterTx) InstancesToInstanceArgs(ctx context.Context, fillProfiles bo
 	}
 
 	if instanceCount > 0 && snapshotCount > 0 {
-		return nil, fmt.Errorf("Cannot use InstancesToInstanceArgs with mixed instance and instance snapshots")
+		return nil, errors.New("Cannot use InstancesToInstanceArgs with mixed instance and instance snapshots")
 	}
 
 	// Populate instance config.
@@ -839,7 +836,7 @@ SELECT instances.id, projects.name AS project, instances.name, nodes.name AS nod
 
 	err := c.tx.QueryRowContext(ctx, q, inargs...).Scan(&inst.ID, &inst.Project, &inst.Name, &inst.Node, &inst.Type, &inst.Architecture, &inst.Ephemeral, &inst.CreationDate, &inst.Stateful, &inst.LastUseDate, &inst.Description, &inst.ExpiryDate)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, api.StatusErrorf(http.StatusNotFound, "Instance not found")
 		}
 
@@ -880,7 +877,7 @@ SELECT storage_pools.name FROM storage_pools
 
 	err := c.tx.QueryRowContext(ctx, query, inargs...).Scan(outargs...)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return "", api.StatusErrorf(http.StatusNotFound, "Instance storage pool not found")
 		}
 
@@ -912,7 +909,7 @@ SELECT projects.name, instances.name
 WHERE instances.id=?
 `
 	err := c.tx.QueryRowContext(ctx, q, id).Scan(&project, &name)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", api.StatusErrorf(http.StatusNotFound, "Instance not found")
 	}
 
@@ -933,7 +930,7 @@ func (c *ClusterTx) GetInstanceConfig(ctx context.Context, id int, key string) (
 	value := ""
 
 	err := c.tx.QueryRowContext(ctx, q, id, key).Scan(&value)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", api.StatusErrorf(http.StatusNotFound, "Instance config not found")
 	}
 
@@ -1077,7 +1074,8 @@ func CreateInstanceConfig(ctx context.Context, tx *sql.Tx, id int, config map[st
 // UpdateInstance updates the description, architecture and ephemeral flag of
 // the instance with the given ID.
 func UpdateInstance(tx *sql.Tx, id int, description string, architecture int, ephemeral bool,
-	expiryDate time.Time) error {
+	expiryDate time.Time,
+) error {
 	str := "UPDATE instances SET description=?, architecture=?, ephemeral=?, expiry_date=? WHERE id=?"
 	ephemeralInt := 0
 	if ephemeral {
@@ -1096,4 +1094,103 @@ func UpdateInstance(tx *sql.Tx, id int, description string, architecture int, ep
 	}
 
 	return nil
+}
+
+// GetInstancesCount returns the number of instances with possible filtering for project or location.
+// It also supports looking for instances currently being created.
+func (c *ClusterTx) GetInstancesCount(ctx context.Context, projectName string, locationName string, includePending bool) (int, error) {
+	var err error
+
+	// Load the project ID if needed.
+	projectID := int64(-1)
+	if projectName != "" {
+		projectID, err = cluster.GetProjectID(ctx, c.Tx(), projectName)
+		if err != nil {
+			return -1, err
+		}
+	}
+
+	// Load the cluster member ID if needed.
+	nodeID := int64(-1)
+	if locationName != "" {
+		nodeID, err = cluster.GetNodeID(ctx, c.Tx(), locationName)
+		if err != nil {
+			return -1, err
+		}
+	}
+
+	// Count the instances.
+	var count int
+
+	if projectID != -1 && nodeID != -1 {
+		// Count for specified project and cluster member.
+		created, err := query.Count(ctx, c.tx, "instances", "project_id=? AND node_id=?", projectID, nodeID)
+		if err != nil {
+			return -1, fmt.Errorf("Failed to get instances count: %w", err)
+		}
+
+		count += created
+
+		if includePending {
+			pending, err := query.Count(ctx, c.tx, "operations", "project_id=? AND node_id=? AND type=?", projectID, nodeID, operationtype.InstanceCreate)
+			if err != nil {
+				return -1, fmt.Errorf("Failed to get pending instances count: %w", err)
+			}
+
+			count += pending
+		}
+	} else if projectID != -1 {
+		// Count for specified project.
+		created, err := query.Count(ctx, c.tx, "instances", "project_id=?", projectID)
+		if err != nil {
+			return -1, fmt.Errorf("Failed to get instances count: %w", err)
+		}
+
+		count += created
+
+		if includePending {
+			pending, err := query.Count(ctx, c.tx, "operations", "project_id=? AND type=?", projectID, operationtype.InstanceCreate)
+			if err != nil {
+				return -1, fmt.Errorf("Failed to get pending instances count: %w", err)
+			}
+
+			count += pending
+		}
+	} else if nodeID != -1 {
+		// Count for specified cluster member.
+		created, err := query.Count(ctx, c.tx, "instances", "node_id=?", nodeID)
+		if err != nil {
+			return -1, fmt.Errorf("Failed to get instances count: %w", err)
+		}
+
+		count += created
+
+		if includePending {
+			pending, err := query.Count(ctx, c.tx, "operations", "node_id=? AND type=?", nodeID, operationtype.InstanceCreate)
+			if err != nil {
+				return -1, fmt.Errorf("Failed to get pending instances count: %w", err)
+			}
+
+			count += pending
+		}
+	} else {
+		// Count everything.
+		created, err := query.Count(ctx, c.tx, "instances", "")
+		if err != nil {
+			return -1, fmt.Errorf("Failed to get instances count: %w", err)
+		}
+
+		count += created
+
+		if includePending {
+			pending, err := query.Count(ctx, c.tx, "operations", "type=?", operationtype.InstanceCreate)
+			if err != nil {
+				return -1, fmt.Errorf("Failed to get pending instances count: %w", err)
+			}
+
+			count += pending
+		}
+	}
+
+	return count, nil
 }

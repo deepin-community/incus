@@ -1,21 +1,30 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
+	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
-	"github.com/lxc/incus/v6/client"
+	"golang.org/x/crypto/ssh"
+
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/instance"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/shared/api"
 	config "github.com/lxc/incus/v6/shared/cliconfig"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/termios"
+	localtls "github.com/lxc/incus/v6/shared/tls"
 )
 
 // Date layout to be used throughout the client.
@@ -117,7 +126,7 @@ func parseDeviceOverrides(deviceOverrideArgs []string) (map[string]map[string]st
 
 // IsAliasesSubset returns true if the first array is completely contained in the second array.
 func IsAliasesSubset(a1 []api.ImageAlias, a2 []api.ImageAlias) bool {
-	set := make(map[string]interface{})
+	set := make(map[string]any)
 	for _, alias := range a2 {
 		set[alias.Name] = nil
 	}
@@ -205,6 +214,60 @@ func GetExistingAliases(aliases []string, allAliases []api.ImageAliasesEntry) []
 		}
 	}
 	return existing
+}
+
+// deleteImagesByAliases deletes images based on provided aliases. E.g.
+// aliases=[a1], image aliases=[a1] - image will be deleted
+// aliases=[a1, a2], image aliases=[a1] - image will be deleted
+// aliases=[a1], image aliases=[a1, a2] - image will be preserved.
+func deleteImagesByAliases(client incus.InstanceServer, aliases []api.ImageAlias) error {
+	existingAliases, err := GetCommonAliases(client, aliases...)
+	if err != nil {
+		return fmt.Errorf(i18n.G("Error retrieving aliases: %w"), err)
+	}
+
+	// Nothing to do. Just return.
+	if len(existingAliases) == 0 {
+		return nil
+	}
+
+	// Delete images if necessary
+	visitedImages := make(map[string]any)
+	for _, alias := range existingAliases {
+		image, _, _ := client.GetImage(alias.Target)
+
+		// If the image has already been visited then continue
+		if image != nil {
+			_, found := visitedImages[image.Fingerprint]
+			if found {
+				continue
+			}
+
+			visitedImages[image.Fingerprint] = nil
+		}
+
+		// An image can have multiple aliases. If an image being published
+		// reuses all the aliases from an existing image then that existing image is removed.
+		// In other case only specific aliases should be removed. E.g.
+		// 1. If image with 'foo' and 'bar' aliases already exists and new image is published
+		//    with aliases 'foo' and 'bar'. Old image should be removed.
+		// 2. If image with 'foo' and 'bar' aliases already exists and new image is published
+		//    with alias 'foo'. Old image should be kept with alias 'bar'
+		//    and new image will have 'foo' alias.
+		if image != nil && IsAliasesSubset(image.Aliases, aliases) {
+			op, err := client.DeleteImage(alias.Target)
+			if err != nil {
+				return err
+			}
+
+			err = op.Wait()
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func getConfig(args ...string) (map[string]string, error) {
@@ -310,7 +373,7 @@ func instancesExist(resources []remoteResource) error {
 func structHasField(typ reflect.Type, field string) bool {
 	var parent reflect.Type
 
-	for i := 0; i < typ.NumField(); i++ {
+	for i := range typ.NumField() {
 		fieldType := typ.Field(i)
 		yaml := fieldType.Tag.Get("yaml")
 
@@ -331,18 +394,28 @@ func structHasField(typ reflect.Type, field string) bool {
 }
 
 // getServerSupportedFilters returns two lists: one with filters supported by server and second one with not supported.
-func getServerSupportedFilters(filters []string, i interface{}) ([]string, []string) {
+func getServerSupportedFilters(filters []string, clientFilters []string, singleValueServerSupport bool) ([]string, []string) {
 	supportedFilters := []string{}
 	unsupportedFilters := []string{}
 
 	for _, filter := range filters {
 		membs := strings.SplitN(filter, "=", 2)
-		// Only key/value pairs are supported by server side API
-		// Only keys which are part of struct are supported by server side API
-		// Multiple values (separated by ',') are not supported by server side API
-		// Keys with '.' in name are not supported
-		if len(membs) < 2 || !structHasField(reflect.TypeOf(i), membs[0]) || strings.Contains(membs[1], ",") || strings.Contains(membs[0], ".") {
+
+		if len(membs) == 1 && singleValueServerSupport {
+			supportedFilters = append(supportedFilters, filter)
+			continue
+		} else if len(membs) == 1 && !singleValueServerSupport {
 			unsupportedFilters = append(unsupportedFilters, filter)
+			continue
+		}
+
+		found := false
+		if slices.Contains(clientFilters, membs[0]) {
+			found = true
+			unsupportedFilters = append(unsupportedFilters, filter)
+		}
+
+		if found {
 			continue
 		}
 
@@ -443,7 +516,7 @@ func textEditor(inPath string, inContent []byte) ([]byte, error) {
 				}
 			}
 			if editor == "" {
-				return []byte{}, fmt.Errorf(i18n.G("No text editor found, please set the EDITOR environment variable"))
+				return []byte{}, errors.New(i18n.G("No text editor found, please set the EDITOR environment variable"))
 			}
 		}
 	}
@@ -455,14 +528,15 @@ func textEditor(inPath string, inContent []byte) ([]byte, error) {
 			return []byte{}, err
 		}
 
-		revert := revert.New()
-		defer revert.Fail()
-		revert.Add(func() {
+		reverter := revert.New()
+		defer reverter.Fail()
+
+		reverter.Add(func() {
 			_ = f.Close()
 			_ = os.Remove(f.Name())
 		})
 
-		err = os.Chmod(f.Name(), 0600)
+		err = os.Chmod(f.Name(), 0o600)
 		if err != nil {
 			return []byte{}, err
 		}
@@ -483,8 +557,8 @@ func textEditor(inPath string, inContent []byte) ([]byte, error) {
 			return []byte{}, err
 		}
 
-		revert.Success()
-		revert.Add(func() { _ = os.Remove(path) })
+		reverter.Success()
+		reverter.Add(func() { _ = os.Remove(path) })
 	} else {
 		path = inPath
 	}
@@ -516,15 +590,252 @@ func removeElementsFromSlice[T comparable](list []T, elements ...T) []T {
 		for j := len(list) - 1; j >= 0; j-- {
 			if element == list[j] {
 				match = true
-				list = append(list[:j], list[j+1:]...)
+				list = slices.Delete(list, j, j+1)
 				break
 			}
 		}
 
 		if match {
-			elements = append(elements[:i], elements[i+1:]...)
+			elements = slices.Delete(elements, i, i+1)
 		}
 	}
 
 	return list
+}
+
+// sshfsMount mounts the instance's filesystem using sshfs by piping the instance's SFTP connection to sshfs.
+func sshfsMount(ctx context.Context, sftpConn net.Conn, entity string, relPath string, targetPath string) error {
+	// Use the format "incus.<instance_name>" as the source "host" (although not used for communication)
+	// so that the mount can be seen to be associated with Incus and the instance in the local mount table.
+	sourceURL := fmt.Sprintf("incus.%s:%s", entity, relPath)
+
+	sshfsCmd := exec.Command("sshfs", "-o", "slave", sourceURL, targetPath)
+
+	// Setup pipes.
+	stdin, err := sshfsCmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+
+	stdout, err := sshfsCmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+
+	sshfsCmd.Stderr = os.Stderr
+
+	err = sshfsCmd.Start()
+	if err != nil {
+		return fmt.Errorf(i18n.G("Failed starting sshfs: %w"), err)
+	}
+
+	fmt.Printf(i18n.G("sshfs mounting %q on %q")+"\n", fmt.Sprintf("%s%s", entity, relPath), targetPath)
+	fmt.Println(i18n.G("Press ctrl+c to finish"))
+
+	ctx, cancel := context.WithCancel(ctx)
+	chSignal := make(chan os.Signal, 1)
+	signal.Notify(chSignal, os.Interrupt)
+	go func() {
+		select {
+		case <-chSignal:
+		case <-ctx.Done():
+		}
+
+		cancel()                                  // Prevents error output when the io.Copy functions finish.
+		_ = sshfsCmd.Process.Signal(os.Interrupt) // This will cause sshfs to unmount.
+		_ = stdin.Close()
+	}()
+
+	go func() {
+		_, err := io.Copy(stdin, sftpConn)
+		if ctx.Err() == nil {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, i18n.G("I/O copy from instance to sshfs failed: %v")+"\n", err)
+			} else {
+				fmt.Println(i18n.G("Instance disconnected"))
+			}
+		}
+		cancel() // Ask sshfs to end.
+	}()
+
+	_, err = io.Copy(sftpConn, stdout)
+	if err != nil && ctx.Err() == nil {
+		fmt.Fprintf(os.Stderr, i18n.G("I/O copy from sshfs to instance failed: %v")+"\n", err)
+	}
+
+	cancel() // Ask sshfs to end.
+
+	err = sshfsCmd.Wait()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(i18n.G("sshfs has stopped"))
+
+	return sftpConn.Close()
+}
+
+// sshSFTPServer runs an SSH server listening on a random port of 127.0.0.1.
+// It provides an unauthenticated SFTP server connected to the instance's filesystem.
+func sshSFTPServer(ctx context.Context, sftpConn func() (net.Conn, error), entity string, authNone bool, authUser string, listenAddr string) error {
+	randString := func(length int) string {
+		chars := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0987654321")
+		randStr := make([]rune, length)
+		for i := range randStr {
+			randStr[i] = chars[rand.Intn(len(chars))]
+		}
+
+		return string(randStr)
+	}
+
+	// Setup an SSH SFTP server.
+	sshConfig := &ssh.ServerConfig{}
+
+	var authPass string
+
+	if authNone {
+		sshConfig.NoClientAuth = true
+	} else {
+		if authUser == "" {
+			authUser = randString(8)
+		}
+
+		authPass = randString(8)
+		sshConfig.PasswordCallback = func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			if c.User() == authUser && string(pass) == authPass {
+				return nil, nil
+			}
+
+			return nil, fmt.Errorf(i18n.G("Password rejected for %q"), c.User())
+		}
+	}
+
+	// Generate random host key.
+	_, privKey, err := localtls.GenerateMemCert(false, false)
+	if err != nil {
+		return fmt.Errorf(i18n.G("Failed generating SSH host key: %w"), err)
+	}
+
+	private, err := ssh.ParsePrivateKey(privKey)
+	if err != nil {
+		return fmt.Errorf(i18n.G("Failed parsing SSH host key: %w"), err)
+	}
+
+	sshConfig.AddHostKey(private)
+
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1:0" // Listen on a random local port if not specified.
+	}
+
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf(i18n.G("Failed to listen for connection: %w"), err)
+	}
+
+	fmt.Printf(i18n.G("SSH SFTP listening on %v")+"\n", listener.Addr())
+
+	if sshConfig.PasswordCallback != nil {
+		fmt.Printf(i18n.G("Login with username %q and password %q")+"\n", authUser, authPass)
+	} else {
+		fmt.Println(i18n.G("Login without username and password"))
+	}
+
+	for {
+		// Wait for new SSH connections.
+		nConn, err := listener.Accept()
+		if err != nil {
+			return fmt.Errorf(i18n.G("Failed to accept incoming connection: %w"), err)
+		}
+
+		// Handle each SSH connection in its own go routine.
+		go func() {
+			fmt.Printf(i18n.G("SSH client connected %q")+"\n", nConn.RemoteAddr())
+			defer fmt.Printf(i18n.G("SSH client disconnected %q")+"\n", nConn.RemoteAddr())
+			defer func() { _ = nConn.Close() }()
+
+			// Before use, a handshake must be performed on the incoming net.Conn.
+			_, chans, reqs, err := ssh.NewServerConn(nConn, sshConfig)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, i18n.G("Failed SSH handshake with client %q: %v")+"\n", nConn.RemoteAddr(), err)
+				return
+			}
+
+			// The incoming Request channel must be serviced.
+			go ssh.DiscardRequests(reqs)
+
+			// Service the incoming Channel requests.
+			for newChannel := range chans {
+				localChannel := newChannel
+
+				// Channels have a type, depending on the application level protocol intended.
+				// In the case of an SFTP session, this is "subsystem" with a payload string of
+				// "<length=4>sftp"
+				if localChannel.ChannelType() != "session" {
+					_ = localChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
+					fmt.Fprintf(os.Stderr, i18n.G("Unknown channel type for client %q: %s")+"\n", nConn.RemoteAddr(), localChannel.ChannelType())
+					continue
+				}
+
+				// Accept incoming channel request.
+				channel, requests, err := localChannel.Accept()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, i18n.G("Failed accepting channel client %q: %v")+"\n", err)
+					return
+				}
+
+				// Sessions have out-of-band requests such as "shell", "pty-req" and "env".
+				// Here we handle only the "subsystem" request.
+				go func(in <-chan *ssh.Request) {
+					for req := range in {
+						ok := false
+						switch req.Type {
+						case "subsystem":
+							if string(req.Payload[4:]) == "sftp" {
+								ok = true
+							}
+						}
+
+						_ = req.Reply(ok, nil)
+					}
+				}(requests)
+
+				// Handle each channel in its own go routine.
+				go func() {
+					defer func() { _ = channel.Close() }()
+
+					// Connect to the instance's SFTP server.
+					sftpConn, err := sftpConn()
+					if err != nil {
+						fmt.Fprintf(os.Stderr, i18n.G("Failed connecting to instance SFTP for client %q: %v")+"\n", nConn.RemoteAddr(), err)
+						return
+					}
+
+					defer func() { _ = sftpConn.Close() }()
+
+					// Copy SFTP data between client and remote instance.
+					ctx, cancel := context.WithCancel(ctx)
+					go func() {
+						_, err := io.Copy(channel, sftpConn)
+						if ctx.Err() == nil {
+							if err != nil {
+								fmt.Fprintf(os.Stderr, i18n.G("I/O copy from instance to SSH failed: %v")+"\n", err)
+							} else {
+								fmt.Printf(i18n.G("Instance disconnected for client %q")+"\n", nConn.RemoteAddr())
+							}
+						}
+						cancel() // Prevents error output when other io.Copy finishes.
+						_ = channel.Close()
+					}()
+
+					_, err = io.Copy(sftpConn, channel)
+					if err != nil && ctx.Err() == nil {
+						fmt.Fprintf(os.Stderr, i18n.G("I/O copy from SSH to instance failed: %v")+"\n", err)
+					}
+
+					cancel() // Prevents error output when other io.Copy finishes.
+					_ = sftpConn.Close()
+				}()
+			}
+		}()
+	}
 }

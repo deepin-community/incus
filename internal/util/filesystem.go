@@ -1,6 +1,7 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -72,12 +73,12 @@ func FileCopy(source string, dest string) error {
 
 	d, err := os.Create(dest)
 	if err != nil {
-		if os.IsExist(err) {
-			d, err = os.OpenFile(dest, os.O_WRONLY, fi.Mode())
-			if err != nil {
-				return err
-			}
-		} else {
+		if !os.IsExist(err) {
+			return err
+		}
+
+		d, err = os.OpenFile(dest, os.O_WRONLY, fi.Mode())
+		if err != nil {
 			return err
 		}
 	}
@@ -107,7 +108,7 @@ func DirCopy(source string, dest string) error {
 	}
 
 	if !info.IsDir() {
-		return fmt.Errorf("source is not a directory")
+		return errors.New("source is not a directory")
 	}
 
 	// Remove dest if it already exists.
@@ -192,7 +193,7 @@ func MkdirAllOwner(path string, perm os.FileMode, uid int, gid int) error {
 			return nil
 		}
 
-		return fmt.Errorf("path exists but isn't a directory")
+		return errors.New("path exists but isn't a directory")
 	}
 
 	// Slow path: make sure parent exists and then call Mkdir for path.

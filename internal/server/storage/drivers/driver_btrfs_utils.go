@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -20,17 +21,19 @@ import (
 	"gopkg.in/yaml.v2"
 
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/ioprogress"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 )
 
 // Errors.
-var errBtrfsNoQuota = fmt.Errorf("Quotas disabled on filesystem")
-var errBtrfsNoQGroup = fmt.Errorf("Unable to find quota group")
+var (
+	errBtrfsNoQuota  = errors.New("Quotas disabled on filesystem")
+	errBtrfsNoQGroup = errors.New("Unable to find quota group")
+)
 
 // btrfsISOVolSuffix suffix used for iso content type volumes.
 const btrfsISOVolSuffix = ".iso"
@@ -58,7 +61,7 @@ func setReceivedUUID(path string, UUID string) error {
 
 	binUUID, err := strUUID.MarshalBinary()
 	if err != nil {
-		return fmt.Errorf("Failed coverting UUID: %w", err)
+		return fmt.Errorf("Failed converting UUID: %w", err)
 	}
 
 	copy(args.uuid[:], binUUID)
@@ -180,8 +183,8 @@ func (d *btrfs) getSubvolumes(path string) ([]string, error) {
 // snapshotSubvolume creates a snapshot of the specified path at the dest supplied. If recursion is true and
 // sub volumes are found below the path then they are created at the relative location in dest.
 func (d *btrfs) snapshotSubvolume(path string, dest string, recursion bool) (revert.Hook, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Single subvolume creation.
 	snapshot := func(path string, dest string) error {
@@ -190,7 +193,7 @@ func (d *btrfs) snapshotSubvolume(path string, dest string, recursion bool) (rev
 			return err
 		}
 
-		revert.Add(func() {
+		reverter.Add(func() {
 			// Don't delete recursive since there already is a revert hook
 			// for each subvolume that got created.
 			_ = d.deleteSubvolume(dest, false)
@@ -228,8 +231,8 @@ func (d *btrfs) snapshotSubvolume(path string, dest string, recursion bool) (rev
 		}
 	}
 
-	cleanup := revert.Clone().Fail
-	revert.Success()
+	cleanup := reverter.Clone().Fail
+	reverter.Success()
 	return cleanup, nil
 }
 
@@ -243,7 +246,7 @@ func (d *btrfs) deleteSubvolume(rootPath string, recursion bool) error {
 		}
 
 		// Temporarily change ownership & mode to help with nesting.
-		_ = os.Chmod(path, 0700)
+		_ = os.Chmod(path, 0o700)
 		_ = os.Chown(path, 0, 0)
 
 		// Delete the subvolume itself.
@@ -599,7 +602,7 @@ func (d *btrfs) loadOptimizedBackupHeader(r io.ReadSeeker, mountPath string) (*B
 		}
 	}
 
-	return nil, fmt.Errorf("Optimized backup header file not found")
+	return nil, errors.New("Optimized backup header file not found")
 }
 
 // receiveSubVolume receives a subvolume from an io.Reader into the receivePath and returns the path to the received subvolume.
@@ -649,7 +652,7 @@ func (d *btrfs) receiveSubVolume(r io.Reader, receivePath string, tracker *iopro
 	}
 
 	if filename == "" {
-		return "", fmt.Errorf("Failed to determine received subvolume")
+		return "", errors.New("Failed to determine received subvolume")
 	}
 
 	subVolPath := filepath.Join(receivePath, filename)

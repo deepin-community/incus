@@ -6,10 +6,13 @@ import (
 	"context"
 	cryptoRand "crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math/big"
 	"math/rand"
 	"net"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
@@ -134,9 +137,27 @@ func UsedBy(s *state.State, networkProjectName string, networkID int64, networkN
 		var peers map[int64]*api.NetworkPeer
 
 		err := s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-			peers, err = tx.GetNetworkPeers(ctx, networkID)
+			// Use generated function to get peers.
+			filter := cluster.NetworkPeerFilter{NetworkID: &networkID}
+			dbPeers, err := cluster.GetNetworkPeers(ctx, tx.Tx(), filter)
+			if err != nil {
+				return fmt.Errorf("Failed loading network peer DB objects: %w", err)
+			}
 
-			return err
+			// Convert DB objects to API objects and build the map.
+			peers = make(map[int64]*api.NetworkPeer, len(dbPeers))
+			for _, dbPeer := range dbPeers {
+				peer, err := dbPeer.ToAPI(ctx, tx.Tx())
+				if err != nil {
+					// Log the error but continue, as one peer failing shouldn't stop the whole check.
+					logger.Error("Failed converting network peer DB object to API object", logger.Ctx{"peerID": dbPeer.ID, "err": err})
+					continue
+				}
+
+				peers[dbPeer.ID] = peer
+			}
+
+			return nil
 		})
 		if err != nil {
 			return nil, fmt.Errorf("Failed getting network peers: %w", err)
@@ -195,7 +216,7 @@ func UsedBy(s *state.State, networkProjectName string, networkID int64, networkN
 		}
 
 		// Get all the profile devices.
-		profileDevices, err := cluster.GetDevices(ctx, tx.Tx(), "profile")
+		profileDevices, err := cluster.GetAllProfileDevices(ctx, tx.Tx())
 		if err != nil {
 			return err
 		}
@@ -248,7 +269,7 @@ func UsedBy(s *state.State, networkProjectName string, networkID int64, networkN
 		return nil
 	})
 	if err != nil {
-		if err == db.ErrInstanceListStop {
+		if errors.Is(err, db.ErrInstanceListStop) {
 			return usedBy, nil
 		}
 
@@ -360,7 +381,7 @@ func DefaultGatewaySubnetV4() (*net.IPNet, string, error) {
 	}
 
 	if ifaceName == "" {
-		return nil, "", fmt.Errorf("No default gateway for IPv4")
+		return nil, "", errors.New("No default gateway for IPv4")
 	}
 
 	iface, err := net.InterfaceByName(ifaceName)
@@ -386,14 +407,14 @@ func DefaultGatewaySubnetV4() (*net.IPNet, string, error) {
 		}
 
 		if subnet != nil {
-			return nil, "", fmt.Errorf("More than one IPv4 subnet on default interface")
+			return nil, "", errors.New("More than one IPv4 subnet on default interface")
 		}
 
 		subnet = addrNet
 	}
 
 	if subnet == nil {
-		return nil, "", fmt.Errorf("No IPv4 subnet on default interface")
+		return nil, "", errors.New("No IPv4 subnet on default interface")
 	}
 
 	return subnet, ifaceName, nil
@@ -469,7 +490,7 @@ func UpdateDNSMasqStatic(s *state.State, networkName string) error {
 			if (util.IsTrue(d["security.ipv4_filtering"]) && d["ipv4.address"] == "") || (util.IsTrue(d["security.ipv6_filtering"]) && d["ipv6.address"] == "") {
 				deviceStaticFileName := dnsmasq.StaticAllocationFileName(inst.Project().Name, inst.Name(), deviceName)
 				_, curIPv4, curIPv6, err := dnsmasq.DHCPStaticAllocation(d["parent"], deviceStaticFileName)
-				if err != nil && !os.IsNotExist(err) {
+				if err != nil && !errors.Is(err, fs.ErrNotExist) {
 					return err
 				}
 
@@ -577,7 +598,7 @@ func UpdateDNSMasqStatic(s *state.State, networkName string) error {
 }
 
 func randomSubnetV4() (string, error) {
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		cidr := fmt.Sprintf("10.%d.%d.1/24", rand.Intn(255), rand.Intn(255))
 		_, subnet, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -595,11 +616,11 @@ func randomSubnetV4() (string, error) {
 		return cidr, nil
 	}
 
-	return "", fmt.Errorf("Failed to automatically find an unused IPv4 subnet, manual configuration required")
+	return "", errors.New("Failed to automatically find an unused IPv4 subnet, manual configuration required")
 }
 
 func randomSubnetV6() (string, error) {
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		cidr := fmt.Sprintf("fd42:%x:%x:%x::1/64", rand.Intn(65535), rand.Intn(65535), rand.Intn(65535))
 		_, subnet, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -617,7 +638,7 @@ func randomSubnetV6() (string, error) {
 		return cidr, nil
 	}
 
-	return "", fmt.Errorf("Failed to automatically find an unused IPv6 subnet, manual configuration required")
+	return "", errors.New("Failed to automatically find an unused IPv6 subnet, manual configuration required")
 }
 
 func inRoutingTable(subnet *net.IPNet) bool {
@@ -945,7 +966,7 @@ func usesIPv6Firewall(netConfig map[string]string) bool {
 func randomHwaddr(r *rand.Rand) string {
 	// Generate a new random MAC address using the usual prefix.
 	ret := bytes.Buffer{}
-	for _, c := range "00:16:3e:xx:xx:xx" {
+	for _, c := range "10:66:6a:xx:xx:xx" {
 		if c == 'x' {
 			ret.WriteString(fmt.Sprintf("%x", r.Int31n(16)))
 		} else {
@@ -1019,7 +1040,7 @@ func parseIPRange(ipRange string, allowedNets ...*net.IPNet) (*iprange.Range, er
 		matchFound := false
 		for _, allowedNet := range allowedNets {
 			if allowedNet == nil {
-				return nil, fmt.Errorf("Invalid allowed network")
+				return nil, errors.New("Invalid allowed network")
 			}
 
 			combinedStartIP := inAllowedNet(startIP, allowedNet)
@@ -1290,7 +1311,7 @@ func ParsePortRange(r string) (int64, int64, error) {
 		}
 
 		if size <= base {
-			return -1, -1, fmt.Errorf("End port should be higher than start port")
+			return -1, -1, errors.New("End port should be higher than start port")
 		}
 
 		size -= base
@@ -1332,14 +1353,14 @@ func ParseIPCIDRToNet(ipAddressCIDR string) (*net.IPNet, error) {
 
 // IPToNet converts an IP to a single host IPNet.
 func IPToNet(ip net.IP) net.IPNet {
-	len := 32
+	bits := 32
 	if ip.To4() == nil {
-		len = 128
+		bits = 128
 	}
 
 	return net.IPNet{
 		IP:   ip,
-		Mask: net.CIDRMask(len, len),
+		Mask: net.CIDRMask(bits, bits),
 	}
 }
 
@@ -1366,7 +1387,7 @@ func BridgeNetfilterEnabled(ipVersion uint) error {
 	sysctlPath := fmt.Sprintf("net/bridge/bridge-nf-call-%s", sysctlName)
 	sysctlVal, err := localUtil.SysctlGet(sysctlPath)
 	if err != nil {
-		return fmt.Errorf("br_netfilter kernel module not loaded")
+		return errors.New("br_netfilter kernel module not loaded")
 	}
 
 	sysctlVal = strings.TrimSpace(sysctlVal)
@@ -1387,7 +1408,7 @@ func ProxyParseAddr(data string) (*deviceConfig.ProxyAddress, error) {
 	}
 
 	if len(fields) < 2 || fields[1] == "" {
-		return nil, fmt.Errorf("Missing address")
+		return nil, errors.New("Missing address")
 	}
 
 	newProxyAddr := &deviceConfig.ProxyAddress{
@@ -1419,7 +1440,7 @@ func ProxyParseAddr(data string) (*deviceConfig.ProxyAddress, error) {
 	newProxyAddr.Address = address
 
 	// Split <ports> into individual ports and port ranges.
-	ports := strings.SplitN(port, ",", -1)
+	ports := strings.Split(port, ",")
 
 	newProxyAddr.Ports = make([]uint64, 0, len(ports))
 
@@ -1429,14 +1450,117 @@ func ProxyParseAddr(data string) (*deviceConfig.ProxyAddress, error) {
 			return nil, err
 		}
 
-		for i := int64(0); i < portRange; i++ {
+		for i := range portRange {
 			newProxyAddr.Ports = append(newProxyAddr.Ports, uint64(portFirst+i))
 		}
 	}
 
 	if len(newProxyAddr.Ports) <= 0 {
-		return nil, fmt.Errorf("At least one port is required")
+		return nil, errors.New("At least one port is required")
 	}
 
 	return newProxyAddr, nil
+}
+
+func validateExternalInterfaces(value string) error {
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.TrimSpace(entry)
+
+		// Test for extended configuration of external interface.
+		entryParts := strings.Split(entry, "/")
+		if len(entryParts) == 3 {
+			// The first part is the interface name.
+			entry = strings.TrimSpace(entryParts[0])
+		}
+
+		err := validate.IsInterfaceName(entry)
+		if err != nil {
+			return fmt.Errorf("Invalid interface name %q: %w", entry, err)
+		}
+
+		if len(entryParts) == 3 {
+			// Check if the parent interface is valid.
+			parent := strings.TrimSpace(entryParts[1])
+			err := validate.IsInterfaceName(parent)
+			if err != nil {
+				return fmt.Errorf("Invalid interface name %q: %w", parent, err)
+			}
+
+			// Check if the VLAN ID is valid.
+			vlanID, err := strconv.Atoi(entryParts[2])
+			if err != nil {
+				return fmt.Errorf("Invalid VLAN ID %q: %w", entryParts[2], err)
+			}
+
+			if vlanID < 1 || vlanID > 4094 {
+				return fmt.Errorf("Invalid VLAN ID %q", entryParts[2])
+			}
+		}
+	}
+
+	return nil
+}
+
+// complementRanges returns the complement of the provided IP network ranges.
+// It calculates the IP ranges that are *not* covered by the input slice.
+func complementRanges(ranges []*iprange.Range, netAddr *net.IPNet) ([]iprange.Range, error) {
+	var complement []iprange.Range
+
+	ipv4NetPrefix, err := netip.ParsePrefix(netAddr.String())
+	if err != nil {
+		return nil, err
+	}
+
+	previousEnd := ipv4NetPrefix.Addr()
+
+	for _, r := range ranges {
+		startAddr, err := netip.ParseAddr(r.Start.String())
+		if err != nil {
+			return nil, err
+		}
+
+		endAddr, err := netip.ParseAddr(r.End.String())
+		if err != nil {
+			return nil, err
+		}
+
+		if startAddr.Compare(previousEnd.Next()) == 1 {
+			newStart := previousEnd.Next()
+			newEnd := startAddr.Prev()
+
+			if newStart.Compare(newEnd) == 0 {
+				complement = append(complement, iprange.Range{Start: net.ParseIP(newStart.String())})
+			} else {
+				complement = append(complement, iprange.Range{Start: net.ParseIP(newStart.String()), End: net.ParseIP(newEnd.String())})
+			}
+		}
+
+		if endAddr.Compare(previousEnd) == 1 {
+			previousEnd = endAddr
+		}
+	}
+
+	endAddr, err := netip.ParseAddr(dhcpalloc.GetIP(netAddr, -2).String())
+	if err != nil {
+		return nil, err
+	}
+
+	if previousEnd.Compare(endAddr) == -1 {
+		complement = append(complement, iprange.Range{Start: net.ParseIP(previousEnd.Next().String()), End: net.ParseIP(endAddr.String())})
+	}
+
+	return complement, nil
+}
+
+// ipInRanges checks whether the given IP address is contained within any of the
+// provided IP network ranges.
+func ipInRanges(ipAddr net.IP, ipRanges []iprange.Range) bool {
+	for _, r := range ipRanges {
+		containsIP := r.ContainsIP(ipAddr)
+		if containsIP {
+			return true
+		}
+	}
+
+	return false
 }

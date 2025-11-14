@@ -4,15 +4,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"slices"
 
-	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	internalSQL "github.com/lxc/incus/v6/internal/sql"
@@ -20,8 +20,11 @@ import (
 
 type cmdAdminSQL struct {
 	global *cmdGlobal
+
+	flagFormat string
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdAdminSQL) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("sql", i18n.G("<local|global> <query>"))
@@ -51,10 +54,16 @@ func (c *cmdAdminSQL) Command() *cobra.Command {
   recovery. The development team will occasionally provide hotfixes to users as a
   set of database queries to fix some data inconsistency.`))
 	cmd.RunE = c.Run
+	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", c.global.defaultListFormat(), i18n.G(`Format (csv|json|table|yaml|compact|markdown), use suffix ",noheader" to disable headers and ",header" to enable it if missing, e.g. csv,header`)+"``")
+
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		return cli.ValidateFlagFormatForListOutput(cmd.Flag("format").Value.String())
+	}
 
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdAdminSQL) Run(cmd *cobra.Command, args []string) error {
 	if len(args) != 2 {
 		_ = cmd.Help()
@@ -63,7 +72,7 @@ func (c *cmdAdminSQL) Run(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		return fmt.Errorf(i18n.G("Missing required arguments"))
+		return errors.New(i18n.G("Missing required arguments"))
 	}
 
 	database := args[0]
@@ -72,7 +81,7 @@ func (c *cmdAdminSQL) Run(cmd *cobra.Command, args []string) error {
 	if !slices.Contains([]string{"local", "global"}, database) {
 		_ = cmd.Help()
 
-		return fmt.Errorf(i18n.G("Invalid database type"))
+		return errors.New(i18n.G("Invalid database type"))
 	}
 
 	if query == "-" {
@@ -138,7 +147,10 @@ func (c *cmdAdminSQL) Run(cmd *cobra.Command, args []string) error {
 		}
 
 		if result.Type == "select" {
-			sqlPrintSelectResult(result)
+			err := c.sqlPrintSelectResult(result)
+			if err != nil {
+				return err
+			}
 		} else {
 			fmt.Printf(i18n.G("Rows affected: %d")+"\n", result.RowsAffected)
 		}
@@ -150,20 +162,16 @@ func (c *cmdAdminSQL) Run(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func sqlPrintSelectResult(result internalSQL.SQLResult) {
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
-	table.SetAutoWrapText(false)
-	table.SetAutoFormatHeaders(false)
-	table.SetHeader(result.Columns)
+func (c *cmdAdminSQL) sqlPrintSelectResult(result internalSQL.SQLResult) error {
+	data := [][]string{}
 	for _, row := range result.Rows {
-		data := []string{}
+		rowData := []string{}
 		for _, col := range row {
-			data = append(data, fmt.Sprintf("%v", col))
+			rowData = append(rowData, fmt.Sprintf("%v", col))
 		}
 
-		table.Append(data)
+		data = append(data, rowData)
 	}
 
-	table.Render()
+	return cli.RenderTable(os.Stdout, c.flagFormat, result.Columns, data, result)
 }

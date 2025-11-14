@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -216,7 +217,7 @@ var devIncusAPIHandler = devIncusHandler{"/1.0", func(d *Daemon, c instance.Inst
 
 		err := json.NewDecoder(r.Body).Decode(&req)
 		if err != nil {
-			return response.DevIncusErrorResponse(api.StatusErrorf(http.StatusBadRequest, err.Error()), c.Type() == instancetype.VM)
+			return response.DevIncusErrorResponse(api.StatusErrorf(http.StatusBadRequest, "%s", err.Error()), c.Type() == instancetype.VM)
 		}
 
 		state := api.StatusCodeFromString(req.State)
@@ -227,7 +228,7 @@ var devIncusAPIHandler = devIncusHandler{"/1.0", func(d *Daemon, c instance.Inst
 
 		err = c.VolatileSet(map[string]string{"volatile.last_state.ready": strconv.FormatBool(state == api.Ready)})
 		if err != nil {
-			return response.DevIncusErrorResponse(api.StatusErrorf(http.StatusInternalServerError, err.Error()), c.Type() == instancetype.VM)
+			return response.DevIncusErrorResponse(api.StatusErrorf(http.StatusInternalServerError, "%s", err.Error()), c.Type() == instancetype.VM)
 		}
 
 		if state == api.Ready {
@@ -237,8 +238,7 @@ var devIncusAPIHandler = devIncusHandler{"/1.0", func(d *Daemon, c instance.Inst
 		return response.DevIncusResponse(http.StatusOK, "", "raw", c.Type() == instancetype.VM)
 	}
 
-	return response.DevIncusErrorResponse(api.StatusErrorf(http.StatusMethodNotAllowed, fmt.Sprintf("method %q not allowed", r.Method)), c.Type() == instancetype.VM)
-
+	return response.DevIncusErrorResponse(api.StatusErrorf(http.StatusMethodNotAllowed, "%s", fmt.Sprintf("method %q not allowed", r.Method)), c.Type() == instancetype.VM)
 }}
 
 var devIncusDevicesGet = devIncusHandler{"/1.0/devices", func(d *Daemon, c instance.Instance, w http.ResponseWriter, r *http.Request) response.Response {
@@ -278,7 +278,7 @@ func hoistReq(f func(*Daemon, instance.Instance, http.ResponseWriter, *http.Requ
 		conn := ucred.GetConnFromContext(r.Context())
 		cred, ok := pidMapper.m[conn.(*net.UnixConn)]
 		if !ok {
-			http.Error(w, pidNotInContainerErr.Error(), http.StatusInternalServerError)
+			http.Error(w, errPIDNotInContainer.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -310,14 +310,14 @@ func hoistReq(f func(*Daemon, instance.Instance, http.ResponseWriter, *http.Requ
 }
 
 func devIncusAPI(d *Daemon, f hoistFunc) http.Handler {
-	m := mux.NewRouter()
-	m.UseEncodedPath() // Allow encoded values in path segments.
+	router := mux.NewRouter()
+	router.UseEncodedPath() // Allow encoded values in path segments.
 
 	for _, handler := range handlers {
-		m.HandleFunc(handler.path, f(handler.f, d))
+		router.HandleFunc(handler.path, f(handler.f, d))
 	}
 
-	return m
+	return router
 }
 
 /*
@@ -329,9 +329,9 @@ func devIncusAPI(d *Daemon, f hoistFunc) http.Handler {
  *    event, we use SO_PEERCRED to extract the creds for the socket.
  *
  * 2. We store a map from the connection pointer to the pid for that
- *    connection, so that once the HTTP negotiation occurrs and we get a
+ *    connection, so that once the HTTP negotiation occurs and we get a
  *    ResponseWriter, we know (because we negotiated on the first byte) which
- *    pid the connection belogs to.
+ *    pid the connection belongs to.
  *
  * 3. Regular HTTP negotiation and dispatch occurs via net/http.
  *
@@ -390,7 +390,7 @@ func (m *ConnPidMapper) ConnStateHandler(conn net.Conn, state http.ConnState) {
 	}
 }
 
-var pidNotInContainerErr = fmt.Errorf("pid not in container?")
+var errPIDNotInContainer = errors.New("pid not in container?")
 
 func findContainerForPid(pid int32, s *state.State) (instance.Container, error) {
 	/*
@@ -418,7 +418,12 @@ func findContainerForPid(pid int32, s *state.State) (instance.Container, error) 
 			return nil, err
 		}
 
-		if strings.HasPrefix(string(cmdline), "[lxc monitor]") {
+		status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+		if err != nil {
+			return nil, err
+		}
+
+		if strings.HasPrefix(string(cmdline), "[lxc monitor]") && strings.Contains(string(status), fmt.Sprintf("NSpid:	%d\n", pid)) {
 			// container names can't have spaces
 			parts := strings.Split(string(cmdline), " ")
 			name := strings.TrimSuffix(parts[len(parts)-1], "\x00")
@@ -436,15 +441,10 @@ func findContainerForPid(pid int32, s *state.State) (instance.Container, error) 
 			}
 
 			if inst.Type() != instancetype.Container {
-				return nil, fmt.Errorf("Instance is not container type")
+				return nil, errors.New("Instance is not container type")
 			}
 
 			return inst.(instance.Container), nil
-		}
-
-		status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-		if err != nil {
-			return nil, err
 		}
 
 		re, err := regexp.Compile(`^PPid:\s+([0-9]+)$`)
@@ -496,5 +496,5 @@ func findContainerForPid(pid int32, s *state.State) (instance.Container, error) 
 		}
 	}
 
-	return nil, pidNotInContainerErr
+	return nil, errPIDNotInContainer
 }

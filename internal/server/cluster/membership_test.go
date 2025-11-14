@@ -24,6 +24,7 @@ import (
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/osarch"
 	localtls "github.com/lxc/incus/v6/shared/tls"
+	"github.com/lxc/incus/v6/shared/tls/tlstest"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -44,7 +45,7 @@ func TestBootstrap_UnmetPreconditions(t *testing.T) {
 				f.ClusterAddress("1.2.3.4:666")
 				f.RaftNode("5.6.7.8:666")
 				filename := filepath.Join(f.state.OS.VarDir, "cluster.crt")
-				_ = os.WriteFile(filename, []byte{}, 0644)
+				_ = os.WriteFile(filename, []byte{}, 0o644)
 			},
 			"Inconsistent state: found leftover cluster certificate",
 		},
@@ -81,7 +82,7 @@ func TestBootstrap_UnmetPreconditions(t *testing.T) {
 
 			c.setup(&membershipFixtures{t: t, state: state})
 
-			serverCert := localtls.TestingKeyPair()
+			serverCert := tlstest.TestingKeyPair(t)
 			state.ServerCert = func() *localtls.CertInfo { return serverCert }
 
 			gateway := newGateway(t, state.DB.Node, serverCert, state)
@@ -97,7 +98,7 @@ func TestBootstrap(t *testing.T) {
 	state, cleanup := state.NewTestState(t)
 	defer cleanup()
 
-	serverCert := localtls.TestingKeyPair()
+	serverCert := tlstest.TestingKeyPair(t)
 	state.ServerCert = func() *localtls.CertInfo { return serverCert }
 
 	gateway := newGateway(t, state.DB.Node, serverCert, state)
@@ -138,10 +139,6 @@ func TestBootstrap(t *testing.T) {
 
 	// The cluster certificate is in place.
 	assert.True(t, util.PathExists(filepath.Join(state.OS.VarDir, "cluster.crt")))
-
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
-		return nil
-	}
 
 	// The dqlite driver is now exposed over the network.
 	for path, handler := range gateway.HandlerFuncs(nil, trustedCerts) {
@@ -222,7 +219,7 @@ func TestAccept_UnmetPreconditions(t *testing.T) {
 			state, cleanup := state.NewTestState(t)
 			defer cleanup()
 
-			serverCert := localtls.TestingKeyPair()
+			serverCert := tlstest.TestingKeyPair(t)
 			state.ServerCert = func() *localtls.CertInfo { return serverCert }
 
 			gateway := newGateway(t, state.DB.Node, serverCert, state)
@@ -241,7 +238,7 @@ func TestAccept(t *testing.T) {
 	state, cleanup := state.NewTestState(t)
 	defer cleanup()
 
-	serverCert := localtls.TestingKeyPair()
+	serverCert := tlstest.TestingKeyPair(t)
 	state.ServerCert = func() *localtls.CertInfo { return serverCert }
 
 	gateway := newGateway(t, state.DB.Node, serverCert, state)
@@ -281,7 +278,7 @@ func TestAccept(t *testing.T) {
 
 func TestJoin(t *testing.T) {
 	// Setup a target node running as leader of a cluster.
-	targetCert := localtls.TestingKeyPair()
+	targetCert := tlstest.TestingKeyPair(t)
 	targetMux := http.NewServeMux()
 	targetServer := newServer(targetCert, targetMux)
 	defer targetServer.Close()
@@ -294,15 +291,15 @@ func TestJoin(t *testing.T) {
 	targetGateway := newGateway(t, targetState.DB.Node, targetCert, targetState)
 	defer func() { _ = targetGateway.Shutdown() }()
 
-	altServerCert := localtls.TestingAltKeyPair()
+	altServerCert := tlstest.TestingAltKeyPair(t)
 	trustedAltServerCert, _ := x509.ParseCertificate(altServerCert.KeyPair().Certificate[0])
 
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
+	trustedCerts := func() (map[certificate.Type]map[string]x509.Certificate, error) {
 		return map[certificate.Type]map[string]x509.Certificate{
 			certificate.TypeServer: {
 				altServerCert.Fingerprint(): *trustedAltServerCert,
 			},
-		}
+		}, nil
 	}
 
 	for path, handler := range targetGateway.HandlerFuncs(nil, trustedCerts) {
@@ -432,11 +429,11 @@ func TestJoin(t *testing.T) {
 	assert.Equal(t, 2, count)
 
 	// Leave the cluster.
-	leaving, err := cluster.Leave(state, targetGateway, "rusp", false /* force */)
+	leaving, err := cluster.Leave(state, targetGateway, "rusp", false /* force */, false)
 	require.NoError(t, err)
 	assert.Equal(t, address, leaving)
 	dbCluster.PreparedStmts = targetStmts
-	err = cluster.Purge(targetState.DB.Cluster, "rusp")
+	err = cluster.Purge(targetState.DB.Cluster, "rusp", false)
 	require.NoError(t, err)
 
 	// The node has gone from the cluster db.

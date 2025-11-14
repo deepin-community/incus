@@ -1,5 +1,9 @@
 package cliconfig
 
+import (
+	"github.com/lxc/incus/v6/shared/util"
+)
+
 // LocalRemote is the default local remote (over the unix socket).
 var LocalRemote = Remote{
 	Addr:     "unix://",
@@ -26,16 +30,22 @@ var DefaultRemotes = map[string]Remote{
 	"local":  LocalRemote,
 }
 
+// DefaultSettings are the configurations for the Config Struct.
+type DefaultSettings struct {
+	// Default flag format for list commands.
+	ListFormat string `yaml:"list_format"`
+
+	// Preferred console type.
+	ConsoleType string `yaml:"console_type"`
+
+	// Alternative SPICE command (SOCKET will be replaced by the socket path).
+	ConsoleSpiceCommand string `yaml:"console_spice_command"`
+}
+
 // DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
-	// Duplicate remotes from DefaultRemotes.
-	defaultRoutes := make(map[string]Remote, len(DefaultRemotes))
-	for k, v := range DefaultRemotes {
-		defaultRoutes[k] = v
-	}
-
 	return &Config{
-		Remotes:       defaultRoutes,
+		Remotes:       util.CloneMap(DefaultRemotes),
 		Aliases:       make(map[string]string),
 		DefaultRemote: "local",
 	}

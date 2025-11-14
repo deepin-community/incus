@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,11 +70,6 @@ import (
 func instanceMetadataGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -81,11 +77,11 @@ func instanceMetadataGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -181,11 +177,6 @@ func instanceMetadataGet(d *Daemon, r *http.Request) response.Response {
 func instanceMetadataPatch(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -193,11 +184,11 @@ func instanceMetadataPatch(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Handle requests targeted to an instance on a different node.
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -301,11 +292,6 @@ func instanceMetadataPatch(d *Daemon, r *http.Request) response.Response {
 func instanceMetadataPut(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -313,11 +299,11 @@ func instanceMetadataPut(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Handle requests targeted to an instance on a different node.
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -364,7 +350,7 @@ func doInstanceMetadataUpdate(s *state.State, inst instance.Instance, metadata a
 
 	// Update the metadata.
 	metadataPath := filepath.Join(inst.Path(), "metadata.yaml")
-	err = os.WriteFile(metadataPath, data, 0644)
+	err = os.WriteFile(metadataPath, data, 0o644)
 	if err != nil {
 		return response.InternalError(err)
 	}
@@ -425,11 +411,6 @@ func doInstanceMetadataUpdate(s *state.State, inst instance.Instance, metadata a
 func instanceMetadataTemplatesGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -437,11 +418,11 @@ func instanceMetadataTemplatesGet(d *Daemon, r *http.Request) response.Response 
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -577,11 +558,6 @@ func instanceMetadataTemplatesGet(d *Daemon, r *http.Request) response.Response 
 func instanceMetadataTemplatesPost(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -589,11 +565,11 @@ func instanceMetadataTemplatesPost(d *Daemon, r *http.Request) response.Response
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -624,11 +600,11 @@ func instanceMetadataTemplatesPost(d *Daemon, r *http.Request) response.Response
 	// Look at the request
 	templateName := r.FormValue("path")
 	if templateName == "" {
-		return response.BadRequest(fmt.Errorf("missing path argument"))
+		return response.BadRequest(errors.New("missing path argument"))
 	}
 
 	if !util.PathExists(filepath.Join(c.Path(), "templates")) {
-		err := os.MkdirAll(filepath.Join(c.Path(), "templates"), 0711)
+		err := os.MkdirAll(filepath.Join(c.Path(), "templates"), 0o711)
 		if err != nil {
 			return response.SmartError(err)
 		}
@@ -641,7 +617,7 @@ func instanceMetadataTemplatesPost(d *Daemon, r *http.Request) response.Response
 	}
 
 	// Write the new template
-	template, err := os.OpenFile(templatePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	template, err := os.OpenFile(templatePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -695,11 +671,6 @@ func instanceMetadataTemplatesPost(d *Daemon, r *http.Request) response.Response
 func instanceMetadataTemplatesDelete(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
@@ -708,11 +679,11 @@ func instanceMetadataTemplatesDelete(d *Daemon, r *http.Request) response.Respon
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -743,7 +714,7 @@ func instanceMetadataTemplatesDelete(d *Daemon, r *http.Request) response.Respon
 	// Look at the request
 	templateName := r.FormValue("path")
 	if templateName == "" {
-		return response.BadRequest(fmt.Errorf("missing path argument"))
+		return response.BadRequest(errors.New("missing path argument"))
 	}
 
 	templatePath, err := getContainerTemplatePath(c, templateName)
@@ -769,7 +740,7 @@ func instanceMetadataTemplatesDelete(d *Daemon, r *http.Request) response.Respon
 // Return the full path of a container template.
 func getContainerTemplatePath(c instance.Instance, filename string) (string, error) {
 	if strings.Contains(filename, "/") {
-		return "", fmt.Errorf("Invalid template filename")
+		return "", errors.New("Invalid template filename")
 	}
 
 	return filepath.Join(c.Path(), "templates", filename), nil

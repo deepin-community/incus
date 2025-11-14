@@ -2,12 +2,15 @@ package s3
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 )
 
-const roleAdmin = "admin"
-const roleReadOnly = "read-only"
+const (
+	roleAdmin    = "admin"
+	roleReadOnly = "read-only"
+)
 
 // Policy defines the S3 policy.
 type Policy struct {
@@ -26,7 +29,7 @@ type PolicyStatement struct {
 func BucketPolicy(bucketName string, roleName string) (json.RawMessage, error) {
 	switch roleName {
 	case roleAdmin:
-		return []byte(fmt.Sprintf(`{
+		return fmt.Appendf(nil, `{
 			"Version": "2012-10-17",
 			"Statement": [{
 				"Effect": "Allow",
@@ -37,9 +40,9 @@ func BucketPolicy(bucketName string, roleName string) (json.RawMessage, error) {
 					"arn:aws:s3:::%s/*"
 				]
 			}]
-		}`, bucketName)), nil
+		}`, bucketName), nil
 	case roleReadOnly:
-		return []byte(fmt.Sprintf(`{
+		return fmt.Appendf(nil, `{
 			"Version": "2012-10-17",
 			"Statement": [{
 				"Effect": "Allow",
@@ -53,10 +56,10 @@ func BucketPolicy(bucketName string, roleName string) (json.RawMessage, error) {
 					"arn:aws:s3:::%s/*"
 				]
 			}]
-		}`, bucketName)), nil
+		}`, bucketName), nil
 	}
 
-	return nil, fmt.Errorf("Invalid key role")
+	return nil, errors.New("Invalid key role")
 }
 
 // BucketPolicyRole compares the given bucket policy with the predefined bucket policies
@@ -89,7 +92,7 @@ func BucketPolicyRole(bucketName string, jsonPolicy string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("Policy does not match any role")
+	return "", errors.New("Policy does not match any role")
 }
 
 // comparePolicy checks whether two policies are equal.

@@ -103,6 +103,21 @@ type ResourcesCPUSocket struct {
 	// Maximum CPU frequency (Mhz)
 	// Example: 3500
 	FrequencyTurbo uint64 `json:"frequency_turbo,omitempty" yaml:"frequency_turbo,omitempty"`
+
+	// Address sizes
+	//
+	// API extension: resources_cpu_address_sizes.
+	AddressSizes *ResourcesCPUAddressSizes `json:"address_sizes,omitempty" yaml:"address_sizes,omitempty"`
+}
+
+// ResourcesCPUAddressSizes resprents address size information for a CPU socket.
+//
+// swagger:model
+//
+// API extension: resources_cpu_address_sizes.
+type ResourcesCPUAddressSizes struct {
+	PhysicalBits uint64 `json:"physical_bits" yaml:"physical_bits"`
+	VirtualBits  uint64 `json:"virtual_bits" yaml:"virtual_bits"`
 }
 
 // ResourcesCPUCache represents a CPU cache
@@ -567,7 +582,7 @@ type ResourcesNetworkCardSRIOV struct {
 	VFs []ResourcesNetworkCard `json:"vfs" yaml:"vfs"`
 }
 
-// ResourceNetworkCardVDPA represents the VDPA configuration of the network card
+// ResourcesNetworkCardVDPA represents the VDPA configuration of the network card
 //
 // swagger:model
 //
@@ -784,7 +799,7 @@ type ResourcesStoragePool struct {
 	// Disk space usage
 	Space ResourcesStoragePoolSpace `json:"space,omitempty" yaml:"space,omitempty"`
 
-	// DIsk inode usage
+	// Disk inode usage
 	Inodes ResourcesStoragePoolInodes `json:"inodes,omitempty" yaml:"inodes,omitempty"`
 }
 

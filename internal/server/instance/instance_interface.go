@@ -64,6 +64,7 @@ type ConfigReader interface {
 	Type() instancetype.Type
 	Architecture() int
 	ID() int
+	Name() string
 
 	ExpandedConfig() map[string]string
 	ExpandedDevices() deviceConfig.Devices
@@ -83,6 +84,8 @@ type Instance interface {
 	Restart(timeout time.Duration) error
 	Rebuild(img *api.Image, op *operations.Operation) error
 	Unfreeze() error
+
+	ReloadDevice(devName string) error
 	RegisterDevices()
 
 	Info() Info
@@ -94,13 +97,14 @@ type Instance interface {
 	Snapshots() ([]Instance, error)
 	Backups() ([]backup.InstanceBackup, error)
 	UpdateBackupFile() error
+	CanLiveMigrate() bool
 
 	// Config handling.
 	Rename(newName string, applyTemplateTrigger bool) error
 	Update(newConfig db.InstanceArgs, userRequested bool) error
 
 	Delete(force bool) error
-	Export(w io.Writer, properties map[string]string, expiration time.Time, tracker *ioprogress.ProgressTracker) (api.ImageMetadata, error)
+	Export(meta io.Writer, roofs io.Writer, properties map[string]string, expiration time.Time, tracker *ioprogress.ProgressTracker) (*api.ImageMetadata, error)
 
 	// Live configuration.
 	CGroup() (*cgroup.CGroup, error)
@@ -115,7 +119,8 @@ type Instance interface {
 	Exec(req api.InstanceExecPost, stdin *os.File, stdout *os.File, stderr *os.File) (Cmd, error)
 
 	// Status
-	Render(options ...func(response any) error) (any, any, error)
+	Render() (any, any, error)
+	RenderWithUsage() (any, any, error)
 	RenderFull(hostInterfaces []net.Interface) (*api.InstanceFull, any, error)
 	RenderState(hostInterfaces []net.Interface) (*api.InstanceState, error)
 	IsRunning() bool
@@ -131,7 +136,6 @@ type Instance interface {
 
 	// Properties.
 	Location() string
-	Name() string
 	CloudInitID() string
 	Description() string
 	CreationDate() time.Time
@@ -142,6 +146,8 @@ type Instance interface {
 	State() string
 	ExpiryDate() time.Time
 	FillNetworkDevice(name string, m deviceConfig.Device) (deviceConfig.Device, error)
+
+	ETag() []any
 
 	// Paths.
 	Path() string
@@ -182,7 +188,7 @@ type Container interface {
 	ConsoleLog(opts liblxc.ConsoleLogOptions) (string, error)
 	InsertSeccompUnixDevice(prefix string, m deviceConfig.Device, pid int) error
 	DevptsFd() (*os.File, error)
-	IdmappedStorage(path string, fstype string) idmap.IdmapStorageType
+	IdmappedStorage(path string, fstype string) idmap.StorageType
 }
 
 // VM interface is for VM specific functions.
@@ -190,6 +196,9 @@ type VM interface {
 	Instance
 
 	AgentCertificate() *x509.Certificate
+	ConsoleLog() (string, error)
+	ConsoleScreenshot(screenshotFile *os.File) error
+	DumpGuestMemory(w *os.File, format string) error
 }
 
 // CriuMigrationArgs arguments for CRIU migration.
@@ -224,6 +233,7 @@ type MigrateArgs struct {
 	Live                  bool
 	Disconnect            func()
 	ClusterMoveSourceName string // Will be empty if not a cluster move, othwise indicates the source instance.
+	StoragePool           string
 }
 
 // MigrateSendArgs represent arguments for instance migration send.
@@ -237,6 +247,7 @@ type MigrateSendArgs struct {
 type MigrateReceiveArgs struct {
 	MigrateArgs
 
-	InstanceOperation *operationlock.InstanceOperation
-	Refresh           bool
+	InstanceOperation   *operationlock.InstanceOperation
+	Refresh             bool
+	RefreshExcludeOlder bool
 }

@@ -3,6 +3,7 @@
 package endpoints
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -10,7 +11,7 @@ import (
 	"os/user"
 	"strconv"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
@@ -56,7 +57,7 @@ func CheckAlreadyRunning(path string) error {
 
 	// If the connection succeeded it means there's another daemon running.
 	if err == nil {
-		return fmt.Errorf("Incus is already running")
+		return errors.New("Incus is already running")
 	}
 
 	return nil

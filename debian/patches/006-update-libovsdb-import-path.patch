@@ -1,0 +1,1289 @@
+From d8f275829c5039e12dd20cdbc2bce020ffc653ad Mon Sep 17 00:00:00 2001
+From: Mathias Gibbens <mathias.gibbens@futurfusion.io>
+Date: Tue, 14 Oct 2025 12:45:01 -0600
+Subject: [PATCH 1/4] internal/server/network: Update libovsdb import path
+
+Signed-off-by: Mathias Gibbens <mathias.gibbens@futurfusion.io>
+---
+ internal/server/network/driver_ovn.go                 | 4 ++--
+ internal/server/network/ovn/errors.go                 | 2 +-
+ internal/server/network/ovn/events.go                 | 2 +-
+ internal/server/network/ovn/ovn_icnb.go               | 2 +-
+ internal/server/network/ovn/ovn_icnb_actions.go       | 4 ++--
+ internal/server/network/ovn/ovn_icsb.go               | 4 ++--
+ internal/server/network/ovn/ovn_nb.go                 | 4 ++--
+ internal/server/network/ovn/ovn_nb_actions.go         | 6 +++---
+ internal/server/network/ovn/ovn_sb.go                 | 6 +++---
+ internal/server/network/ovn/schema/ovn-ic-nb/model.go | 4 ++--
+ internal/server/network/ovn/schema/ovn-ic-sb/model.go | 4 ++--
+ internal/server/network/ovn/schema/ovn-nb/model.go    | 4 ++--
+ internal/server/network/ovn/schema/ovn-sb/model.go    | 4 ++--
+ internal/server/network/ovs/errors.go                 | 2 +-
+ internal/server/network/ovs/ovs.go                    | 2 +-
+ internal/server/network/ovs/ovs_actions.go            | 6 +++---
+ internal/server/network/ovs/schema/ovs/model.go       | 4 ++--
+ 17 files changed, 32 insertions(+), 32 deletions(-)
+
+diff --git a/internal/server/network/driver_ovn.go b/internal/server/network/driver_ovn.go
+index 5ba3652f899..d4a57d8e902 100644
+--- a/internal/server/network/driver_ovn.go
++++ b/internal/server/network/driver_ovn.go
+@@ -20,8 +20,8 @@ import (
+ 
+ 	"github.com/flosch/pongo2"
+ 	"github.com/mdlayher/netx/eui64"
+-	ovsClient "github.com/ovn-org/libovsdb/client"
+-	ovsdbModel "github.com/ovn-org/libovsdb/model"
++	ovsClient "github.com/ovn-kubernetes/libovsdb/client"
++	ovsdbModel "github.com/ovn-kubernetes/libovsdb/model"
+ 
+ 	incus "github.com/lxc/incus/v6/client"
+ 	"github.com/lxc/incus/v6/internal/iprange"
+diff --git a/internal/server/network/ovn/errors.go b/internal/server/network/ovn/errors.go
+index a2f1bfe4957..bf6f0645a5a 100644
+--- a/internal/server/network/ovn/errors.go
++++ b/internal/server/network/ovn/errors.go
+@@ -3,7 +3,7 @@ package ovn
+ import (
+ 	"errors"
+ 
+-	ovsdbClient "github.com/ovn-org/libovsdb/client"
++	ovsdbClient "github.com/ovn-kubernetes/libovsdb/client"
+ )
+ 
+ // ErrExists indicates that a DB record already exists.
+diff --git a/internal/server/network/ovn/events.go b/internal/server/network/ovn/events.go
+index 57de3714fb1..ad62e029168 100644
+--- a/internal/server/network/ovn/events.go
++++ b/internal/server/network/ovn/events.go
+@@ -1,7 +1,7 @@
+ package ovn
+ 
+ import (
+-	ovsdbModel "github.com/ovn-org/libovsdb/model"
++	ovsdbModel "github.com/ovn-kubernetes/libovsdb/model"
+ )
+ 
+ // EventHandler represents an OVN database event handler.
+diff --git a/internal/server/network/ovn/ovn_icnb.go b/internal/server/network/ovn/ovn_icnb.go
+index c23baf0271c..4375c0cb6c0 100644
+--- a/internal/server/network/ovn/ovn_icnb.go
++++ b/internal/server/network/ovn/ovn_icnb.go
+@@ -12,7 +12,7 @@ import (
+ 
+ 	"github.com/cenkalti/backoff/v4"
+ 	"github.com/go-logr/logr"
+-	ovsdbClient "github.com/ovn-org/libovsdb/client"
++	ovsdbClient "github.com/ovn-kubernetes/libovsdb/client"
+ 
+ 	ovnICNB "github.com/lxc/incus/v6/internal/server/network/ovn/schema/ovn-ic-nb"
+ )
+diff --git a/internal/server/network/ovn/ovn_icnb_actions.go b/internal/server/network/ovn/ovn_icnb_actions.go
+index 725b1caf653..b45376a2a20 100644
+--- a/internal/server/network/ovn/ovn_icnb_actions.go
++++ b/internal/server/network/ovn/ovn_icnb_actions.go
+@@ -11,8 +11,8 @@ import (
+ 	"slices"
+ 	"strings"
+ 
+-	ovsdbClient "github.com/ovn-org/libovsdb/client"
+-	"github.com/ovn-org/libovsdb/ovsdb"
++	ovsdbClient "github.com/ovn-kubernetes/libovsdb/client"
++	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+ 
+ 	ovnICNB "github.com/lxc/incus/v6/internal/server/network/ovn/schema/ovn-ic-nb"
+ )
+diff --git a/internal/server/network/ovn/ovn_icsb.go b/internal/server/network/ovn/ovn_icsb.go
+index d6b15b20f4f..e8c11cfe498 100644
+--- a/internal/server/network/ovn/ovn_icsb.go
++++ b/internal/server/network/ovn/ovn_icsb.go
+@@ -12,8 +12,8 @@ import (
+ 
+ 	"github.com/cenkalti/backoff/v4"
+ 	"github.com/go-logr/logr"
+-	ovsdbClient "github.com/ovn-org/libovsdb/client"
+-	ovsdbModel "github.com/ovn-org/libovsdb/model"
++	ovsdbClient "github.com/ovn-kubernetes/libovsdb/client"
++	ovsdbModel "github.com/ovn-kubernetes/libovsdb/model"
+ 
+ 	ovnICSB "github.com/lxc/incus/v6/internal/server/network/ovn/schema/ovn-ic-sb"
+ )
+diff --git a/internal/server/network/ovn/ovn_nb.go b/internal/server/network/ovn/ovn_nb.go
+index 25b28fb3c8b..81a85bc8223 100644
+--- a/internal/server/network/ovn/ovn_nb.go
++++ b/internal/server/network/ovn/ovn_nb.go
+@@ -13,8 +13,8 @@ import (
+ 
+ 	"github.com/cenkalti/backoff/v4"
+ 	"github.com/go-logr/logr"
+-	ovsdbClient "github.com/ovn-org/libovsdb/client"
+-	ovsdbModel "github.com/ovn-org/libovsdb/model"
++	ovsdbClient "github.com/ovn-kubernetes/libovsdb/client"
++	ovsdbModel "github.com/ovn-kubernetes/libovsdb/model"
+ 
+ 	ovnNB "github.com/lxc/incus/v6/internal/server/network/ovn/schema/ovn-nb"
+ )
+diff --git a/internal/server/network/ovn/ovn_nb_actions.go b/internal/server/network/ovn/ovn_nb_actions.go
+index 37535b9aa87..1dda1f68350 100644
+--- a/internal/server/network/ovn/ovn_nb_actions.go
++++ b/internal/server/network/ovn/ovn_nb_actions.go
+@@ -10,9 +10,9 @@ import (
+ 	"strings"
+ 	"time"
+ 
+-	ovsClient "github.com/ovn-org/libovsdb/client"
+-	ovsModel "github.com/ovn-org/libovsdb/model"
+-	"github.com/ovn-org/libovsdb/ovsdb"
++	ovsClient "github.com/ovn-kubernetes/libovsdb/client"
++	ovsModel "github.com/ovn-kubernetes/libovsdb/model"
++	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+ 
+ 	"github.com/lxc/incus/v6/internal/iprange"
+ 	ovnNB "github.com/lxc/incus/v6/internal/server/network/ovn/schema/ovn-nb"
+diff --git a/internal/server/network/ovn/ovn_sb.go b/internal/server/network/ovn/ovn_sb.go
+index 7e44a704a56..370ca807c8c 100644
+--- a/internal/server/network/ovn/ovn_sb.go
++++ b/internal/server/network/ovn/ovn_sb.go
+@@ -13,9 +13,9 @@ import (
+ 
+ 	"github.com/cenkalti/backoff/v4"
+ 	"github.com/go-logr/logr"
+-	ovsdbCache "github.com/ovn-org/libovsdb/cache"
+-	ovsdbClient "github.com/ovn-org/libovsdb/client"
+-	ovsdbModel "github.com/ovn-org/libovsdb/model"
++	ovsdbCache "github.com/ovn-kubernetes/libovsdb/cache"
++	ovsdbClient "github.com/ovn-kubernetes/libovsdb/client"
++	ovsdbModel "github.com/ovn-kubernetes/libovsdb/model"
+ 
+ 	ovnSB "github.com/lxc/incus/v6/internal/server/network/ovn/schema/ovn-sb"
+ )
+diff --git a/internal/server/network/ovn/schema/ovn-ic-nb/model.go b/internal/server/network/ovn/schema/ovn-ic-nb/model.go
+index def57b85e2b..0d40a2c2659 100644
+--- a/internal/server/network/ovn/schema/ovn-ic-nb/model.go
++++ b/internal/server/network/ovn/schema/ovn-ic-nb/model.go
+@@ -6,8 +6,8 @@ package ovsmodel
+ import (
+ 	"encoding/json"
+ 
+-	"github.com/ovn-org/libovsdb/model"
+-	"github.com/ovn-org/libovsdb/ovsdb"
++	"github.com/ovn-kubernetes/libovsdb/model"
++	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+ )
+ 
+ // FullDatabaseModel returns the DatabaseModel object to be used in libovsdb
+diff --git a/internal/server/network/ovn/schema/ovn-ic-sb/model.go b/internal/server/network/ovn/schema/ovn-ic-sb/model.go
+index 9ad79782e6a..47513325ef9 100644
+--- a/internal/server/network/ovn/schema/ovn-ic-sb/model.go
++++ b/internal/server/network/ovn/schema/ovn-ic-sb/model.go
+@@ -6,8 +6,8 @@ package ovsmodel
+ import (
+ 	"encoding/json"
+ 
+-	"github.com/ovn-org/libovsdb/model"
+-	"github.com/ovn-org/libovsdb/ovsdb"
++	"github.com/ovn-kubernetes/libovsdb/model"
++	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+ )
+ 
+ // FullDatabaseModel returns the DatabaseModel object to be used in libovsdb
+diff --git a/internal/server/network/ovn/schema/ovn-nb/model.go b/internal/server/network/ovn/schema/ovn-nb/model.go
+index 938639c25bf..a4edd967e20 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/model.go
++++ b/internal/server/network/ovn/schema/ovn-nb/model.go
+@@ -6,8 +6,8 @@ package ovsmodel
+ import (
+ 	"encoding/json"
+ 
+-	"github.com/ovn-org/libovsdb/model"
+-	"github.com/ovn-org/libovsdb/ovsdb"
++	"github.com/ovn-kubernetes/libovsdb/model"
++	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+ )
+ 
+ // FullDatabaseModel returns the DatabaseModel object to be used in libovsdb
+diff --git a/internal/server/network/ovn/schema/ovn-sb/model.go b/internal/server/network/ovn/schema/ovn-sb/model.go
+index d69ef827b9f..f0e652633a2 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/model.go
++++ b/internal/server/network/ovn/schema/ovn-sb/model.go
+@@ -6,8 +6,8 @@ package ovsmodel
+ import (
+ 	"encoding/json"
+ 
+-	"github.com/ovn-org/libovsdb/model"
+-	"github.com/ovn-org/libovsdb/ovsdb"
++	"github.com/ovn-kubernetes/libovsdb/model"
++	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+ )
+ 
+ // FullDatabaseModel returns the DatabaseModel object to be used in libovsdb
+diff --git a/internal/server/network/ovs/errors.go b/internal/server/network/ovs/errors.go
+index 17e58aea774..929f79ac622 100644
+--- a/internal/server/network/ovs/errors.go
++++ b/internal/server/network/ovs/errors.go
+@@ -3,7 +3,7 @@ package ovs
+ import (
+ 	"errors"
+ 
+-	ovsdbClient "github.com/ovn-org/libovsdb/client"
++	ovsdbClient "github.com/ovn-kubernetes/libovsdb/client"
+ )
+ 
+ // ErrExists indicates that a DB record already exists.
+diff --git a/internal/server/network/ovs/ovs.go b/internal/server/network/ovs/ovs.go
+index 653f9bd6f2d..1a2692940d5 100644
+--- a/internal/server/network/ovs/ovs.go
++++ b/internal/server/network/ovs/ovs.go
+@@ -8,7 +8,7 @@ import (
+ 
+ 	"github.com/cenkalti/backoff/v4"
+ 	"github.com/go-logr/logr"
+-	ovsdbClient "github.com/ovn-org/libovsdb/client"
++	ovsdbClient "github.com/ovn-kubernetes/libovsdb/client"
+ 
+ 	ovsSwitch "github.com/lxc/incus/v6/internal/server/network/ovs/schema/ovs"
+ )
+diff --git a/internal/server/network/ovs/ovs_actions.go b/internal/server/network/ovs/ovs_actions.go
+index e9930ce2d3f..889cb857edb 100644
+--- a/internal/server/network/ovs/ovs_actions.go
++++ b/internal/server/network/ovs/ovs_actions.go
+@@ -10,9 +10,9 @@ import (
+ 	"sync"
+ 	"time"
+ 
+-	ovsdbClient "github.com/ovn-org/libovsdb/client"
+-	ovsdbModel "github.com/ovn-org/libovsdb/model"
+-	"github.com/ovn-org/libovsdb/ovsdb"
++	ovsdbClient "github.com/ovn-kubernetes/libovsdb/client"
++	ovsdbModel "github.com/ovn-kubernetes/libovsdb/model"
++	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+ 
+ 	"github.com/lxc/incus/v6/internal/server/ip"
+ 	ovsSwitch "github.com/lxc/incus/v6/internal/server/network/ovs/schema/ovs"
+diff --git a/internal/server/network/ovs/schema/ovs/model.go b/internal/server/network/ovs/schema/ovs/model.go
+index 032e8e0642a..68273777484 100644
+--- a/internal/server/network/ovs/schema/ovs/model.go
++++ b/internal/server/network/ovs/schema/ovs/model.go
+@@ -6,8 +6,8 @@ package ovsmodel
+ import (
+ 	"encoding/json"
+ 
+-	"github.com/ovn-org/libovsdb/model"
+-	"github.com/ovn-org/libovsdb/ovsdb"
++	"github.com/ovn-kubernetes/libovsdb/model"
++	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+ )
+ 
+ // FullDatabaseModel returns the DatabaseModel object to be used in libovsdb
+
+From dd20d891b4d577aa2dfcde87a3dbfd3e0a932c5b Mon Sep 17 00:00:00 2001
+From: Mathias Gibbens <mathias.gibbens@futurfusion.io>
+Date: Tue, 14 Oct 2025 12:46:53 -0600
+Subject: [PATCH 4/4] internal/server/network/ovn/schema: Update generated
+ schema
+
+Signed-off-by: Mathias Gibbens <mathias.gibbens@futurfusion.io>
+---
+ .../ovn/schema/ovn-ic-nb/connection.go        |  2 +-
+ .../ovn/schema/ovn-ic-sb/connection.go        |  2 +-
+ .../ovn/schema/ovn-ic-sb/datapath_binding.go  |  2 +-
+ .../network/ovn/schema/ovn-ic-sb/encap.go     |  2 +-
+ .../network/ovn/schema/ovn-ic-sb/gateway.go   |  2 +-
+ .../ovn/schema/ovn-ic-sb/port_binding.go      |  2 +-
+ .../network/ovn/schema/ovn-ic-sb/route.go     |  2 +-
+ .../server/network/ovn/schema/ovn-nb/acl.go   | 12 +++++------
+ .../server/network/ovn/schema/ovn-nb/bfd.go   |  6 +++---
+ .../network/ovn/schema/ovn-nb/connection.go   |  2 +-
+ .../ovn/schema/ovn-nb/forwarding_group.go     |  2 +-
+ .../ovn/schema/ovn-nb/gateway_chassis.go      |  2 +-
+ .../network/ovn/schema/ovn-nb/ha_chassis.go   |  2 +-
+ .../ovn/schema/ovn-nb/load_balancer.go        |  4 ++--
+ .../schema/ovn-nb/logical_router_policy.go    |  4 ++--
+ .../ovn/schema/ovn-nb/logical_router_port.go  |  2 +-
+ .../ovn-nb/logical_router_static_route.go     |  2 +-
+ .../ovn/schema/ovn-nb/logical_switch_port.go  |  4 ++--
+ .../server/network/ovn/schema/ovn-nb/meter.go |  4 ++--
+ .../network/ovn/schema/ovn-nb/meter_band.go   | 10 ++++++----
+ .../network/ovn/schema/ovn-nb/mirror.go       |  4 ++--
+ .../server/network/ovn/schema/ovn-nb/nat.go   |  2 +-
+ .../server/network/ovn/schema/ovn-nb/qos.go   |  8 ++++----
+ .../server/network/ovn/schema/ovn-sb/bfd.go   |  4 ++--
+ .../network/ovn/schema/ovn-sb/chassis.go      |  2 +-
+ .../network/ovn/schema/ovn-sb/connection.go   |  2 +-
+ .../ovn/schema/ovn-sb/controller_event.go     |  6 ++++--
+ .../ovn/schema/ovn-sb/datapath_binding.go     |  2 +-
+ .../network/ovn/schema/ovn-sb/dhcp_options.go |  4 ++--
+ .../ovn/schema/ovn-sb/dhcpv6_options.go       |  4 ++--
+ .../server/network/ovn/schema/ovn-sb/dns.go   |  2 +-
+ .../server/network/ovn/schema/ovn-sb/encap.go |  2 +-
+ .../server/network/ovn/schema/ovn-sb/fdb.go   |  4 ++--
+ .../ovn/schema/ovn-sb/gateway_chassis.go      |  2 +-
+ .../network/ovn/schema/ovn-sb/ha_chassis.go   |  2 +-
+ .../ovn/schema/ovn-sb/load_balancer.go        |  2 +-
+ .../network/ovn/schema/ovn-sb/logical_flow.go |  6 +++---
+ .../server/network/ovn/schema/ovn-sb/meter.go |  4 ++--
+ .../network/ovn/schema/ovn-sb/meter_band.go   | 10 ++++++----
+ .../network/ovn/schema/ovn-sb/mirror.go       |  4 ++--
+ .../ovn/schema/ovn-sb/multicast_group.go      |  2 +-
+ .../network/ovn/schema/ovn-sb/port_binding.go |  4 ++--
+ .../ovn/schema/ovn-sb/service_monitor.go      |  6 +++---
+ .../network/ovs/schema/ovs/autoattach.go      |  2 +-
+ .../server/network/ovs/schema/ovs/bridge.go   |  8 ++++----
+ .../network/ovs/schema/ovs/controller.go      | 14 ++++++-------
+ .../ovs/schema/ovs/ct_timeout_policy.go       |  2 +-
+ .../server/network/ovs/schema/ovs/datapath.go |  2 +-
+ .../schema/ovs/flow_sample_collector_set.go   |  2 +-
+ .../network/ovs/schema/ovs/flow_table.go      |  6 +++---
+ .../network/ovs/schema/ovs/interface.go       | 20 +++++++++----------
+ .../server/network/ovs/schema/ovs/ipfix.go    | 10 +++++-----
+ .../server/network/ovs/schema/ovs/manager.go  |  4 ++--
+ .../server/network/ovs/schema/ovs/mirror.go   |  6 +++---
+ .../server/network/ovs/schema/ovs/netflow.go  |  8 ++++----
+ .../server/network/ovs/schema/ovs/port.go     | 14 ++++++-------
+ internal/server/network/ovs/schema/ovs/qos.go |  2 +-
+ .../server/network/ovs/schema/ovs/queue.go    |  2 +-
+ .../server/network/ovs/schema/ovs/sflow.go    |  2 +-
+ 59 files changed, 134 insertions(+), 128 deletions(-)
+
+diff --git a/internal/server/network/ovn/schema/ovn-ic-nb/connection.go b/internal/server/network/ovn/schema/ovn-ic-nb/connection.go
+index e0fff1b5d04..c9a1b7690f0 100644
+--- a/internal/server/network/ovn/schema/ovn-ic-nb/connection.go
++++ b/internal/server/network/ovn/schema/ovn-ic-nb/connection.go
+@@ -11,7 +11,7 @@ type Connection struct {
+ 	ExternalIDs     map[string]string `ovsdb:"external_ids"`
+ 	InactivityProbe *int              `ovsdb:"inactivity_probe"`
+ 	IsConnected     bool              `ovsdb:"is_connected"`
+-	MaxBackoff      *int              `ovsdb:"max_backoff"`
++	MaxBackoff      *int              `ovsdb:"max_backoff" validate:"omitempty,min=1000"`
+ 	OtherConfig     map[string]string `ovsdb:"other_config"`
+ 	Status          map[string]string `ovsdb:"status"`
+ 	Target          string            `ovsdb:"target"`
+diff --git a/internal/server/network/ovn/schema/ovn-ic-sb/connection.go b/internal/server/network/ovn/schema/ovn-ic-sb/connection.go
+index e0fff1b5d04..c9a1b7690f0 100644
+--- a/internal/server/network/ovn/schema/ovn-ic-sb/connection.go
++++ b/internal/server/network/ovn/schema/ovn-ic-sb/connection.go
+@@ -11,7 +11,7 @@ type Connection struct {
+ 	ExternalIDs     map[string]string `ovsdb:"external_ids"`
+ 	InactivityProbe *int              `ovsdb:"inactivity_probe"`
+ 	IsConnected     bool              `ovsdb:"is_connected"`
+-	MaxBackoff      *int              `ovsdb:"max_backoff"`
++	MaxBackoff      *int              `ovsdb:"max_backoff" validate:"omitempty,min=1000"`
+ 	OtherConfig     map[string]string `ovsdb:"other_config"`
+ 	Status          map[string]string `ovsdb:"status"`
+ 	Target          string            `ovsdb:"target"`
+diff --git a/internal/server/network/ovn/schema/ovn-ic-sb/datapath_binding.go b/internal/server/network/ovn/schema/ovn-ic-sb/datapath_binding.go
+index 23aa0823321..3d7a453715d 100644
+--- a/internal/server/network/ovn/schema/ovn-ic-sb/datapath_binding.go
++++ b/internal/server/network/ovn/schema/ovn-ic-sb/datapath_binding.go
+@@ -10,5 +10,5 @@ type DatapathBinding struct {
+ 	UUID          string            `ovsdb:"_uuid"`
+ 	ExternalIDs   map[string]string `ovsdb:"external_ids"`
+ 	TransitSwitch string            `ovsdb:"transit_switch"`
+-	TunnelKey     int               `ovsdb:"tunnel_key"`
++	TunnelKey     int               `ovsdb:"tunnel_key" validate:"min=1,max=16777215"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-ic-sb/encap.go b/internal/server/network/ovn/schema/ovn-ic-sb/encap.go
+index eda3bb67cde..dc841da9454 100644
+--- a/internal/server/network/ovn/schema/ovn-ic-sb/encap.go
++++ b/internal/server/network/ovn/schema/ovn-ic-sb/encap.go
+@@ -21,5 +21,5 @@ type Encap struct {
+ 	GatewayName string            `ovsdb:"gateway_name"`
+ 	IP          string            `ovsdb:"ip"`
+ 	Options     map[string]string `ovsdb:"options"`
+-	Type        EncapType         `ovsdb:"type"`
++	Type        EncapType         `ovsdb:"type" validate:"oneof='geneve' 'stt' 'vxlan'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-ic-sb/gateway.go b/internal/server/network/ovn/schema/ovn-ic-sb/gateway.go
+index fc692042666..c1525e545ae 100644
+--- a/internal/server/network/ovn/schema/ovn-ic-sb/gateway.go
++++ b/internal/server/network/ovn/schema/ovn-ic-sb/gateway.go
+@@ -9,7 +9,7 @@ const GatewayTable = "Gateway"
+ type Gateway struct {
+ 	UUID             string            `ovsdb:"_uuid"`
+ 	AvailabilityZone string            `ovsdb:"availability_zone"`
+-	Encaps           []string          `ovsdb:"encaps"`
++	Encaps           []string          `ovsdb:"encaps" validate:"min=1"`
+ 	ExternalIDs      map[string]string `ovsdb:"external_ids"`
+ 	Hostname         string            `ovsdb:"hostname"`
+ 	Name             string            `ovsdb:"name"`
+diff --git a/internal/server/network/ovn/schema/ovn-ic-sb/port_binding.go b/internal/server/network/ovn/schema/ovn-ic-sb/port_binding.go
+index 241c8fddf25..1b286b11686 100644
+--- a/internal/server/network/ovn/schema/ovn-ic-sb/port_binding.go
++++ b/internal/server/network/ovn/schema/ovn-ic-sb/port_binding.go
+@@ -15,5 +15,5 @@ type PortBinding struct {
+ 	Gateway          string            `ovsdb:"gateway"`
+ 	LogicalPort      string            `ovsdb:"logical_port"`
+ 	TransitSwitch    string            `ovsdb:"transit_switch"`
+-	TunnelKey        int               `ovsdb:"tunnel_key"`
++	TunnelKey        int               `ovsdb:"tunnel_key" validate:"min=1,max=32767"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-ic-sb/route.go b/internal/server/network/ovn/schema/ovn-ic-sb/route.go
+index 6dafa6ce259..955e2796de7 100644
+--- a/internal/server/network/ovn/schema/ovn-ic-sb/route.go
++++ b/internal/server/network/ovn/schema/ovn-ic-sb/route.go
+@@ -21,7 +21,7 @@ type Route struct {
+ 	ExternalIDs      map[string]string `ovsdb:"external_ids"`
+ 	IPPrefix         string            `ovsdb:"ip_prefix"`
+ 	Nexthop          string            `ovsdb:"nexthop"`
+-	Origin           RouteOrigin       `ovsdb:"origin"`
++	Origin           RouteOrigin       `ovsdb:"origin" validate:"oneof='connected' 'static'"`
+ 	RouteTable       string            `ovsdb:"route_table"`
+ 	TransitSwitch    string            `ovsdb:"transit_switch"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/acl.go b/internal/server/network/ovn/schema/ovn-nb/acl.go
+index 85274f394db..ad289db9d4a 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/acl.go
++++ b/internal/server/network/ovn/schema/ovn-nb/acl.go
+@@ -29,15 +29,15 @@ var (
+ // ACL defines an object in ACL table
+ type ACL struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+-	Action      ACLAction         `ovsdb:"action"`
+-	Direction   ACLDirection      `ovsdb:"direction"`
++	Action      ACLAction         `ovsdb:"action" validate:"oneof='allow' 'allow-related' 'allow-stateless' 'drop' 'reject'"`
++	Direction   ACLDirection      `ovsdb:"direction" validate:"oneof='from-lport' 'to-lport'"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+-	Label       int               `ovsdb:"label"`
++	Label       int               `ovsdb:"label" validate:"min=0,max=4294967295"`
+ 	Log         bool              `ovsdb:"log"`
+ 	Match       string            `ovsdb:"match"`
+ 	Meter       *string           `ovsdb:"meter"`
+-	Name        *string           `ovsdb:"name"`
++	Name        *string           `ovsdb:"name" validate:"omitempty,max=63"`
+ 	Options     map[string]string `ovsdb:"options"`
+-	Priority    int               `ovsdb:"priority"`
+-	Severity    *ACLSeverity      `ovsdb:"severity"`
++	Priority    int               `ovsdb:"priority" validate:"min=0,max=32767"`
++	Severity    *ACLSeverity      `ovsdb:"severity" validate:"omitempty,oneof='alert' 'warning' 'notice' 'info' 'debug'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/bfd.go b/internal/server/network/ovn/schema/ovn-nb/bfd.go
+index 0a7183d7444..dd0b93d396f 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/bfd.go
++++ b/internal/server/network/ovn/schema/ovn-nb/bfd.go
+@@ -19,12 +19,12 @@ var (
+ // BFD defines an object in BFD table
+ type BFD struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+-	DetectMult  *int              `ovsdb:"detect_mult"`
++	DetectMult  *int              `ovsdb:"detect_mult" validate:"omitempty,min=1"`
+ 	DstIP       string            `ovsdb:"dst_ip"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+ 	LogicalPort string            `ovsdb:"logical_port"`
+ 	MinRx       *int              `ovsdb:"min_rx"`
+-	MinTx       *int              `ovsdb:"min_tx"`
++	MinTx       *int              `ovsdb:"min_tx" validate:"omitempty,min=1"`
+ 	Options     map[string]string `ovsdb:"options"`
+-	Status      *BFDStatus        `ovsdb:"status"`
++	Status      *BFDStatus        `ovsdb:"status" validate:"omitempty,oneof='down' 'init' 'up' 'admin_down'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/connection.go b/internal/server/network/ovn/schema/ovn-nb/connection.go
+index e0fff1b5d04..c9a1b7690f0 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/connection.go
++++ b/internal/server/network/ovn/schema/ovn-nb/connection.go
+@@ -11,7 +11,7 @@ type Connection struct {
+ 	ExternalIDs     map[string]string `ovsdb:"external_ids"`
+ 	InactivityProbe *int              `ovsdb:"inactivity_probe"`
+ 	IsConnected     bool              `ovsdb:"is_connected"`
+-	MaxBackoff      *int              `ovsdb:"max_backoff"`
++	MaxBackoff      *int              `ovsdb:"max_backoff" validate:"omitempty,min=1000"`
+ 	OtherConfig     map[string]string `ovsdb:"other_config"`
+ 	Status          map[string]string `ovsdb:"status"`
+ 	Target          string            `ovsdb:"target"`
+diff --git a/internal/server/network/ovn/schema/ovn-nb/forwarding_group.go b/internal/server/network/ovn/schema/ovn-nb/forwarding_group.go
+index 398e1f1ad2a..77d3ef9c014 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/forwarding_group.go
++++ b/internal/server/network/ovn/schema/ovn-nb/forwarding_group.go
+@@ -8,7 +8,7 @@ const ForwardingGroupTable = "Forwarding_Group"
+ // ForwardingGroup defines an object in Forwarding_Group table
+ type ForwardingGroup struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+-	ChildPort   []string          `ovsdb:"child_port"`
++	ChildPort   []string          `ovsdb:"child_port" validate:"min=1"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+ 	Liveness    bool              `ovsdb:"liveness"`
+ 	Name        string            `ovsdb:"name"`
+diff --git a/internal/server/network/ovn/schema/ovn-nb/gateway_chassis.go b/internal/server/network/ovn/schema/ovn-nb/gateway_chassis.go
+index 2d9191953f2..de912e29b01 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/gateway_chassis.go
++++ b/internal/server/network/ovn/schema/ovn-nb/gateway_chassis.go
+@@ -12,5 +12,5 @@ type GatewayChassis struct {
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+ 	Name        string            `ovsdb:"name"`
+ 	Options     map[string]string `ovsdb:"options"`
+-	Priority    int               `ovsdb:"priority"`
++	Priority    int               `ovsdb:"priority" validate:"min=0,max=32767"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/ha_chassis.go b/internal/server/network/ovn/schema/ovn-nb/ha_chassis.go
+index 853354f7c0b..9b553175907 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/ha_chassis.go
++++ b/internal/server/network/ovn/schema/ovn-nb/ha_chassis.go
+@@ -10,5 +10,5 @@ type HAChassis struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+ 	ChassisName string            `ovsdb:"chassis_name"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+-	Priority    int               `ovsdb:"priority"`
++	Priority    int               `ovsdb:"priority" validate:"min=0,max=32767"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/load_balancer.go b/internal/server/network/ovn/schema/ovn-nb/load_balancer.go
+index dc2d65a7fbb..0f54e63ff65 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/load_balancer.go
++++ b/internal/server/network/ovn/schema/ovn-nb/load_balancer.go
+@@ -30,7 +30,7 @@ type LoadBalancer struct {
+ 	IPPortMappings  map[string]string             `ovsdb:"ip_port_mappings"`
+ 	Name            string                        `ovsdb:"name"`
+ 	Options         map[string]string             `ovsdb:"options"`
+-	Protocol        *LoadBalancerProtocol         `ovsdb:"protocol"`
+-	SelectionFields []LoadBalancerSelectionFields `ovsdb:"selection_fields"`
++	Protocol        *LoadBalancerProtocol         `ovsdb:"protocol" validate:"omitempty,oneof='tcp' 'udp' 'sctp'"`
++	SelectionFields []LoadBalancerSelectionFields `ovsdb:"selection_fields" validate:"dive,oneof='eth_src' 'eth_dst' 'ip_src' 'ip_dst' 'tp_src' 'tp_dst'"`
+ 	Vips            map[string]string             `ovsdb:"vips"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/logical_router_policy.go b/internal/server/network/ovn/schema/ovn-nb/logical_router_policy.go
+index e9f7925f089..2c3783fe8c7 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/logical_router_policy.go
++++ b/internal/server/network/ovn/schema/ovn-nb/logical_router_policy.go
+@@ -18,11 +18,11 @@ var (
+ // LogicalRouterPolicy defines an object in Logical_Router_Policy table
+ type LogicalRouterPolicy struct {
+ 	UUID        string                    `ovsdb:"_uuid"`
+-	Action      LogicalRouterPolicyAction `ovsdb:"action"`
++	Action      LogicalRouterPolicyAction `ovsdb:"action" validate:"oneof='allow' 'drop' 'reroute'"`
+ 	ExternalIDs map[string]string         `ovsdb:"external_ids"`
+ 	Match       string                    `ovsdb:"match"`
+ 	Nexthop     *string                   `ovsdb:"nexthop"`
+ 	Nexthops    []string                  `ovsdb:"nexthops"`
+ 	Options     map[string]string         `ovsdb:"options"`
+-	Priority    int                       `ovsdb:"priority"`
++	Priority    int                       `ovsdb:"priority" validate:"min=0,max=32767"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/logical_router_port.go b/internal/server/network/ovn/schema/ovn-nb/logical_router_port.go
+index f45ffc85dc2..24f38f07a13 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/logical_router_port.go
++++ b/internal/server/network/ovn/schema/ovn-nb/logical_router_port.go
+@@ -16,7 +16,7 @@ type LogicalRouterPort struct {
+ 	Ipv6RaConfigs  map[string]string `ovsdb:"ipv6_ra_configs"`
+ 	MAC            string            `ovsdb:"mac"`
+ 	Name           string            `ovsdb:"name"`
+-	Networks       []string          `ovsdb:"networks"`
++	Networks       []string          `ovsdb:"networks" validate:"min=1"`
+ 	Options        map[string]string `ovsdb:"options"`
+ 	Peer           *string           `ovsdb:"peer"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/logical_router_static_route.go b/internal/server/network/ovn/schema/ovn-nb/logical_router_static_route.go
+index e0ef383229b..14ba4cb8903 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/logical_router_static_route.go
++++ b/internal/server/network/ovn/schema/ovn-nb/logical_router_static_route.go
+@@ -23,6 +23,6 @@ type LogicalRouterStaticRoute struct {
+ 	Nexthop     string                          `ovsdb:"nexthop"`
+ 	Options     map[string]string               `ovsdb:"options"`
+ 	OutputPort  *string                         `ovsdb:"output_port"`
+-	Policy      *LogicalRouterStaticRoutePolicy `ovsdb:"policy"`
++	Policy      *LogicalRouterStaticRoutePolicy `ovsdb:"policy" validate:"omitempty,oneof='src-ip' 'dst-ip'"`
+ 	RouteTable  string                          `ovsdb:"route_table"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/logical_switch_port.go b/internal/server/network/ovn/schema/ovn-nb/logical_switch_port.go
+index f66312deaed..740e68b17ae 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/logical_switch_port.go
++++ b/internal/server/network/ovn/schema/ovn-nb/logical_switch_port.go
+@@ -20,8 +20,8 @@ type LogicalSwitchPort struct {
+ 	Options          map[string]string `ovsdb:"options"`
+ 	ParentName       *string           `ovsdb:"parent_name"`
+ 	PortSecurity     []string          `ovsdb:"port_security"`
+-	Tag              *int              `ovsdb:"tag"`
+-	TagRequest       *int              `ovsdb:"tag_request"`
++	Tag              *int              `ovsdb:"tag" validate:"omitempty,min=1,max=4095"`
++	TagRequest       *int              `ovsdb:"tag_request" validate:"omitempty,min=0,max=4095"`
+ 	Type             string            `ovsdb:"type"`
+ 	Up               *bool             `ovsdb:"up"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/meter.go b/internal/server/network/ovn/schema/ovn-nb/meter.go
+index 236e9a02365..4caa15b6c98 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/meter.go
++++ b/internal/server/network/ovn/schema/ovn-nb/meter.go
+@@ -17,9 +17,9 @@ var (
+ // Meter defines an object in Meter table
+ type Meter struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+-	Bands       []string          `ovsdb:"bands"`
++	Bands       []string          `ovsdb:"bands" validate:"min=1"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+ 	Fair        *bool             `ovsdb:"fair"`
+ 	Name        string            `ovsdb:"name"`
+-	Unit        MeterUnit         `ovsdb:"unit"`
++	Unit        MeterUnit         `ovsdb:"unit" validate:"oneof='kbps' 'pktps'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/meter_band.go b/internal/server/network/ovn/schema/ovn-nb/meter_band.go
+index 6723df4e506..85f12f37e9d 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/meter_band.go
++++ b/internal/server/network/ovn/schema/ovn-nb/meter_band.go
+@@ -9,13 +9,15 @@ type (
+ 	MeterBandAction = string
+ )
+ 
+-var MeterBandActionDrop MeterBandAction = "drop"
++var (
++	MeterBandActionDrop MeterBandAction = "drop"
++)
+ 
+ // MeterBand defines an object in Meter_Band table
+ type MeterBand struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+-	Action      MeterBandAction   `ovsdb:"action"`
+-	BurstSize   int               `ovsdb:"burst_size"`
++	Action      MeterBandAction   `ovsdb:"action" validate:"oneof='drop'"`
++	BurstSize   int               `ovsdb:"burst_size" validate:"min=0,max=4294967295"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+-	Rate        int               `ovsdb:"rate"`
++	Rate        int               `ovsdb:"rate" validate:"min=1,max=4294967295"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/mirror.go b/internal/server/network/ovn/schema/ovn-nb/mirror.go
+index 8d3551ca1b0..cf6fa8099a0 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/mirror.go
++++ b/internal/server/network/ovn/schema/ovn-nb/mirror.go
+@@ -21,9 +21,9 @@ var (
+ type Mirror struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+-	Filter      MirrorFilter      `ovsdb:"filter"`
++	Filter      MirrorFilter      `ovsdb:"filter" validate:"oneof='from-lport' 'to-lport'"`
+ 	Index       int               `ovsdb:"index"`
+ 	Name        string            `ovsdb:"name"`
+ 	Sink        string            `ovsdb:"sink"`
+-	Type        MirrorType        `ovsdb:"type"`
++	Type        MirrorType        `ovsdb:"type" validate:"oneof='gre' 'erspan'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/nat.go b/internal/server/network/ovn/schema/ovn-nb/nat.go
+index 9ee78a1e8e0..cb02c563320 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/nat.go
++++ b/internal/server/network/ovn/schema/ovn-nb/nat.go
+@@ -28,5 +28,5 @@ type NAT struct {
+ 	LogicalIP         string            `ovsdb:"logical_ip"`
+ 	LogicalPort       *string           `ovsdb:"logical_port"`
+ 	Options           map[string]string `ovsdb:"options"`
+-	Type              NATType           `ovsdb:"type"`
++	Type              NATType           `ovsdb:"type" validate:"oneof='dnat' 'snat' 'dnat_and_snat'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-nb/qos.go b/internal/server/network/ovn/schema/ovn-nb/qos.go
+index dffa414c26e..67a21148763 100644
+--- a/internal/server/network/ovn/schema/ovn-nb/qos.go
++++ b/internal/server/network/ovn/schema/ovn-nb/qos.go
+@@ -22,10 +22,10 @@ var (
+ // QoS defines an object in QoS table
+ type QoS struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+-	Action      map[string]int    `ovsdb:"action"`
+-	Bandwidth   map[string]int    `ovsdb:"bandwidth"`
+-	Direction   QoSDirection      `ovsdb:"direction"`
++	Action      map[string]int    `ovsdb:"action" validate:"dive,keys,oneof='dscp',endkeys,min=0,max=63"`
++	Bandwidth   map[string]int    `ovsdb:"bandwidth" validate:"dive,keys,oneof='rate' 'burst',endkeys,min=1,max=4294967295"`
++	Direction   QoSDirection      `ovsdb:"direction" validate:"oneof='from-lport' 'to-lport'"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+ 	Match       string            `ovsdb:"match"`
+-	Priority    int               `ovsdb:"priority"`
++	Priority    int               `ovsdb:"priority" validate:"min=0,max=32767"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/bfd.go b/internal/server/network/ovn/schema/ovn-sb/bfd.go
+index d1ed175a013..769548fca30 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/bfd.go
++++ b/internal/server/network/ovn/schema/ovn-sb/bfd.go
+@@ -27,6 +27,6 @@ type BFD struct {
+ 	MinRx       int               `ovsdb:"min_rx"`
+ 	MinTx       int               `ovsdb:"min_tx"`
+ 	Options     map[string]string `ovsdb:"options"`
+-	SrcPort     int               `ovsdb:"src_port"`
+-	Status      BFDStatus         `ovsdb:"status"`
++	SrcPort     int               `ovsdb:"src_port" validate:"min=49152,max=65535"`
++	Status      BFDStatus         `ovsdb:"status" validate:"oneof='down' 'init' 'up' 'admin_down'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/chassis.go b/internal/server/network/ovn/schema/ovn-sb/chassis.go
+index f49dd11b6c9..16afb945440 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/chassis.go
++++ b/internal/server/network/ovn/schema/ovn-sb/chassis.go
+@@ -8,7 +8,7 @@ const ChassisTable = "Chassis"
+ // Chassis defines an object in Chassis table
+ type Chassis struct {
+ 	UUID                string            `ovsdb:"_uuid"`
+-	Encaps              []string          `ovsdb:"encaps"`
++	Encaps              []string          `ovsdb:"encaps" validate:"min=1"`
+ 	ExternalIDs         map[string]string `ovsdb:"external_ids"`
+ 	Hostname            string            `ovsdb:"hostname"`
+ 	Name                string            `ovsdb:"name"`
+diff --git a/internal/server/network/ovn/schema/ovn-sb/connection.go b/internal/server/network/ovn/schema/ovn-sb/connection.go
+index 9d025f32a4e..ddea49d5762 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/connection.go
++++ b/internal/server/network/ovn/schema/ovn-sb/connection.go
+@@ -11,7 +11,7 @@ type Connection struct {
+ 	ExternalIDs     map[string]string `ovsdb:"external_ids"`
+ 	InactivityProbe *int              `ovsdb:"inactivity_probe"`
+ 	IsConnected     bool              `ovsdb:"is_connected"`
+-	MaxBackoff      *int              `ovsdb:"max_backoff"`
++	MaxBackoff      *int              `ovsdb:"max_backoff" validate:"omitempty,min=1000"`
+ 	OtherConfig     map[string]string `ovsdb:"other_config"`
+ 	ReadOnly        bool              `ovsdb:"read_only"`
+ 	Role            string            `ovsdb:"role"`
+diff --git a/internal/server/network/ovn/schema/ovn-sb/controller_event.go b/internal/server/network/ovn/schema/ovn-sb/controller_event.go
+index 0ad87d89d9b..cd2e3f5ad19 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/controller_event.go
++++ b/internal/server/network/ovn/schema/ovn-sb/controller_event.go
+@@ -9,13 +9,15 @@ type (
+ 	ControllerEventEventType = string
+ )
+ 
+-var ControllerEventEventTypeEmptyLbBackends ControllerEventEventType = "empty_lb_backends"
++var (
++	ControllerEventEventTypeEmptyLbBackends ControllerEventEventType = "empty_lb_backends"
++)
+ 
+ // ControllerEvent defines an object in Controller_Event table
+ type ControllerEvent struct {
+ 	UUID      string                   `ovsdb:"_uuid"`
+ 	Chassis   *string                  `ovsdb:"chassis"`
+ 	EventInfo map[string]string        `ovsdb:"event_info"`
+-	EventType ControllerEventEventType `ovsdb:"event_type"`
++	EventType ControllerEventEventType `ovsdb:"event_type" validate:"oneof='empty_lb_backends'"`
+ 	SeqNum    int                      `ovsdb:"seq_num"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/datapath_binding.go b/internal/server/network/ovn/schema/ovn-sb/datapath_binding.go
+index ead76e25341..83d7b3dbd88 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/datapath_binding.go
++++ b/internal/server/network/ovn/schema/ovn-sb/datapath_binding.go
+@@ -10,5 +10,5 @@ type DatapathBinding struct {
+ 	UUID          string            `ovsdb:"_uuid"`
+ 	ExternalIDs   map[string]string `ovsdb:"external_ids"`
+ 	LoadBalancers []string          `ovsdb:"load_balancers"`
+-	TunnelKey     int               `ovsdb:"tunnel_key"`
++	TunnelKey     int               `ovsdb:"tunnel_key" validate:"min=1,max=16777215"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/dhcp_options.go b/internal/server/network/ovn/schema/ovn-sb/dhcp_options.go
+index 50b1c26a1ad..4e43b9f7456 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/dhcp_options.go
++++ b/internal/server/network/ovn/schema/ovn-sb/dhcp_options.go
+@@ -24,7 +24,7 @@ var (
+ // DHCPOptions defines an object in DHCP_Options table
+ type DHCPOptions struct {
+ 	UUID string          `ovsdb:"_uuid"`
+-	Code int             `ovsdb:"code"`
++	Code int             `ovsdb:"code" validate:"min=0,max=254"`
+ 	Name string          `ovsdb:"name"`
+-	Type DHCPOptionsType `ovsdb:"type"`
++	Type DHCPOptionsType `ovsdb:"type" validate:"oneof='bool' 'uint8' 'uint16' 'uint32' 'ipv4' 'static_routes' 'str' 'host_id' 'domains'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/dhcpv6_options.go b/internal/server/network/ovn/schema/ovn-sb/dhcpv6_options.go
+index 08a4763f3da..8dc2ee5433d 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/dhcpv6_options.go
++++ b/internal/server/network/ovn/schema/ovn-sb/dhcpv6_options.go
+@@ -18,7 +18,7 @@ var (
+ // DHCPv6Options defines an object in DHCPv6_Options table
+ type DHCPv6Options struct {
+ 	UUID string            `ovsdb:"_uuid"`
+-	Code int               `ovsdb:"code"`
++	Code int               `ovsdb:"code" validate:"min=0,max=254"`
+ 	Name string            `ovsdb:"name"`
+-	Type DHCPv6OptionsType `ovsdb:"type"`
++	Type DHCPv6OptionsType `ovsdb:"type" validate:"oneof='ipv6' 'str' 'mac'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/dns.go b/internal/server/network/ovn/schema/ovn-sb/dns.go
+index 82c18f9aa4c..a567ac0d95d 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/dns.go
++++ b/internal/server/network/ovn/schema/ovn-sb/dns.go
+@@ -8,7 +8,7 @@ const DNSTable = "DNS"
+ // DNS defines an object in DNS table
+ type DNS struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+-	Datapaths   []string          `ovsdb:"datapaths"`
++	Datapaths   []string          `ovsdb:"datapaths" validate:"min=1"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+ 	Records     map[string]string `ovsdb:"records"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/encap.go b/internal/server/network/ovn/schema/ovn-sb/encap.go
+index 8d2a1873529..095f95d2709 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/encap.go
++++ b/internal/server/network/ovn/schema/ovn-sb/encap.go
+@@ -21,5 +21,5 @@ type Encap struct {
+ 	ChassisName string            `ovsdb:"chassis_name"`
+ 	IP          string            `ovsdb:"ip"`
+ 	Options     map[string]string `ovsdb:"options"`
+-	Type        EncapType         `ovsdb:"type"`
++	Type        EncapType         `ovsdb:"type" validate:"oneof='geneve' 'stt' 'vxlan'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/fdb.go b/internal/server/network/ovn/schema/ovn-sb/fdb.go
+index fd08635eebb..0a4c8a83a1c 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/fdb.go
++++ b/internal/server/network/ovn/schema/ovn-sb/fdb.go
+@@ -8,7 +8,7 @@ const FDBTable = "FDB"
+ // FDB defines an object in FDB table
+ type FDB struct {
+ 	UUID    string `ovsdb:"_uuid"`
+-	DpKey   int    `ovsdb:"dp_key"`
++	DpKey   int    `ovsdb:"dp_key" validate:"min=1,max=16777215"`
+ 	MAC     string `ovsdb:"mac"`
+-	PortKey int    `ovsdb:"port_key"`
++	PortKey int    `ovsdb:"port_key" validate:"min=1,max=16777215"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/gateway_chassis.go b/internal/server/network/ovn/schema/ovn-sb/gateway_chassis.go
+index a7eca3cf267..f5bd851e76c 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/gateway_chassis.go
++++ b/internal/server/network/ovn/schema/ovn-sb/gateway_chassis.go
+@@ -12,5 +12,5 @@ type GatewayChassis struct {
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+ 	Name        string            `ovsdb:"name"`
+ 	Options     map[string]string `ovsdb:"options"`
+-	Priority    int               `ovsdb:"priority"`
++	Priority    int               `ovsdb:"priority" validate:"min=0,max=32767"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/ha_chassis.go b/internal/server/network/ovn/schema/ovn-sb/ha_chassis.go
+index 6c85ac8945c..1f1ec1a194c 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/ha_chassis.go
++++ b/internal/server/network/ovn/schema/ovn-sb/ha_chassis.go
+@@ -10,5 +10,5 @@ type HAChassis struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+ 	Chassis     *string           `ovsdb:"chassis"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+-	Priority    int               `ovsdb:"priority"`
++	Priority    int               `ovsdb:"priority" validate:"min=0,max=32767"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/load_balancer.go b/internal/server/network/ovn/schema/ovn-sb/load_balancer.go
+index 829c10d2ed9..aace4300d73 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/load_balancer.go
++++ b/internal/server/network/ovn/schema/ovn-sb/load_balancer.go
+@@ -23,6 +23,6 @@ type LoadBalancer struct {
+ 	ExternalIDs   map[string]string     `ovsdb:"external_ids"`
+ 	Name          string                `ovsdb:"name"`
+ 	Options       map[string]string     `ovsdb:"options"`
+-	Protocol      *LoadBalancerProtocol `ovsdb:"protocol"`
++	Protocol      *LoadBalancerProtocol `ovsdb:"protocol" validate:"omitempty,oneof='tcp' 'udp' 'sctp'"`
+ 	Vips          map[string]string     `ovsdb:"vips"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/logical_flow.go b/internal/server/network/ovn/schema/ovn-sb/logical_flow.go
+index 4e3bdfa62d7..0336d279976 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/logical_flow.go
++++ b/internal/server/network/ovn/schema/ovn-sb/logical_flow.go
+@@ -23,8 +23,8 @@ type LogicalFlow struct {
+ 	LogicalDatapath *string             `ovsdb:"logical_datapath"`
+ 	LogicalDpGroup  *string             `ovsdb:"logical_dp_group"`
+ 	Match           string              `ovsdb:"match"`
+-	Pipeline        LogicalFlowPipeline `ovsdb:"pipeline"`
+-	Priority        int                 `ovsdb:"priority"`
+-	TableID         int                 `ovsdb:"table_id"`
++	Pipeline        LogicalFlowPipeline `ovsdb:"pipeline" validate:"oneof='ingress' 'egress'"`
++	Priority        int                 `ovsdb:"priority" validate:"min=0,max=65535"`
++	TableID         int                 `ovsdb:"table_id" validate:"min=0,max=32"`
+ 	Tags            map[string]string   `ovsdb:"tags"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/meter.go b/internal/server/network/ovn/schema/ovn-sb/meter.go
+index b45b3cc0bb9..30de038f596 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/meter.go
++++ b/internal/server/network/ovn/schema/ovn-sb/meter.go
+@@ -17,7 +17,7 @@ var (
+ // Meter defines an object in Meter table
+ type Meter struct {
+ 	UUID  string    `ovsdb:"_uuid"`
+-	Bands []string  `ovsdb:"bands"`
++	Bands []string  `ovsdb:"bands" validate:"min=1"`
+ 	Name  string    `ovsdb:"name"`
+-	Unit  MeterUnit `ovsdb:"unit"`
++	Unit  MeterUnit `ovsdb:"unit" validate:"oneof='kbps' 'pktps'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/meter_band.go b/internal/server/network/ovn/schema/ovn-sb/meter_band.go
+index 6475615230b..614d60307db 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/meter_band.go
++++ b/internal/server/network/ovn/schema/ovn-sb/meter_band.go
+@@ -9,12 +9,14 @@ type (
+ 	MeterBandAction = string
+ )
+ 
+-var MeterBandActionDrop MeterBandAction = "drop"
++var (
++	MeterBandActionDrop MeterBandAction = "drop"
++)
+ 
+ // MeterBand defines an object in Meter_Band table
+ type MeterBand struct {
+ 	UUID      string          `ovsdb:"_uuid"`
+-	Action    MeterBandAction `ovsdb:"action"`
+-	BurstSize int             `ovsdb:"burst_size"`
+-	Rate      int             `ovsdb:"rate"`
++	Action    MeterBandAction `ovsdb:"action" validate:"oneof='drop'"`
++	BurstSize int             `ovsdb:"burst_size" validate:"min=0,max=4294967295"`
++	Rate      int             `ovsdb:"rate" validate:"min=1,max=4294967295"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/mirror.go b/internal/server/network/ovn/schema/ovn-sb/mirror.go
+index 8d3551ca1b0..cf6fa8099a0 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/mirror.go
++++ b/internal/server/network/ovn/schema/ovn-sb/mirror.go
+@@ -21,9 +21,9 @@ var (
+ type Mirror struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+-	Filter      MirrorFilter      `ovsdb:"filter"`
++	Filter      MirrorFilter      `ovsdb:"filter" validate:"oneof='from-lport' 'to-lport'"`
+ 	Index       int               `ovsdb:"index"`
+ 	Name        string            `ovsdb:"name"`
+ 	Sink        string            `ovsdb:"sink"`
+-	Type        MirrorType        `ovsdb:"type"`
++	Type        MirrorType        `ovsdb:"type" validate:"oneof='gre' 'erspan'"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/multicast_group.go b/internal/server/network/ovn/schema/ovn-sb/multicast_group.go
+index 02b0ead2789..1fd3fb32b61 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/multicast_group.go
++++ b/internal/server/network/ovn/schema/ovn-sb/multicast_group.go
+@@ -11,5 +11,5 @@ type MulticastGroup struct {
+ 	Datapath  string   `ovsdb:"datapath"`
+ 	Name      string   `ovsdb:"name"`
+ 	Ports     []string `ovsdb:"ports"`
+-	TunnelKey int      `ovsdb:"tunnel_key"`
++	TunnelKey int      `ovsdb:"tunnel_key" validate:"min=32768,max=65535"`
+ }
+diff --git a/internal/server/network/ovn/schema/ovn-sb/port_binding.go b/internal/server/network/ovn/schema/ovn-sb/port_binding.go
+index fe9d0bf508b..1f379369b05 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/port_binding.go
++++ b/internal/server/network/ovn/schema/ovn-sb/port_binding.go
+@@ -25,8 +25,8 @@ type PortBinding struct {
+ 	PortSecurity               []string          `ovsdb:"port_security"`
+ 	RequestedAdditionalChassis []string          `ovsdb:"requested_additional_chassis"`
+ 	RequestedChassis           *string           `ovsdb:"requested_chassis"`
+-	Tag                        *int              `ovsdb:"tag"`
+-	TunnelKey                  int               `ovsdb:"tunnel_key"`
++	Tag                        *int              `ovsdb:"tag" validate:"omitempty,min=1,max=4095"`
++	TunnelKey                  int               `ovsdb:"tunnel_key" validate:"min=1,max=32767"`
+ 	Type                       string            `ovsdb:"type"`
+ 	Up                         *bool             `ovsdb:"up"`
+ 	VirtualParent              *string           `ovsdb:"virtual_parent"`
+diff --git a/internal/server/network/ovn/schema/ovn-sb/service_monitor.go b/internal/server/network/ovn/schema/ovn-sb/service_monitor.go
+index c40c36ba810..b22391af030 100644
+--- a/internal/server/network/ovn/schema/ovn-sb/service_monitor.go
++++ b/internal/server/network/ovn/schema/ovn-sb/service_monitor.go
+@@ -25,9 +25,9 @@ type ServiceMonitor struct {
+ 	IP          string                  `ovsdb:"ip"`
+ 	LogicalPort string                  `ovsdb:"logical_port"`
+ 	Options     map[string]string       `ovsdb:"options"`
+-	Port        int                     `ovsdb:"port"`
+-	Protocol    *ServiceMonitorProtocol `ovsdb:"protocol"`
++	Port        int                     `ovsdb:"port" validate:"min=0,max=65535"`
++	Protocol    *ServiceMonitorProtocol `ovsdb:"protocol" validate:"omitempty,oneof='tcp' 'udp'"`
+ 	SrcIP       string                  `ovsdb:"src_ip"`
+ 	SrcMAC      string                  `ovsdb:"src_mac"`
+-	Status      *ServiceMonitorStatus   `ovsdb:"status"`
++	Status      *ServiceMonitorStatus   `ovsdb:"status" validate:"omitempty,oneof='online' 'offline' 'error'"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/autoattach.go b/internal/server/network/ovs/schema/ovs/autoattach.go
+index 80bb963b4fb..684c21046ec 100644
+--- a/internal/server/network/ovs/schema/ovs/autoattach.go
++++ b/internal/server/network/ovs/schema/ovs/autoattach.go
+@@ -8,7 +8,7 @@ const AutoAttachTable = "AutoAttach"
+ // AutoAttach defines an object in AutoAttach table
+ type AutoAttach struct {
+ 	UUID              string      `ovsdb:"_uuid"`
+-	Mappings          map[int]int `ovsdb:"mappings"`
++	Mappings          map[int]int `ovsdb:"mappings" validate:"dive,keys,min=0,max=16777215,endkeys,min=0,max=4095"`
+ 	SystemDescription string      `ovsdb:"system_description"`
+ 	SystemName        string      `ovsdb:"system_name"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/bridge.go b/internal/server/network/ovs/schema/ovs/bridge.go
+index c7648d07277..734acc40a15 100644
+--- a/internal/server/network/ovs/schema/ovs/bridge.go
++++ b/internal/server/network/ovs/schema/ovs/bridge.go
+@@ -30,9 +30,9 @@ type Bridge struct {
+ 	DatapathType        string            `ovsdb:"datapath_type"`
+ 	DatapathVersion     string            `ovsdb:"datapath_version"`
+ 	ExternalIDs         map[string]string `ovsdb:"external_ids"`
+-	FailMode            *BridgeFailMode   `ovsdb:"fail_mode"`
+-	FloodVLANs          []int             `ovsdb:"flood_vlans"`
+-	FlowTables          map[int]string    `ovsdb:"flow_tables"`
++	FailMode            *BridgeFailMode   `ovsdb:"fail_mode" validate:"omitempty,oneof='standalone' 'secure'"`
++	FloodVLANs          []int             `ovsdb:"flood_vlans" validate:"max=4096,dive,min=0,max=4095"`
++	FlowTables          map[int]string    `ovsdb:"flow_tables" validate:"dive,keys,min=0,max=254"`
+ 	IPFIX               *string           `ovsdb:"ipfix"`
+ 	McastSnoopingEnable bool              `ovsdb:"mcast_snooping_enable"`
+ 	Mirrors             []string          `ovsdb:"mirrors"`
+@@ -40,7 +40,7 @@ type Bridge struct {
+ 	Netflow             *string           `ovsdb:"netflow"`
+ 	OtherConfig         map[string]string `ovsdb:"other_config"`
+ 	Ports               []string          `ovsdb:"ports"`
+-	Protocols           []BridgeProtocols `ovsdb:"protocols"`
++	Protocols           []BridgeProtocols `ovsdb:"protocols" validate:"dive,oneof='OpenFlow10' 'OpenFlow11' 'OpenFlow12' 'OpenFlow13' 'OpenFlow14' 'OpenFlow15'"`
+ 	RSTPEnable          bool              `ovsdb:"rstp_enable"`
+ 	RSTPStatus          map[string]string `ovsdb:"rstp_status"`
+ 	Sflow               *string           `ovsdb:"sflow"`
+diff --git a/internal/server/network/ovs/schema/ovs/controller.go b/internal/server/network/ovs/schema/ovs/controller.go
+index c9b75a17e08..53777c58607 100644
+--- a/internal/server/network/ovs/schema/ovs/controller.go
++++ b/internal/server/network/ovs/schema/ovs/controller.go
+@@ -24,10 +24,10 @@ var (
+ // Controller defines an object in Controller table
+ type Controller struct {
+ 	UUID                 string                    `ovsdb:"_uuid"`
+-	ConnectionMode       *ControllerConnectionMode `ovsdb:"connection_mode"`
+-	ControllerBurstLimit *int                      `ovsdb:"controller_burst_limit"`
+-	ControllerQueueSize  *int                      `ovsdb:"controller_queue_size"`
+-	ControllerRateLimit  *int                      `ovsdb:"controller_rate_limit"`
++	ConnectionMode       *ControllerConnectionMode `ovsdb:"connection_mode" validate:"omitempty,oneof='in-band' 'out-of-band'"`
++	ControllerBurstLimit *int                      `ovsdb:"controller_burst_limit" validate:"omitempty,min=25"`
++	ControllerQueueSize  *int                      `ovsdb:"controller_queue_size" validate:"omitempty,min=1,max=512"`
++	ControllerRateLimit  *int                      `ovsdb:"controller_rate_limit" validate:"omitempty,min=100"`
+ 	EnableAsyncMessages  *bool                     `ovsdb:"enable_async_messages"`
+ 	ExternalIDs          map[string]string         `ovsdb:"external_ids"`
+ 	InactivityProbe      *int                      `ovsdb:"inactivity_probe"`
+@@ -35,10 +35,10 @@ type Controller struct {
+ 	LocalGateway         *string                   `ovsdb:"local_gateway"`
+ 	LocalIP              *string                   `ovsdb:"local_ip"`
+ 	LocalNetmask         *string                   `ovsdb:"local_netmask"`
+-	MaxBackoff           *int                      `ovsdb:"max_backoff"`
++	MaxBackoff           *int                      `ovsdb:"max_backoff" validate:"omitempty,min=1000"`
+ 	OtherConfig          map[string]string         `ovsdb:"other_config"`
+-	Role                 *ControllerRole           `ovsdb:"role"`
++	Role                 *ControllerRole           `ovsdb:"role" validate:"omitempty,oneof='other' 'master' 'slave'"`
+ 	Status               map[string]string         `ovsdb:"status"`
+ 	Target               string                    `ovsdb:"target"`
+-	Type                 *ControllerType           `ovsdb:"type"`
++	Type                 *ControllerType           `ovsdb:"type" validate:"omitempty,oneof='primary' 'service'"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/ct_timeout_policy.go b/internal/server/network/ovs/schema/ovs/ct_timeout_policy.go
+index 7b3e46f0353..577a3961222 100644
+--- a/internal/server/network/ovs/schema/ovs/ct_timeout_policy.go
++++ b/internal/server/network/ovs/schema/ovs/ct_timeout_policy.go
+@@ -32,5 +32,5 @@ var (
+ type CTTimeoutPolicy struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+-	Timeouts    map[string]int    `ovsdb:"timeouts"`
++	Timeouts    map[string]int    `ovsdb:"timeouts" validate:"dive,keys,oneof='tcp_syn_sent' 'tcp_syn_recv' 'tcp_established' 'tcp_fin_wait' 'tcp_close_wait' 'tcp_last_ack' 'tcp_time_wait' 'tcp_close' 'tcp_syn_sent2' 'tcp_retransmit' 'tcp_unack' 'udp_first' 'udp_single' 'udp_multiple' 'icmp_first' 'icmp_reply',endkeys,min=0,max=4294967295"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/datapath.go b/internal/server/network/ovs/schema/ovs/datapath.go
+index ca46a6c0fb6..a3d114fe86e 100644
+--- a/internal/server/network/ovs/schema/ovs/datapath.go
++++ b/internal/server/network/ovs/schema/ovs/datapath.go
+@@ -9,7 +9,7 @@ const DatapathTable = "Datapath"
+ type Datapath struct {
+ 	UUID            string            `ovsdb:"_uuid"`
+ 	Capabilities    map[string]string `ovsdb:"capabilities"`
+-	CTZones         map[int]string    `ovsdb:"ct_zones"`
++	CTZones         map[int]string    `ovsdb:"ct_zones" validate:"dive,keys,min=0,max=65535"`
+ 	DatapathVersion string            `ovsdb:"datapath_version"`
+ 	ExternalIDs     map[string]string `ovsdb:"external_ids"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/flow_sample_collector_set.go b/internal/server/network/ovs/schema/ovs/flow_sample_collector_set.go
+index ae6c338a8ee..15303d361a5 100644
+--- a/internal/server/network/ovs/schema/ovs/flow_sample_collector_set.go
++++ b/internal/server/network/ovs/schema/ovs/flow_sample_collector_set.go
+@@ -10,6 +10,6 @@ type FlowSampleCollectorSet struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+ 	Bridge      string            `ovsdb:"bridge"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+-	ID          int               `ovsdb:"id"`
++	ID          int               `ovsdb:"id" validate:"min=0,max=4294967295"`
+ 	IPFIX       *string           `ovsdb:"ipfix"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/flow_table.go b/internal/server/network/ovs/schema/ovs/flow_table.go
+index 84f8599c589..1f43c5208b6 100644
+--- a/internal/server/network/ovs/schema/ovs/flow_table.go
++++ b/internal/server/network/ovs/schema/ovs/flow_table.go
+@@ -18,9 +18,9 @@ var (
+ type FlowTable struct {
+ 	UUID           string                   `ovsdb:"_uuid"`
+ 	ExternalIDs    map[string]string        `ovsdb:"external_ids"`
+-	FlowLimit      *int                     `ovsdb:"flow_limit"`
++	FlowLimit      *int                     `ovsdb:"flow_limit" validate:"omitempty,min=0"`
+ 	Groups         []string                 `ovsdb:"groups"`
+ 	Name           *string                  `ovsdb:"name"`
+-	OverflowPolicy *FlowTableOverflowPolicy `ovsdb:"overflow_policy"`
+-	Prefixes       []string                 `ovsdb:"prefixes"`
++	OverflowPolicy *FlowTableOverflowPolicy `ovsdb:"overflow_policy" validate:"omitempty,oneof='refuse' 'evict'"`
++	Prefixes       []string                 `ovsdb:"prefixes" validate:"max=3"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/interface.go b/internal/server/network/ovs/schema/ovs/interface.go
+index 78f6082fa9b..a57acd4eeac 100644
+--- a/internal/server/network/ovs/schema/ovs/interface.go
++++ b/internal/server/network/ovs/schema/ovs/interface.go
+@@ -26,34 +26,34 @@ var (
+ // Interface defines an object in Interface table
+ type Interface struct {
+ 	UUID                 string                     `ovsdb:"_uuid"`
+-	AdminState           *InterfaceAdminState       `ovsdb:"admin_state"`
++	AdminState           *InterfaceAdminState       `ovsdb:"admin_state" validate:"omitempty,oneof='up' 'down'"`
+ 	BFD                  map[string]string          `ovsdb:"bfd"`
+ 	BFDStatus            map[string]string          `ovsdb:"bfd_status"`
+ 	CFMFault             *bool                      `ovsdb:"cfm_fault"`
+ 	CFMFaultStatus       []string                   `ovsdb:"cfm_fault_status"`
+ 	CFMFlapCount         *int                       `ovsdb:"cfm_flap_count"`
+-	CFMHealth            *int                       `ovsdb:"cfm_health"`
++	CFMHealth            *int                       `ovsdb:"cfm_health" validate:"omitempty,min=0,max=100"`
+ 	CFMMpid              *int                       `ovsdb:"cfm_mpid"`
+ 	CFMRemoteMpids       []int                      `ovsdb:"cfm_remote_mpids"`
+-	CFMRemoteOpstate     *InterfaceCFMRemoteOpstate `ovsdb:"cfm_remote_opstate"`
+-	Duplex               *InterfaceDuplex           `ovsdb:"duplex"`
++	CFMRemoteOpstate     *InterfaceCFMRemoteOpstate `ovsdb:"cfm_remote_opstate" validate:"omitempty,oneof='up' 'down'"`
++	Duplex               *InterfaceDuplex           `ovsdb:"duplex" validate:"omitempty,oneof='half' 'full'"`
+ 	Error                *string                    `ovsdb:"error"`
+ 	ExternalIDs          map[string]string          `ovsdb:"external_ids"`
+-	Ifindex              *int                       `ovsdb:"ifindex"`
+-	IngressPolicingBurst int                        `ovsdb:"ingress_policing_burst"`
+-	IngressPolicingRate  int                        `ovsdb:"ingress_policing_rate"`
++	Ifindex              *int                       `ovsdb:"ifindex" validate:"omitempty,min=0,max=4294967295"`
++	IngressPolicingBurst int                        `ovsdb:"ingress_policing_burst" validate:"min=0"`
++	IngressPolicingRate  int                        `ovsdb:"ingress_policing_rate" validate:"min=0"`
+ 	LACPCurrent          *bool                      `ovsdb:"lacp_current"`
+ 	LinkResets           *int                       `ovsdb:"link_resets"`
+ 	LinkSpeed            *int                       `ovsdb:"link_speed"`
+-	LinkState            *InterfaceLinkState        `ovsdb:"link_state"`
++	LinkState            *InterfaceLinkState        `ovsdb:"link_state" validate:"omitempty,oneof='up' 'down'"`
+ 	LLDP                 map[string]string          `ovsdb:"lldp"`
+ 	MAC                  *string                    `ovsdb:"mac"`
+ 	MACInUse             *string                    `ovsdb:"mac_in_use"`
+ 	MTU                  *int                       `ovsdb:"mtu"`
+-	MTURequest           *int                       `ovsdb:"mtu_request"`
++	MTURequest           *int                       `ovsdb:"mtu_request" validate:"omitempty,min=1"`
+ 	Name                 string                     `ovsdb:"name"`
+ 	Ofport               *int                       `ovsdb:"ofport"`
+-	OfportRequest        *int                       `ovsdb:"ofport_request"`
++	OfportRequest        *int                       `ovsdb:"ofport_request" validate:"omitempty,min=1,max=65279"`
+ 	Options              map[string]string          `ovsdb:"options"`
+ 	OtherConfig          map[string]string          `ovsdb:"other_config"`
+ 	Statistics           map[string]int             `ovsdb:"statistics"`
+diff --git a/internal/server/network/ovs/schema/ovs/ipfix.go b/internal/server/network/ovs/schema/ovs/ipfix.go
+index e272d7ec35b..340087a2a87 100644
+--- a/internal/server/network/ovs/schema/ovs/ipfix.go
++++ b/internal/server/network/ovs/schema/ovs/ipfix.go
+@@ -8,12 +8,12 @@ const IPFIXTable = "IPFIX"
+ // IPFIX defines an object in IPFIX table
+ type IPFIX struct {
+ 	UUID               string            `ovsdb:"_uuid"`
+-	CacheActiveTimeout *int              `ovsdb:"cache_active_timeout"`
+-	CacheMaxFlows      *int              `ovsdb:"cache_max_flows"`
++	CacheActiveTimeout *int              `ovsdb:"cache_active_timeout" validate:"omitempty,min=0,max=4200"`
++	CacheMaxFlows      *int              `ovsdb:"cache_max_flows" validate:"omitempty,min=0,max=4294967295"`
+ 	ExternalIDs        map[string]string `ovsdb:"external_ids"`
+-	ObsDomainID        *int              `ovsdb:"obs_domain_id"`
+-	ObsPointID         *int              `ovsdb:"obs_point_id"`
++	ObsDomainID        *int              `ovsdb:"obs_domain_id" validate:"omitempty,min=0,max=4294967295"`
++	ObsPointID         *int              `ovsdb:"obs_point_id" validate:"omitempty,min=0,max=4294967295"`
+ 	OtherConfig        map[string]string `ovsdb:"other_config"`
+-	Sampling           *int              `ovsdb:"sampling"`
++	Sampling           *int              `ovsdb:"sampling" validate:"omitempty,min=1,max=4294967295"`
+ 	Targets            []string          `ovsdb:"targets"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/manager.go b/internal/server/network/ovs/schema/ovs/manager.go
+index 901c2207b71..a6b0eff06a5 100644
+--- a/internal/server/network/ovs/schema/ovs/manager.go
++++ b/internal/server/network/ovs/schema/ovs/manager.go
+@@ -17,11 +17,11 @@ var (
+ // Manager defines an object in Manager table
+ type Manager struct {
+ 	UUID            string                 `ovsdb:"_uuid"`
+-	ConnectionMode  *ManagerConnectionMode `ovsdb:"connection_mode"`
++	ConnectionMode  *ManagerConnectionMode `ovsdb:"connection_mode" validate:"omitempty,oneof='in-band' 'out-of-band'"`
+ 	ExternalIDs     map[string]string      `ovsdb:"external_ids"`
+ 	InactivityProbe *int                   `ovsdb:"inactivity_probe"`
+ 	IsConnected     bool                   `ovsdb:"is_connected"`
+-	MaxBackoff      *int                   `ovsdb:"max_backoff"`
++	MaxBackoff      *int                   `ovsdb:"max_backoff" validate:"omitempty,min=1000"`
+ 	OtherConfig     map[string]string      `ovsdb:"other_config"`
+ 	Status          map[string]string      `ovsdb:"status"`
+ 	Target          string                 `ovsdb:"target"`
+diff --git a/internal/server/network/ovs/schema/ovs/mirror.go b/internal/server/network/ovs/schema/ovs/mirror.go
+index 059cd4e3628..bbc2dd8e442 100644
+--- a/internal/server/network/ovs/schema/ovs/mirror.go
++++ b/internal/server/network/ovs/schema/ovs/mirror.go
+@@ -11,11 +11,11 @@ type Mirror struct {
+ 	ExternalIDs   map[string]string `ovsdb:"external_ids"`
+ 	Name          string            `ovsdb:"name"`
+ 	OutputPort    *string           `ovsdb:"output_port"`
+-	OutputVLAN    *int              `ovsdb:"output_vlan"`
++	OutputVLAN    *int              `ovsdb:"output_vlan" validate:"omitempty,min=1,max=4095"`
+ 	SelectAll     bool              `ovsdb:"select_all"`
+ 	SelectDstPort []string          `ovsdb:"select_dst_port"`
+ 	SelectSrcPort []string          `ovsdb:"select_src_port"`
+-	SelectVLAN    []int             `ovsdb:"select_vlan"`
+-	Snaplen       *int              `ovsdb:"snaplen"`
++	SelectVLAN    []int             `ovsdb:"select_vlan" validate:"max=4096,dive,min=0,max=4095"`
++	Snaplen       *int              `ovsdb:"snaplen" validate:"omitempty,min=14,max=65535"`
+ 	Statistics    map[string]int    `ovsdb:"statistics"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/netflow.go b/internal/server/network/ovs/schema/ovs/netflow.go
+index 27eb9e716fd..2eb7bc06b1c 100644
+--- a/internal/server/network/ovs/schema/ovs/netflow.go
++++ b/internal/server/network/ovs/schema/ovs/netflow.go
+@@ -8,10 +8,10 @@ const NetFlowTable = "NetFlow"
+ // NetFlow defines an object in NetFlow table
+ type NetFlow struct {
+ 	UUID             string            `ovsdb:"_uuid"`
+-	ActiveTimeout    int               `ovsdb:"active_timeout"`
++	ActiveTimeout    int               `ovsdb:"active_timeout" validate:"min=-1"`
+ 	AddIDToInterface bool              `ovsdb:"add_id_to_interface"`
+-	EngineID         *int              `ovsdb:"engine_id"`
+-	EngineType       *int              `ovsdb:"engine_type"`
++	EngineID         *int              `ovsdb:"engine_id" validate:"omitempty,min=0,max=255"`
++	EngineType       *int              `ovsdb:"engine_type" validate:"omitempty,min=0,max=255"`
+ 	ExternalIDs      map[string]string `ovsdb:"external_ids"`
+-	Targets          []string          `ovsdb:"targets"`
++	Targets          []string          `ovsdb:"targets" validate:"min=1"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/port.go b/internal/server/network/ovs/schema/ovs/port.go
+index c77ee67c2f3..12d61d8f238 100644
+--- a/internal/server/network/ovs/schema/ovs/port.go
++++ b/internal/server/network/ovs/schema/ovs/port.go
+@@ -31,13 +31,13 @@ type Port struct {
+ 	BondActiveSlave *string           `ovsdb:"bond_active_slave"`
+ 	BondDowndelay   int               `ovsdb:"bond_downdelay"`
+ 	BondFakeIface   bool              `ovsdb:"bond_fake_iface"`
+-	BondMode        *PortBondMode     `ovsdb:"bond_mode"`
++	BondMode        *PortBondMode     `ovsdb:"bond_mode" validate:"omitempty,oneof='balance-tcp' 'balance-slb' 'active-backup'"`
+ 	BondUpdelay     int               `ovsdb:"bond_updelay"`
+-	CVLANs          []int             `ovsdb:"cvlans"`
++	CVLANs          []int             `ovsdb:"cvlans" validate:"max=4096,dive,min=0,max=4095"`
+ 	ExternalIDs     map[string]string `ovsdb:"external_ids"`
+ 	FakeBridge      bool              `ovsdb:"fake_bridge"`
+-	Interfaces      []string          `ovsdb:"interfaces"`
+-	LACP            *PortLACP         `ovsdb:"lacp"`
++	Interfaces      []string          `ovsdb:"interfaces" validate:"min=1"`
++	LACP            *PortLACP         `ovsdb:"lacp" validate:"omitempty,oneof='active' 'passive' 'off'"`
+ 	MAC             *string           `ovsdb:"mac"`
+ 	Name            string            `ovsdb:"name"`
+ 	OtherConfig     map[string]string `ovsdb:"other_config"`
+@@ -47,7 +47,7 @@ type Port struct {
+ 	RSTPStatus      map[string]string `ovsdb:"rstp_status"`
+ 	Statistics      map[string]int    `ovsdb:"statistics"`
+ 	Status          map[string]string `ovsdb:"status"`
+-	Tag             *int              `ovsdb:"tag"`
+-	Trunks          []int             `ovsdb:"trunks"`
+-	VLANMode        *PortVLANMode     `ovsdb:"vlan_mode"`
++	Tag             *int              `ovsdb:"tag" validate:"omitempty,min=0,max=4095"`
++	Trunks          []int             `ovsdb:"trunks" validate:"max=4096,dive,min=0,max=4095"`
++	VLANMode        *PortVLANMode     `ovsdb:"vlan_mode" validate:"omitempty,oneof='trunk' 'access' 'native-tagged' 'native-untagged' 'dot1q-tunnel'"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/qos.go b/internal/server/network/ovs/schema/ovs/qos.go
+index 656abf67e5a..3759665d676 100644
+--- a/internal/server/network/ovs/schema/ovs/qos.go
++++ b/internal/server/network/ovs/schema/ovs/qos.go
+@@ -10,6 +10,6 @@ type QoS struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+ 	OtherConfig map[string]string `ovsdb:"other_config"`
+-	Queues      map[int]string    `ovsdb:"queues"`
++	Queues      map[int]string    `ovsdb:"queues" validate:"dive,keys,min=0,max=4294967295"`
+ 	Type        string            `ovsdb:"type"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/queue.go b/internal/server/network/ovs/schema/ovs/queue.go
+index e67f399bdae..6775ab9a8a2 100644
+--- a/internal/server/network/ovs/schema/ovs/queue.go
++++ b/internal/server/network/ovs/schema/ovs/queue.go
+@@ -8,7 +8,7 @@ const QueueTable = "Queue"
+ // Queue defines an object in Queue table
+ type Queue struct {
+ 	UUID        string            `ovsdb:"_uuid"`
+-	DSCP        *int              `ovsdb:"dscp"`
++	DSCP        *int              `ovsdb:"dscp" validate:"omitempty,min=0,max=63"`
+ 	ExternalIDs map[string]string `ovsdb:"external_ids"`
+ 	OtherConfig map[string]string `ovsdb:"other_config"`
+ }
+diff --git a/internal/server/network/ovs/schema/ovs/sflow.go b/internal/server/network/ovs/schema/ovs/sflow.go
+index c7a7a6d7cee..11a756fedad 100644
+--- a/internal/server/network/ovs/schema/ovs/sflow.go
++++ b/internal/server/network/ovs/schema/ovs/sflow.go
+@@ -13,5 +13,5 @@ type SFlow struct {
+ 	Header      *int              `ovsdb:"header"`
+ 	Polling     *int              `ovsdb:"polling"`
+ 	Sampling    *int              `ovsdb:"sampling"`
+-	Targets     []string          `ovsdb:"targets"`
++	Targets     []string          `ovsdb:"targets" validate:"min=1"`
+ }

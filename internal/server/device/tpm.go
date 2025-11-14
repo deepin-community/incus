@@ -2,6 +2,7 @@ package device
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,10 +11,10 @@ import (
 	"time"
 
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
@@ -37,7 +38,22 @@ func (d *tpm) validateConfig(instConf instance.ConfigReader) error {
 	rules := map[string]func(string) error{}
 
 	if instConf.Type() == instancetype.Container {
+		// gendoc:generate(entity=devices, group=tpm, key=path)
+		//
+		// ---
+		//  type: string
+		//  default: -
+		//  required: for containers
+		//  shortdesc: Only for containers: path inside the instance (for example, `/dev/tpm0`)
 		rules["path"] = validate.IsNotEmpty
+
+		// gendoc:generate(entity=devices, group=tpm, key=pathrm)
+		//
+		// ---
+		//  type: string
+		//  default: -
+		//  required: for containers
+		//  shortdesc: Only for containers: resource manager path inside the instance (for example, `/dev/tpmrm0`)
 		rules["pathrm"] = validate.IsNotEmpty
 	} else {
 		rules["path"] = validate.Optional(validate.IsNotEmpty)
@@ -84,7 +100,7 @@ func (d *tpm) Start() (*deviceConfig.RunConfig, error) {
 	tpmDevPath := filepath.Join(d.inst.Path(), fmt.Sprintf("tpm.%s", d.name))
 
 	if !util.PathExists(tpmDevPath) {
-		err := os.Mkdir(tpmDevPath, 0700)
+		err := os.Mkdir(tpmDevPath, 0o700)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to create device path %q: %w", tpmDevPath, err)
 		}
@@ -112,11 +128,11 @@ func (d *tpm) startContainer() (*deviceConfig.RunConfig, error) {
 		return nil, fmt.Errorf("Failed to start process %q: %w", "swtpm", err)
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Stop the TPM emulator if anything goes wrong.
-	revert.Add(func() { _ = proc.Stop() })
+	reverter.Add(func() { _ = proc.Stop() })
 
 	pidPath := filepath.Join(d.inst.DevicesPath(), fmt.Sprintf("%s.pid", d.name))
 
@@ -132,7 +148,7 @@ func (d *tpm) startContainer() (*deviceConfig.RunConfig, error) {
 	// We need to capture the output of the TPM emulator since it contains the device path. To do
 	// that, we wait until something has been written to the log file (stdout redirect), and then
 	// read it.
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		fi, err := os.Stat(logPath)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to stat %q: %w", logPath, err)
@@ -156,7 +172,7 @@ func (d *tpm) startContainer() (*deviceConfig.RunConfig, error) {
 	fields := strings.Split(string(line), " ")
 
 	if len(fields) < 7 {
-		return nil, fmt.Errorf("Failed to get TPM device information")
+		return nil, errors.New("Failed to get TPM device information")
 	}
 
 	_, err = fmt.Sscanf(fields[6], "%d/%d)", &major, &minor)
@@ -166,7 +182,7 @@ func (d *tpm) startContainer() (*deviceConfig.RunConfig, error) {
 
 	// Return error as we were unable to retrieve information regarding the TPM device.
 	if major == 0 && minor == 0 {
-		return nil, fmt.Errorf("Failed to get TPM device information")
+		return nil, errors.New("Failed to get TPM device information")
 	}
 
 	if minor == TPM_MINOR {
@@ -187,7 +203,7 @@ func (d *tpm) startContainer() (*deviceConfig.RunConfig, error) {
 		return nil, fmt.Errorf("Failed to setup unix device: %w", err)
 	}
 
-	revert.Success()
+	reverter.Success()
 
 	return &runConf, nil
 }
@@ -202,10 +218,15 @@ func (d *tpm) startVM() (*deviceConfig.RunConfig, error) {
 		},
 	}
 
-	proc, err := subprocess.NewProcess("swtpm", []string{"socket", "--tpm2", "--tpmstate", fmt.Sprintf("dir=%s", tpmDevPath), "--ctrl", fmt.Sprintf("type=unixio,path=%s", socketPath)}, "", "")
+	// Delete any leftover socket.
+	_ = os.Remove(socketPath)
+
+	proc, err := subprocess.NewProcess("swtpm", []string{"socket", "--tpm2", "--tpmstate", fmt.Sprintf("dir=%s", tpmDevPath), "--ctrl", fmt.Sprintf("type=unixio,path=swtpm-%s.sock", d.name)}, "", "")
 	if err != nil {
 		return nil, err
 	}
+
+	proc.Cwd = tpmDevPath
 
 	// Start the TPM emulator.
 	err = proc.Start(context.Background())
@@ -213,10 +234,10 @@ func (d *tpm) startVM() (*deviceConfig.RunConfig, error) {
 		return nil, fmt.Errorf("Failed to start swtpm for device %q: %w", d.name, err)
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
-	revert.Add(func() { _ = proc.Stop() })
+	reverter.Add(func() { _ = proc.Stop() })
 
 	pidPath := filepath.Join(d.inst.DevicesPath(), fmt.Sprintf("%s.pid", d.name))
 
@@ -225,7 +246,22 @@ func (d *tpm) startVM() (*deviceConfig.RunConfig, error) {
 		return nil, fmt.Errorf("Failed to save swtpm state for device %q: %w", d.name, err)
 	}
 
-	revert.Success()
+	// Wait for the socket to be available.
+	exists := false
+	for range 20 {
+		if util.PathExists(socketPath) {
+			exists = true
+			break
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !exists {
+		return nil, errors.New("swtpm socket didn't appear within 2s")
+	}
+
+	reverter.Success()
 
 	return &runConf, nil
 }
@@ -247,7 +283,7 @@ func (d *tpm) Stop() (*deviceConfig.RunConfig, error) {
 		// i.e. the instance is stopped. Therefore, we only fail if the running process couldn't
 		// be stopped.
 		err = proc.Stop()
-		if err != nil && err != subprocess.ErrNotRunning {
+		if err != nil && !errors.Is(err, subprocess.ErrNotRunning) {
 			return nil, fmt.Errorf("Failed to stop imported process %q: %w", pidPath, err)
 		}
 	}

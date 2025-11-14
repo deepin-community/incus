@@ -1,17 +1,18 @@
 package device
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
 
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	pcidev "github.com/lxc/incus/v6/internal/server/device/pci"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
-	"github.com/lxc/incus/v6/internal/server/resources"
+	"github.com/lxc/incus/v6/shared/resources"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -31,9 +32,36 @@ func (d *gpuSRIOV) validateConfig(instConf instance.ConfigReader) error {
 	requiredFields := []string{}
 
 	optionalFields := []string{
+		// gendoc:generate(entity=devices, group=gpu_sriov, key=vendorid)
+		//
+		// ---
+		//  type: string
+		//  required: no
+		//  shortdesc: The vendor ID of the parent GPU device
 		"vendorid",
+
+		// gendoc:generate(entity=devices, group=gpu_sriov, key=productid)
+		//
+		// ---
+		//  type: string
+		//  required: no
+		//  shortdesc: The product ID of the parent GPU device
 		"productid",
+
+		// gendoc:generate(entity=devices, group=gpu_sriov, key=id)
+		//
+		// ---
+		//  type: string
+		//  required: no
+		//  shortdesc: The DRM card ID of the parent GPU device
 		"id",
+
+		// gendoc:generate(entity=devices, group=gpu_sriov, key=pci)
+		//
+		// ---
+		//  type: string
+		//  required: no
+		//  shortdesc: The PCI address of the parent GPU device
 		"pci",
 	}
 
@@ -66,7 +94,7 @@ func (d *gpuSRIOV) validateConfig(instConf instance.ConfigReader) error {
 // validateEnvironment checks the runtime environment for correctness.
 func (d *gpuSRIOV) validateEnvironment() error {
 	if d.inst.Type() == instancetype.VM && util.IsTrue(d.inst.ExpandedConfig()["migration.stateful"]) {
-		return fmt.Errorf("GPU devices cannot be used when migration.stateful is enabled")
+		return errors.New("GPU devices cannot be used when migration.stateful is enabled")
 	}
 
 	return validatePCIDevice(d.config["pci"])
@@ -88,7 +116,7 @@ func (d *gpuSRIOV) Start() (*deviceConfig.RunConfig, error) {
 		return nil, fmt.Errorf("Error loading %q module: %w", "vfio-pci", err)
 	}
 
-	// Get global SR-IOV lock to prevent concurent allocations of the VF.
+	// Get global SR-IOV lock to prevent concurrent allocations of the VF.
 	sriovMu.Lock()
 	defer sriovMu.Unlock()
 
@@ -269,7 +297,7 @@ func (d *gpuSRIOV) getVF() (string, int, error) {
 
 	// Check if any physical GPU was found to match.
 	if pciAddress == "" {
-		return "", -1, fmt.Errorf("Couldn't find a matching GPU with available VFs")
+		return "", -1, errors.New("Couldn't find a matching GPU with available VFs")
 	}
 
 	return pciAddress, vfID, nil
@@ -278,8 +306,8 @@ func (d *gpuSRIOV) getVF() (string, int, error) {
 // setupSriovParent configures a SR-IOV virtual function (VF) device on parent and stores original properties of
 // the physical device into voltatile for restoration on detach. Returns VF PCI device info.
 func (d *gpuSRIOV) setupSriovParent(parentPCIAddress string, vfID int, volatile map[string]string) (pcidev.Device, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	volatile["last_state.pci.parent"] = parentPCIAddress
 	volatile["last_state.vf.id"] = fmt.Sprintf("%d", vfID)
@@ -297,7 +325,7 @@ func (d *gpuSRIOV) setupSriovParent(parentPCIAddress string, vfID int, volatile 
 		return vfPCIDev, err
 	}
 
-	revert.Add(func() { _ = pcidev.DeviceProbe(vfPCIDev) })
+	reverter.Add(func() { _ = pcidev.DeviceProbe(vfPCIDev) })
 
 	// Register VF device with vfio-pci driver so it can be passed to VM.
 	err = pcidev.DeviceDriverOverride(vfPCIDev, "vfio-pci")
@@ -308,7 +336,7 @@ func (d *gpuSRIOV) setupSriovParent(parentPCIAddress string, vfID int, volatile 
 	// Record original driver used by VF device for restore.
 	volatile["last_state.pci.driver"] = vfPCIDev.Driver
 
-	revert.Success()
+	reverter.Success()
 
 	return vfPCIDev, nil
 }
@@ -362,8 +390,8 @@ func (d *gpuSRIOV) restoreSriovParent(volatile map[string]string) error {
 		return nil
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Get VF device's PCI info so we can unbind and rebind it from the host.
 	vfPCIDev, err := d.getVFDevicePCISlot(volatile["last_state.pci.parent"], volatile["last_state.vf.id"])
@@ -388,7 +416,7 @@ func (d *gpuSRIOV) restoreSriovParent(volatile map[string]string) error {
 
 	// However we return from this function, we must try to rebind the VF so its not orphaned.
 	// The OS won't let an already bound device be bound again so is safe to call twice.
-	revert.Add(func() { _ = pcidev.DeviceProbe(vfPCIDev) })
+	reverter.Add(func() { _ = pcidev.DeviceProbe(vfPCIDev) })
 
 	// Bind VF device onto the host so that the settings will take effect.
 	err = pcidev.DeviceProbe(vfPCIDev)
@@ -396,6 +424,7 @@ func (d *gpuSRIOV) restoreSriovParent(volatile map[string]string) error {
 		return err
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return nil
 }

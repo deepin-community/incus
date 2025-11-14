@@ -2,19 +2,21 @@ package main
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/idmap"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	localtls "github.com/lxc/incus/v6/shared/tls"
 	"github.com/lxc/incus/v6/shared/util"
@@ -169,20 +171,20 @@ func serverSetupUser(uid uint32) error {
 
 	pw := strings.Split(out, ":")
 	if len(pw) != 7 {
-		return fmt.Errorf("Invalid user entry")
+		return errors.New("Invalid user entry")
 	}
 
 	// Setup reverter.
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Create certificate directory.
-	err = os.MkdirAll(userPath, 0700)
+	err = os.MkdirAll(userPath, 0o700)
 	if err != nil {
 		return fmt.Errorf("Failed to create user directory: %w", err)
 	}
 
-	revert.Add(func() { _ = os.RemoveAll(userPath) })
+	reverter.Add(func() { _ = os.RemoveAll(userPath) })
 
 	// Generate certificate.
 	if !util.PathExists(filepath.Join(userPath, "client.crt")) || !util.PathExists(filepath.Join(userPath, "client.key")) {
@@ -228,7 +230,7 @@ func serverSetupUser(uid uint32) error {
 			return fmt.Errorf("Unable to create project: %w", err)
 		}
 
-		revert.Add(func() { _ = client.DeleteProject(projectName) })
+		reverter.Add(func() { _ = client.DeleteProject(projectName) })
 
 		// Create user-specific bridge.
 		network := api.NetworksPost{}
@@ -238,7 +240,7 @@ func serverSetupUser(uid uint32) error {
 		network.Description = fmt.Sprintf("Network for user restricted project %s", projectName)
 
 		err = client.CreateNetwork(network)
-		if err != nil {
+		if err != nil && !api.StatusErrorCheck(err, http.StatusConflict) {
 			return fmt.Errorf("Failed to create network: %w", err)
 		}
 
@@ -270,8 +272,8 @@ func serverSetupUser(uid uint32) error {
 			return err
 		}
 
-		idmapset, err := idmap.NewSetFromSystem("", "root")
-		if err != nil && err != idmap.ErrSubidUnsupported {
+		idmapset, err := idmap.NewSetFromSystem("root")
+		if err != nil && !errors.Is(err, idmap.ErrSubidUnsupported) {
 			return fmt.Errorf("Failed to load system idmap: %w", err)
 		}
 
@@ -323,13 +325,13 @@ func serverSetupUser(uid uint32) error {
 		return fmt.Errorf("Unable to add user certificate: %w", err)
 	}
 
-	revert.Add(func() { _ = client.DeleteCertificate(localtls.CertFingerprint(x509Cert)) })
+	reverter.Add(func() { _ = client.DeleteCertificate(localtls.CertFingerprint(x509Cert)) })
 
 	// Add the new project to our list.
 	if !slices.Contains(projectNames, projectName) {
 		projectNames = append(projectNames, projectName)
 	}
 
-	revert.Success()
+	reverter.Success()
 	return nil
 }

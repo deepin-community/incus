@@ -3,12 +3,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 
-	"github.com/spf13/cobra"
-
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/ports"
@@ -17,7 +16,8 @@ import (
 	"github.com/lxc/incus/v6/shared/util"
 )
 
-func (c *cmdAdminInit) RunAuto(cmd *cobra.Command, args []string, d incus.InstanceServer, server *api.Server) (*api.InitPreseed, error) {
+// RunAuto runs the actual command logic.
+func (c *cmdAdminInit) RunAuto(d incus.InstanceServer, server *api.Server) (*api.InitPreseed, error) {
 	// Quick checks.
 	if c.flagStorageBackend != "" && !slices.Contains([]string{"dir", "btrfs", "lvm", "zfs"}, c.flagStorageBackend) {
 		return nil, fmt.Errorf(i18n.G("The requested backend '%s' isn't supported by init"), c.flagStorageBackend)
@@ -29,17 +29,17 @@ func (c *cmdAdminInit) RunAuto(cmd *cobra.Command, args []string, d incus.Instan
 
 	if c.flagStorageBackend == "dir" || c.flagStorageBackend == "" {
 		if c.flagStorageLoopSize != -1 || c.flagStorageDevice != "" || c.flagStoragePool != "" {
-			return nil, fmt.Errorf(i18n.G("None of --storage-pool, --storage-create-device or --storage-create-loop may be used with the 'dir' backend"))
+			return nil, errors.New(i18n.G("None of --storage-pool, --storage-create-device or --storage-create-loop may be used with the 'dir' backend"))
 		}
 	} else {
 		if c.flagStorageLoopSize != -1 && c.flagStorageDevice != "" {
-			return nil, fmt.Errorf(i18n.G("Only one of --storage-create-device or --storage-create-loop can be specified"))
+			return nil, errors.New(i18n.G("Only one of --storage-create-device or --storage-create-loop can be specified"))
 		}
 	}
 
 	if c.flagNetworkAddress == "" {
 		if c.flagNetworkPort != -1 {
-			return nil, fmt.Errorf(i18n.G("--network-port can't be used without --network-address"))
+			return nil, errors.New(i18n.G("--network-port can't be used without --network-address"))
 		}
 	}
 
@@ -49,7 +49,7 @@ func (c *cmdAdminInit) RunAuto(cmd *cobra.Command, args []string, d incus.Instan
 	}
 
 	if len(storagePools) > 0 && (c.flagStorageBackend != "" || c.flagStorageDevice != "" || c.flagStorageLoopSize != -1 || c.flagStoragePool != "") {
-		return nil, fmt.Errorf(i18n.G("Storage has already been configured"))
+		return nil, errors.New(i18n.G("Storage has already been configured"))
 	}
 
 	// Detect the backing filesystem.
@@ -109,17 +109,20 @@ func (c *cmdAdminInit) RunAuto(cmd *cobra.Command, args []string, d incus.Instan
 		config.StoragePools = []api.StoragePoolsPost{pool}
 
 		// Profile entry
-		config.Profiles = []api.ProfilesPost{{
-			Name: "default",
-			ProfilePut: api.ProfilePut{
-				Devices: map[string]map[string]string{
-					"root": {
-						"type": "disk",
-						"path": "/",
-						"pool": pool.Name,
+		config.Profiles = []api.InitProfileProjectPost{{
+			ProfilesPost: api.ProfilesPost{
+				Name: "default",
+				ProfilePut: api.ProfilePut{
+					Devices: map[string]map[string]string{
+						"root": {
+							"type": "disk",
+							"path": "/",
+							"pool": pool.Name,
+						},
 					},
 				},
 			},
+			Project: api.ProjectDefaultName,
 		}}
 	}
 
@@ -170,17 +173,20 @@ func (c *cmdAdminInit) RunAuto(cmd *cobra.Command, args []string, d incus.Instan
 
 		// Add it to the profile
 		if config.Profiles == nil {
-			config.Profiles = []api.ProfilesPost{{
-				Name: "default",
-				ProfilePut: api.ProfilePut{
-					Devices: map[string]map[string]string{
-						"eth0": {
-							"type":    "nic",
-							"network": network.Name,
-							"name":    "eth0",
+			config.Profiles = []api.InitProfileProjectPost{{
+				ProfilesPost: api.ProfilesPost{
+					Name: "default",
+					ProfilePut: api.ProfilePut{
+						Devices: map[string]map[string]string{
+							"eth0": {
+								"type":    "nic",
+								"network": network.Name,
+								"name":    "eth0",
+							},
 						},
 					},
 				},
+				Project: api.ProjectDefaultName,
 			}}
 		} else {
 			config.Profiles[0].Devices["eth0"] = map[string]string{

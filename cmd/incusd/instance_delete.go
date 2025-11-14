@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 	"net/url"
 
@@ -49,11 +49,6 @@ func instanceDelete(d *Daemon, r *http.Request) response.Response {
 
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -61,11 +56,11 @@ func instanceDelete(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -80,7 +75,7 @@ func instanceDelete(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if inst.IsRunning() {
-		return response.BadRequest(fmt.Errorf("Instance is running"))
+		return response.BadRequest(errors.New("Instance is running"))
 	}
 
 	run := func(op *operations.Operation) error {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -122,11 +123,6 @@ import (
 func instanceBackupsGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	cname, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -134,11 +130,11 @@ func instanceBackupsGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(cname) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, cname, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, cname)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -215,11 +211,6 @@ func instanceBackupsGet(d *Daemon, r *http.Request) response.Response {
 func instanceBackupsPost(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -227,7 +218,7 @@ func instanceBackupsPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -239,7 +230,7 @@ func instanceBackupsPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Handle requests targeted to a container on a different node.
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -312,7 +303,7 @@ func instanceBackupsPost(d *Daemon, r *http.Request) response.Response {
 
 	// Validate the name.
 	if strings.Contains(req.Name, "/") {
-		return response.BadRequest(fmt.Errorf("Backup names may not contain slashes"))
+		return response.BadRequest(errors.New("Backup names may not contain slashes"))
 	}
 
 	fullName := name + internalInstance.SnapshotDelimiter + req.Name
@@ -329,9 +320,31 @@ func instanceBackupsPost(d *Daemon, r *http.Request) response.Response {
 			CompressionAlgorithm: req.CompressionAlgorithm,
 		}
 
+		// Create the backup.
 		err := backupCreate(s, args, inst, op)
 		if err != nil {
-			return fmt.Errorf("Create backup: %w", err)
+			return err
+		}
+
+		// Upload it if requested.
+		if req.Target != nil {
+			// Load the backup.
+			entry, err := instance.BackupLoadByName(s, projectName, fullName)
+			if err != nil {
+				return err
+			}
+
+			// Upload it.
+			err = entry.Upload(req.Target)
+			if err != nil {
+				return err
+			}
+
+			// Delete the backup on successful upload.
+			err = entry.Delete()
+			if err != nil {
+				return err
+			}
 		}
 
 		return nil
@@ -393,11 +406,6 @@ func instanceBackupsPost(d *Daemon, r *http.Request) response.Response {
 func instanceBackupGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -405,7 +413,7 @@ func instanceBackupGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	backupName, err := url.PathUnescape(mux.Vars(r)["backupName"])
@@ -414,7 +422,7 @@ func instanceBackupGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -467,11 +475,6 @@ func instanceBackupGet(d *Daemon, r *http.Request) response.Response {
 func instanceBackupPost(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -479,7 +482,7 @@ func instanceBackupPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	backupName, err := url.PathUnescape(mux.Vars(r)["backupName"])
@@ -488,7 +491,7 @@ func instanceBackupPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -505,7 +508,7 @@ func instanceBackupPost(d *Daemon, r *http.Request) response.Response {
 
 	// Validate the name
 	if strings.Contains(req.Name, "/") {
-		return response.BadRequest(fmt.Errorf("Backup names may not contain slashes"))
+		return response.BadRequest(errors.New("Backup names may not contain slashes"))
 	}
 
 	oldName := name + internalInstance.SnapshotDelimiter + backupName
@@ -566,11 +569,6 @@ func instanceBackupPost(d *Daemon, r *http.Request) response.Response {
 func instanceBackupDelete(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -578,7 +576,7 @@ func instanceBackupDelete(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	backupName, err := url.PathUnescape(mux.Vars(r)["backupName"])
@@ -587,7 +585,7 @@ func instanceBackupDelete(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -648,11 +646,6 @@ func instanceBackupDelete(d *Daemon, r *http.Request) response.Response {
 func instanceBackupExportGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -660,7 +653,7 @@ func instanceBackupExportGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	backupName, err := url.PathUnescape(mux.Vars(r)["backupName"])
@@ -669,7 +662,7 @@ func instanceBackupExportGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}

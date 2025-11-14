@@ -2,7 +2,9 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"slices"
@@ -10,20 +12,21 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
 	"github.com/lxc/incus/v6/internal/iprange"
+	"github.com/lxc/incus/v6/internal/server/bgp"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	"github.com/lxc/incus/v6/internal/server/cluster/request"
 	"github.com/lxc/incus/v6/internal/server/db"
 	dbCluster "github.com/lxc/incus/v6/internal/server/db/cluster"
 	"github.com/lxc/incus/v6/internal/server/network/acl"
-	"github.com/lxc/incus/v6/internal/server/resources"
 	"github.com/lxc/incus/v6/internal/server/state"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/resources"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
@@ -48,6 +51,7 @@ type forwardPortMap struct {
 	listenPorts []uint64
 	protocol    string
 	target      forwardTarget
+	snat        bool
 }
 
 type loadBalancerPortMap struct {
@@ -129,13 +133,11 @@ func (n *common) validate(config map[string]string, driverRules map[string]func(
 	rules := n.validationRules()
 
 	// Merge driver specific rules into common rules.
-	for field, validator := range driverRules {
-		rules[field] = validator
-	}
+	maps.Copy(rules, driverRules)
 
 	// Run the validator against each field.
 	for k, validator := range rules {
-		checkedFields[k] = struct{}{} //Mark field as checked.
+		checkedFields[k] = struct{}{} // Mark field as checked.
 		err := validator(config[k])
 		if err != nil {
 			return fmt.Errorf("Invalid value for network %q option %q: %w", n.name, k, err)
@@ -168,11 +170,17 @@ func (n *common) validateZoneNames(config map[string]string) error {
 	}
 
 	var err error
-	var zoneProjects map[string]string
+	var zones []dbCluster.NetworkZone
+	zoneProjects := make(map[string]string)
+
 	err = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		zoneProjects, err = tx.GetNetworkZones(ctx)
+		zones, err = dbCluster.GetNetworkZones(ctx, tx.Tx())
 		if err != nil {
 			return fmt.Errorf("Failed to load all network zones: %w", err)
+		}
+
+		for _, zone := range zones {
+			zoneProjects[zone.Name] = zone.Project
 		}
 
 		return nil
@@ -190,8 +198,7 @@ func (n *common) validateZoneNames(config map[string]string) error {
 			return fmt.Errorf("Invalid %q must contain only single DNS zone name", keyName)
 		}
 
-		zoneProjectsUsed := make(map[string]struct{}, 0)
-
+		zoneProjectsUsed := make(map[string]struct{})
 		for _, keyZoneName := range keyZoneNames {
 			zoneProjectName, found := zoneProjects[keyZoneName]
 			if !found {
@@ -212,11 +219,6 @@ func (n *common) validateZoneNames(config map[string]string) error {
 
 // ValidateName validates network name.
 func (n *common) ValidateName(name string) error {
-	err := validate.IsURLSegmentSafe(name)
-	if err != nil {
-		return err
-	}
-
 	if strings.Contains(name, ":") {
 		return fmt.Errorf("Cannot contain %q", ":")
 	}
@@ -298,8 +300,21 @@ func (n *common) Locations() []string {
 	return locations
 }
 
-// IsUsed returns whether the network is used by any instances or profiles.
-func (n *common) IsUsed() (bool, error) {
+// IsUsed returns whether the network is in use by instances or by downstream networks.
+func (n *common) IsUsed(instanceOnly bool) (bool, error) {
+	if instanceOnly {
+		usedBy := 0
+		err := UsedByInstanceDevices(n.state, n.project, n.name, n.netType, func(inst db.InstanceArgs, nicName string, nicConfig map[string]string) error {
+			usedBy++
+			return nil
+		})
+		if err != nil {
+			return false, err
+		}
+
+		return usedBy > 0, nil
+	}
+
 	usedBy, err := UsedBy(n.state, n.project, n.id, n.name, n.netType, true)
 	if err != nil {
 		return false, err
@@ -377,14 +392,9 @@ func (n *common) update(applyNetwork api.NetworkPut, targetNode string, clientTy
 
 			sendNetwork := applyNetwork
 			sendNetwork.Config = make(map[string]string)
-			for k, v := range applyNetwork.Config {
-				// Don't forward node specific keys (these will be merged in on recipient node).
-				if slices.Contains(db.NodeSpecificNetworkConfig, k) {
-					continue
-				}
 
-				sendNetwork.Config[k] = v
-			}
+			// Don't forward node specific keys (these will be merged in on recipient node).
+			sendNetwork.Config = db.StripNodeSpecificNetworkConfig(applyNetwork.Config)
 
 			err = notifier(func(client incus.InstanceServer) error {
 				return client.UseProject(n.project).UpdateNetwork(n.name, sendNetwork, "")
@@ -624,31 +634,39 @@ func (n *common) bgpValidationRules(config map[string]string) (map[string]func(v
 
 // bgpSetup initializes BGP peers and prefixes.
 func (n *common) bgpSetup(oldConfig map[string]string) error {
+	currentPeers := n.bgpGetPeers(n.config)
+	oldPeers := n.bgpGetPeers(oldConfig)
+
+	// Don't set up BGP on non-OVN networks when no peers are configured.
+	if n.netType != "ovn" && len(currentPeers) == 0 {
+		if len(oldPeers) > 0 {
+			return n.bgpClear(oldConfig)
+		}
+
+		return nil
+	}
+
+	// Set up the peers.
 	err := n.bgpSetupPeers(oldConfig)
 	if err != nil {
 		return fmt.Errorf("Failed setting up BGP peers: %w", err)
 	}
 
+	// Export the prefixes.
 	err = n.bgpSetupPrefixes(oldConfig)
 	if err != nil {
 		return fmt.Errorf("Failed setting up BGP prefixes: %w", err)
 	}
 
-	// Refresh exported BGP prefixes on local member.
 	err = n.forwardBGPSetupPrefixes()
 	if err != nil {
 		return fmt.Errorf("Failed applying BGP prefixes for address forwards: %w", err)
 	}
 
-	err = n.loadBalancerBGPSetupPrefixes()
-	if err != nil {
-		return fmt.Errorf("Failed applying BGP prefixes for load balancers: %w", err)
-	}
-
 	return nil
 }
 
-// bgpClear initializes BGP peers and prefixes.
+// bgpClear clears BGP peers and prefixes.
 func (n *common) bgpClear(config map[string]string) error {
 	// Clear all peers.
 	err := n.bgpClearPeers(config)
@@ -678,7 +696,7 @@ func (n *common) bgpClearPeers(config map[string]string) error {
 		// Remove the peer.
 		fields := strings.Split(peer, ",")
 		err := n.state.BGP.RemovePeer(net.ParseIP(fields[0]))
-		if err != nil {
+		if err != nil && !errors.Is(err, bgp.ErrPeerNotFound) {
 			return err
 		}
 	}
@@ -840,7 +858,7 @@ func (n *common) bgpGetPeers(config map[string]string) []string {
 // forwardValidate validates the forward request.
 func (n *common) forwardValidate(listenAddress net.IP, forward *api.NetworkForwardPut) ([]*forwardPortMap, error) {
 	if listenAddress == nil {
-		return nil, fmt.Errorf("Invalid listen address")
+		return nil, errors.New("Invalid listen address")
 	}
 
 	if listenAddress.IsUnspecified() {
@@ -873,6 +891,12 @@ func (n *common) forwardValidate(listenAddress net.IP, forward *api.NetworkForwa
 		}
 
 		// User keys are not validated.
+
+		// gendoc:generate(entity=network_forward, group=common, key=user.*)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: User defined key/value configuration
 		if internalInstance.IsUserConfig(k) {
 			continue
 		}
@@ -881,21 +905,27 @@ func (n *common) forwardValidate(listenAddress net.IP, forward *api.NetworkForwa
 	}
 
 	// Validate default target address.
+
+	// gendoc:generate(entity=network_forward, group=common, key=target_address)
+	//
+	// ---
+	//  type: string
+	//  shortdesc: Default target address for anything not covered through a port definition
 	defaultTargetAddress := net.ParseIP(forward.Config["target_address"])
 
 	if forward.Config["target_address"] != "" {
 		if defaultTargetAddress == nil {
-			return nil, fmt.Errorf("Invalid default target address")
+			return nil, errors.New("Invalid default target address")
 		}
 
 		defaultTargetIsIP4 := defaultTargetAddress.To4() != nil
 		if listenIsIP4 != defaultTargetIsIP4 {
-			return nil, fmt.Errorf("Cannot mix IP versions in listen address and default target address")
+			return nil, errors.New("Cannot mix IP versions in listen address and default target address")
 		}
 
 		// Check default target address is within network's subnet.
 		if netSubnet != nil && !SubnetContainsIP(netSubnet, defaultTargetAddress) {
-			return nil, fmt.Errorf("Default target address is not within the network subnet")
+			return nil, errors.New("Default target address is not within the network subnet")
 		}
 	}
 
@@ -946,6 +976,7 @@ func (n *common) forwardValidate(listenAddress net.IP, forward *api.NetworkForwa
 				address: targetAddress,
 			},
 			protocol: portSpec.Protocol,
+			snat:     portSpec.SNAT,
 		}
 
 		for _, pr := range listenPortRanges {
@@ -954,7 +985,7 @@ func (n *common) forwardValidate(listenAddress net.IP, forward *api.NetworkForwa
 				return nil, fmt.Errorf("Invalid listen port in port specification %d: %w", portSpecID, err)
 			}
 
-			for i := int64(0); i < portRange; i++ {
+			for i := range portRange {
 				port := portFirst + i
 				_, found := listenPorts[portSpec.Protocol][port]
 				if found {
@@ -964,6 +995,11 @@ func (n *common) forwardValidate(listenAddress net.IP, forward *api.NetworkForwa
 				listenPorts[portSpec.Protocol][port] = struct{}{}
 				portMap.listenPorts = append(portMap.listenPorts, uint64(port))
 			}
+		}
+
+		// Check that SNAT is only used with bridges.
+		if portSpec.SNAT && n.netType != "bridge" {
+			return nil, errors.New("SNAT can only be used with bridge networks")
 		}
 
 		// Check valid target port(s) supplied.
@@ -979,7 +1015,7 @@ func (n *common) forwardValidate(listenAddress net.IP, forward *api.NetworkForwa
 					return nil, fmt.Errorf("Invalid target port in port specification %d", portSpecID)
 				}
 
-				for i := int64(0); i < portRange; i++ {
+				for i := range portRange {
 					port := portFirst + i
 					portMap.target.ports = append(portMap.target.ports, uint64(port))
 				}
@@ -1022,9 +1058,25 @@ func (n *common) forwardBGPSetupPrefixes() error {
 		var err error
 
 		// Retrieve network forwards before clearing existing prefixes, and separate them by IP family.
-		fwdListenAddresses, err = tx.GetNetworkForwardListenAddresses(ctx, n.ID(), true)
+		networkID := int64(n.ID())
+		dbRecords, err := dbCluster.GetNetworkForwards(ctx, tx.Tx(), dbCluster.NetworkForwardFilter{
+			NetworkID: &networkID,
+		})
+		if err != nil {
+			return err
+		}
 
-		return err
+		fwdListenAddresses = make(map[int64]string)
+		for _, dbRecord := range dbRecords {
+			// memberSpecific filtering
+			if !dbRecord.NodeID.Valid || (dbRecord.NodeID.Int64 == tx.GetNodeID()) {
+				// Get listen address
+				forwardID := int64(dbRecord.ID)
+				fwdListenAddresses[forwardID] = dbRecord.ListenAddress
+			}
+		}
+
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("Failed loading network forwards: %w", err)
@@ -1091,19 +1143,74 @@ func (n *common) forwardBGPSetupPrefixes() error {
 // getExternalSubnetInUse returns information about usage of external subnets by networks connected to, or used by,
 // the specified uplinkNetworkName.
 func (n *common) getExternalSubnetInUse(ctx context.Context, tx *db.ClusterTx, uplinkNetworkName string, memberSpecific bool) ([]externalSubnetUsage, error) {
-	var err error
-	var projectNetworksForwardsOnUplink, projectNetworksLoadBalancersOnUplink map[string]map[string][]string
+	// Get a list of related networks.
+	relatedNetworks := map[int64]*api.Network{}
 
-	// Get all network forward listen addresses for all networks (of any type) connected to our uplink.
-	projectNetworksForwardsOnUplink, err = tx.GetProjectNetworkForwardListenAddressesByUplink(ctx, uplinkNetworkName, memberSpecific)
+	networksByProject, err := tx.GetNetworksAllProjects(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("Failed loading network forward listen addresses: %w", err)
+		return nil, fmt.Errorf("Failed loading network load balancer listen addresses: %w", err)
 	}
 
-	// Get all network load balancer listen addresses for all networks (of any type) connected to our uplink.
-	projectNetworksLoadBalancersOnUplink, err = tx.GetProjectNetworkLoadBalancerListenAddressesByUplink(ctx, uplinkNetworkName, memberSpecific)
-	if err != nil {
-		return nil, fmt.Errorf("Failed loading network forward listen addresses: %w", err)
+	for projectName, networks := range networksByProject {
+		for _, networkName := range networks {
+			// Load the network.
+			networkID, apiNetwork, _, err := tx.GetNetworkInAnyState(ctx, projectName, networkName)
+			if err != nil {
+				return nil, fmt.Errorf("Failed to load network: %w", err)
+			}
+
+			// Check if we're looking at our uplink.
+			if projectName == api.ProjectDefaultName && uplinkNetworkName == networkName {
+				relatedNetworks[networkID] = apiNetwork
+				continue
+			}
+
+			// Check if the network shares the same uplink.
+			if apiNetwork.Config["network"] == uplinkNetworkName {
+				relatedNetworks[networkID] = apiNetwork
+				continue
+			}
+		}
+	}
+
+	// Get all network load balancer and forward listen addresses for all networks (of any type) connected to our uplink.
+	projectNetworksLoadBalancersOnUplink := map[string]map[string][]string{}
+	projectNetworksForwardsOnUplink := map[string]map[string][]string{}
+
+	for networkID, relatedNetwork := range relatedNetworks {
+		// Get all load balancers associated with this network.
+		loadBalancers, err := dbCluster.GetNetworkLoadBalancers(ctx, tx.Tx(), dbCluster.NetworkLoadBalancerFilter{
+			NetworkID: &networkID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("Failed getting list of network load balancer: %w", err)
+		}
+
+		for _, lb := range loadBalancers {
+			if projectNetworksLoadBalancersOnUplink[relatedNetwork.Project] == nil {
+				projectNetworksLoadBalancersOnUplink[relatedNetwork.Project] = map[string][]string{}
+			}
+
+			projectNetworksLoadBalancersOnUplink[relatedNetwork.Project][relatedNetwork.Name] = append(projectNetworksLoadBalancersOnUplink[relatedNetwork.Project][relatedNetwork.Name], lb.ListenAddress)
+		}
+
+		// Get all network forwards associated with this network.
+		networkForwards, err := dbCluster.GetNetworkForwards(ctx, tx.Tx(), dbCluster.NetworkForwardFilter{
+			NetworkID: &networkID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("Failed getting list of network forward: %w", err)
+		}
+
+		for _, fwd := range networkForwards {
+			if !memberSpecific || (!fwd.NodeID.Valid || (fwd.NodeID.Int64 == tx.GetNodeID())) {
+				if projectNetworksForwardsOnUplink[relatedNetwork.Project] == nil {
+					projectNetworksForwardsOnUplink[relatedNetwork.Project] = map[string][]string{}
+				}
+
+				projectNetworksForwardsOnUplink[relatedNetwork.Project][relatedNetwork.Name] = append(projectNetworksForwardsOnUplink[relatedNetwork.Project][relatedNetwork.Name], fwd.ListenAddress)
+			}
+		}
 	}
 
 	externalSubnets := make([]externalSubnetUsage, 0, len(projectNetworksForwardsOnUplink)+len(projectNetworksLoadBalancersOnUplink))
@@ -1160,7 +1267,7 @@ func (n *common) getExternalSubnetInUse(ctx context.Context, tx *db.ClusterTx, u
 // loadBalancerValidate validates the load balancer request.
 func (n *common) loadBalancerValidate(listenAddress net.IP, forward *api.NetworkLoadBalancerPut) ([]*loadBalancerPortMap, error) {
 	if listenAddress == nil {
-		return nil, fmt.Errorf("Invalid listen address")
+		return nil, errors.New("Invalid listen address")
 	}
 
 	listenIsIP4 := listenAddress.To4() != nil
@@ -1299,7 +1406,7 @@ func (n *common) loadBalancerValidate(listenAddress net.IP, forward *api.Network
 				return nil, fmt.Errorf("Invalid backend port specification %d in backend specification %d: %w", portSpecID, backendSpecID, err)
 			}
 
-			for i := int64(0); i < portRange; i++ {
+			for i := range portRange {
 				port := portFirst + i
 				target.ports = append(target.ports, uint64(port))
 			}
@@ -1333,7 +1440,7 @@ func (n *common) loadBalancerValidate(listenAddress net.IP, forward *api.Network
 				return nil, fmt.Errorf("Invalid listen port in port specification %d: %w", portSpecID, err)
 			}
 
-			for i := int64(0); i < portRange; i++ {
+			for i := range portRange {
 				port := portFirst + i
 				_, found := listenPorts[portSpec.Protocol][port]
 				if found {
@@ -1380,83 +1487,14 @@ func (n *common) LoadBalancerUpdate(listenAddress string, newLoadBalancer api.Ne
 	return ErrNotImplemented
 }
 
+// LoadBalancerState returns ErrNotImplemented for drivers that do not support load balancers..
+func (n *common) LoadBalancerState(loadBalancer api.NetworkLoadBalancer) (*api.NetworkLoadBalancerState, error) {
+	return nil, ErrNotImplemented
+}
+
 // LoadBalancerDelete returns ErrNotImplemented for drivers that do not support load balancers..
 func (n *common) LoadBalancerDelete(listenAddress string, clientType request.ClientType) error {
 	return ErrNotImplemented
-}
-
-// loadBalancerBGPSetupPrefixes exports external load balancer addresses as prefixes.
-func (n *common) loadBalancerBGPSetupPrefixes() error {
-	var listenAddresses map[int64]string
-
-	err := n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		var err error
-
-		// Retrieve network forwards before clearing existing prefixes, and separate them by IP family.
-		listenAddresses, err = tx.GetNetworkLoadBalancerListenAddresses(ctx, n.ID(), true)
-
-		return err
-	})
-	if err != nil {
-		return fmt.Errorf("Failed loading network forwards: %w", err)
-	}
-
-	listenAddressesByFamily := map[uint][]string{
-		4: make([]string, 0),
-		6: make([]string, 0),
-	}
-
-	for _, listenAddress := range listenAddresses {
-		if strings.Contains(listenAddress, ":") {
-			listenAddressesByFamily[6] = append(listenAddressesByFamily[6], listenAddress)
-		} else {
-			listenAddressesByFamily[4] = append(listenAddressesByFamily[4], listenAddress)
-		}
-	}
-
-	// Use load balancer specific owner string (different from the network prefixes) so that these can be
-	// reapplied independently of the network's own prefixes.
-	bgpOwner := fmt.Sprintf("network_%d_load_balancer", n.id)
-
-	// Clear existing address load balancer prefixes for network.
-	err = n.state.BGP.RemovePrefixByOwner(bgpOwner)
-	if err != nil {
-		return err
-	}
-
-	// Add the new prefixes.
-	for _, ipVersion := range []uint{4, 6} {
-		nextHopAddr := n.bgpNextHopAddress(ipVersion)
-		natEnabled := util.IsTrue(n.config[fmt.Sprintf("ipv%d.nat", ipVersion)])
-		_, netSubnet, _ := net.ParseCIDR(n.config[fmt.Sprintf("ipv%d.address", ipVersion)])
-
-		routeSubnetSize := 128
-		if ipVersion == 4 {
-			routeSubnetSize = 32
-		}
-
-		// Export external forward listen addresses.
-		for _, listenAddress := range listenAddressesByFamily[ipVersion] {
-			listenAddr := net.ParseIP(listenAddress)
-
-			// Don't export internal address forwards (those inside the NAT enabled network's subnet).
-			if natEnabled && netSubnet != nil && netSubnet.Contains(listenAddr) {
-				continue
-			}
-
-			_, ipRouteSubnet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", listenAddr.String(), routeSubnetSize))
-			if err != nil {
-				return err
-			}
-
-			err = n.state.BGP.AddPrefix(*ipRouteSubnet, nextHopAddr, bgpOwner)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
 }
 
 // Leases returns ErrNotImplemented for drivers that don't support address leases.
@@ -1538,7 +1576,7 @@ func (n *common) peerUsedBy(peerName string, firstOnly bool) ([]string, error) {
 					continue // Not a valid network/peer name combination.
 				}
 
-				peer := db.NetworkPeer{
+				peer := dbCluster.NetworkPeerConnection{
 					NetworkName: peerParts[0],
 					PeerName:    peerParts[1],
 				}
@@ -1555,12 +1593,19 @@ func (n *common) peerUsedBy(peerName string, firstOnly bool) ([]string, error) {
 	var aclNames []string
 
 	err := n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		var err error
+		projectName := n.Project()
 
-		// Find ACLs that have rules that reference the peer connection.
-		aclNames, err = tx.GetNetworkACLs(ctx, n.Project())
+		acls, err := dbCluster.GetNetworkACLs(ctx, tx.Tx(), dbCluster.NetworkACLFilter{Project: &projectName})
+		if err != nil {
+			return err
+		}
 
-		return err
+		aclNames = make([]string, len(acls))
+		for i, acl := range acls {
+			aclNames[i] = acl.Name
+		}
+
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -1570,7 +1615,7 @@ func (n *common) peerUsedBy(peerName string, firstOnly bool) ([]string, error) {
 		var aclInfo *api.NetworkACL
 
 		err := n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-			_, aclInfo, err = tx.GetNetworkACL(ctx, n.Project(), aclName)
+			_, aclInfo, err = dbCluster.GetNetworkACLAPI(ctx, tx.Tx(), n.Project(), aclName)
 
 			return err
 		})

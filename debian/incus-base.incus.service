@@ -1,0 +1,24 @@
+[Unit]
+Description=Incus - Main daemon
+After=network-online.target openvswitch-switch.service lxcfs.service incus.socket
+Requires=network-online.target lxcfs.service incus.socket
+Documentation=man:incusd(1)
+
+[Service]
+EnvironmentFile=/etc/default/incus
+EnvironmentFile=-/etc/environment
+ExecStartPre=/usr/libexec/incus/incus-apparmor-load
+ExecStartPre=/bin/mkdir -p /var/log/incus/
+ExecStartPre=/bin/chown -R root:incus-admin /var/log/incus/
+ExecStart=/usr/libexec/incus/startup
+ExecStartPost=/usr/libexec/incus/incusd waitready --timeout=600
+KillMode=process
+TimeoutStartSec=600s
+TimeoutStopSec=330s
+Restart=on-failure
+LimitNOFILE=1048576
+LimitNPROC=infinity
+TasksMax=infinity
+
+[Install]
+Also=incus-startup.service incus.socket

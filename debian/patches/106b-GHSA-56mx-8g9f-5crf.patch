@@ -1,0 +1,69 @@
+From 57096066959c843e1c413c4a97f64077b95cb397 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?St=C3=A9phane=20Graber?= <stgraber@stgraber.org>
+Date: Sun, 9 Nov 2025 18:41:39 -0500
+Subject: [PATCH] incusd/patches: Re-apply storage permissions on update
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Stéphane Graber <stgraber@stgraber.org>
+---
+ cmd/incusd/patches.go | 40 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+diff --git a/cmd/incusd/patches.go b/cmd/incusd/patches.go
+index b808ffa2907..14d78f92720 100644
+--- a/cmd/incusd/patches.go
++++ b/cmd/incusd/patches.go
+@@ -87,6 +87,7 @@ var patches = []patch{
+ 	{name: "lvm_node_force_reuse", stage: patchPostDaemonStorage, run: patchLvmForceReuseKey},
+ 	{name: "auth_openfga_viewer", stage: patchPostNetworks, run: patchGenericAuthorization},
+ 	{name: "db_json_columns", stage: patchPreDaemonStorage, run: patchConvertJSONColumn},
++	{name: "pool_fix_default_permissions", stage: patchPostDaemonStorage, run: patchDefaultStoragePermissions},
+ }
+ 
+ type patchRun func(name string, d *Daemon) error
+@@ -1342,4 +1343,43 @@ UPDATE networks_load_balancers SET ports="null" WHERE ports="";
+ 	return nil
+ }
+ 
++// patchDefaultStoragePermissions re-applies the default modes to all storage pools.
++func patchDefaultStoragePermissions(_ string, d *Daemon) error {
++	s := d.State()
++
++	var pools []string
++
++	err := s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
++		var err error
++
++		// Get all storage pool names.
++		pools, err = tx.GetStoragePoolNames(ctx)
++
++		return err
++	})
++	if err != nil {
++		// Skip the rest of the patch if no storage pools were found.
++		if api.StatusErrorCheck(err, http.StatusNotFound) {
++			return nil
++		}
++
++		return fmt.Errorf("Failed getting storage pool names: %w", err)
++	}
++
++	for _, pool := range pools {
++		for _, volEntry := range storageDrivers.BaseDirectories {
++			for _, volDir := range volEntry.Paths {
++				path := filepath.Join(storagePools.GetStoragePoolMountPoint(pool), volDir)
++
++				err := os.Chmod(path, volEntry.Mode)
++				if err != nil && !os.IsExist(err) {
++					return fmt.Errorf("Failed to set directory mode %q: %w", path, err)
++				}
++			}
++		}
++	}
++
++	return nil
++}
++
+ // Patches end here

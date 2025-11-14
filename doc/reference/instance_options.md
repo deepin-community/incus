@@ -89,6 +89,21 @@ You can set kernel limits on an instance, for example, you can limit the number 
 See {ref}`instance-options-limits-kernel` for more information.
 ```
 
+### Memory limits in virtual machines
+Incus supports both increasing and decreasing the memory allocation of virtual machines.
+
+Increasing the memory is done through memory hot plug, effectively adding virtual memory sticks to the VM.
+There is a limit of 16 virtual slots for this, limiting the number of memory increases that can be done without rebooting the VM.
+
+Decreasing memory is not done through hot remove as that has a high risk of causing guest issues.
+Instead the memory balloon device is used, causing memory pressure inside the guest and causing memory to be released.
+
+This is a pretty slow process, so it is common for a memory reduction to fail to meet the requested value.
+When that happens, re-applying the lower value will trigger another attempt.
+
+As each attempt will cause the effective memory available to the guest to be reduced,
+it should eventually succeed and lead to the guest having the desired memory limit applied.
+
 ### CPU limits
 
 You have different options to limit CPU usage:
@@ -299,16 +314,17 @@ value = "1"
 [global]
 driver = "ICH9-LPC"
 property = "disable_s4"
-value = "1"
+value = "0"
 ```
 
-To specify which section to override, specify an index.
-For example:
+The first `global` section disabled S3(Suspend to RAM), the second `global`
+section enabled S4(suspend to disk). In order to disable S4, the second `global`
+section index needs to be specified:
 
 ```
 raw.qemu.conf: |-
     [global][1]
-    value = "0"
+    value = "1"
 ```
 
 Section indexes start at 0 (which is the default value when not specified), so the above example would generate the following configuration:
@@ -322,8 +338,68 @@ value = "1"
 [global]
 driver = "ICH9-LPC"
 property = "disable_s4"
-value = "0"
+value = "1"
 ```
+
+### Override QEMU runtime objects
+While `raw.qemu` and `raw.qemu.conf` can be used to alter the arguments
+and configuration file that's passed to QEMU, a lot of devices are now
+added through QMP instead.
+
+This is used by Incus for any device which may need to be re-configured
+at runtime, effectively anything that can be hot-plugged.
+
+Those devices cannot be overridden through the configuration or the
+command line, but instead additional configuration keys are available to
+run QMP commands directly.
+
+Fixed commands can be provided through the `raw.qemu.early`, `raw.qemu.pre-start` and `raw.qemu.post-start` configuration keys.
+Those take a JSON encoded list of QMP commands to run.
+
+The hooks correspond to:
+
+- `early`, run prior to any device having been added by Incus through QMP, after QEMU has started
+- `pre-start`, run following Incus having added all its devices but prior to the VM being started
+- `post-start`, run immediately following the VM starting up
+
+### Advanced use
+For anyone needing dynamic QMP interactions, for example to retrieve the
+current value of some objects before modifying or generating new
+objects, it's also possible to attach to those same hooks using a
+scriptlet.
+
+This is done through `raw.qemu.scriptlet`. The scriptlet must define the `qemu_hook(instance, stage)` function. The `instance` arguments is an object representing the VM, whose attributes are those of the `api.Instance` struct. The `stage` argument is the name of the hook (`config`, `early`, `pre-start` or `post-start`), with `config` being run before starting QEMU, and the other hooks defined above.
+
+The following commands are exposed to that scriptlet:
+
+- `log_info` will log an `INFO` message
+- `log_warn` will log a `WARNING` message
+- `log_error` will log an `ERROR` message
+- `run_qmp` will run an arbitrary QMP command (JSON) and return its output
+- `run_command` will run the specified command with an optional list of arguments and return its output
+- `get_qemu_cmdline` will return the list of command-line arguments passed to QEMU
+- `set_qemu_cmdline` will set them
+- `get_qemu_conf` will return the QEMU configuration file as a dictionary
+- `set_qemu_conf` will set it from a dictionary
+
+Additionally the following alias commands (internally use `run_command`) are also available to simplify scripts:
+
+- `blockdev_add`
+- `blockdev_del`
+- `chardev_add`
+- `chardev_change`
+- `chardev_remove`
+- `device_add`
+- `device_del`
+- `netdev_add`
+- `netdev_del`
+- `object_add`
+- `object_del`
+- `qom_get`
+- `qom_list`
+- `qom_set`
+
+The functions allowing to change QEMU configuration can only be run during the `config` hook. In parallel, the functions running QMP commands cannot be run during the `config` hook.
 
 (instance-options-security)=
 ## Security policies

@@ -191,9 +191,25 @@ func networkAllocationsGet(d *Daemon, r *http.Request) response.Response {
 			var forwards map[int64]*api.NetworkForward
 
 			err = d.db.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-				forwards, err = tx.GetNetworkForwards(ctx, n.ID(), false)
+				networkID := n.ID()
+				dbRecords, err := dbCluster.GetNetworkForwards(ctx, tx.Tx(), dbCluster.NetworkForwardFilter{
+					NetworkID: &networkID,
+				})
+				if err != nil {
+					return err
+				}
 
-				return err
+				forwards = make(map[int64]*api.NetworkForward)
+				for _, dbRecord := range dbRecords {
+					forward, err := dbRecord.ToAPI(ctx, tx.Tx())
+					if err != nil {
+						return err
+					}
+
+					forwards[dbRecord.ID] = forward
+				}
+
+				return nil
 			})
 			if err != nil {
 				return response.SmartError(fmt.Errorf("Failed getting forwards for network %q in project %q: %w", networkName, projectName, err))
@@ -216,18 +232,23 @@ func networkAllocationsGet(d *Daemon, r *http.Request) response.Response {
 				)
 			}
 
-			var loadBalancers map[int64]*api.NetworkLoadBalancer
-
+			var dbLoadBalancers []dbCluster.NetworkLoadBalancer
 			err = d.db.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-				loadBalancers, err = tx.GetNetworkLoadBalancers(ctx, n.ID(), false)
+				networkID := n.ID()
 
-				return err
+				// Get the load balancers.
+				dbLoadBalancers, err = dbCluster.GetNetworkLoadBalancers(ctx, tx.Tx(), dbCluster.NetworkLoadBalancerFilter{NetworkID: &networkID})
+				if err != nil {
+					return err
+				}
+
+				return nil
 			})
 			if err != nil {
 				return response.SmartError(fmt.Errorf("Failed getting load-balancers for network %q in project %q: %w", networkName, projectName, err))
 			}
 
-			for _, loadBalancer := range loadBalancers {
+			for _, loadBalancer := range dbLoadBalancers {
 				cidrAddr, _, err := ipToCIDR(loadBalancer.ListenAddress, netConf)
 				if err != nil {
 					return response.SmartError(err)

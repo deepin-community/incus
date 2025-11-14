@@ -2,7 +2,9 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -125,6 +127,27 @@ func (c *Config) MaxStandBy() int64 {
 	return c.m.GetInt64("cluster.max_standby")
 }
 
+// ClusterRebalanceBatch returns maximum number of instances to move during one re-balancing run.
+func (c *Config) ClusterRebalanceBatch() int64 {
+	return c.m.GetInt64("cluster.rebalance.batch")
+}
+
+// ClusterRebalanceCooldown returns amount of time during which an instance will not be moved again.
+func (c *Config) ClusterRebalanceCooldown() string {
+	return c.m.GetString("cluster.rebalance.cooldown")
+}
+
+// ClusterRebalanceInterval returns the interval at which to evaluate re-balanicng.
+func (c *Config) ClusterRebalanceInterval() int64 {
+	return c.m.GetInt64("cluster.rebalance.interval")
+}
+
+// ClusterRebalanceThreshold returns load difference between most and least busy server
+// needed to trigger a migration.
+func (c *Config) ClusterRebalanceThreshold() int64 {
+	return c.m.GetInt64("cluster.rebalance.threshold")
+}
+
 // NetworkOVNIntegrationBridge returns the integration OVS bridge to use for OVN networks.
 func (c *Config) NetworkOVNIntegrationBridge() string {
 	return c.m.GetString("network.ovn.integration_bridge")
@@ -182,6 +205,11 @@ func (c *Config) InstancesPlacementScriptlet() string {
 	return c.m.GetString("instances.placement.scriptlet")
 }
 
+// AuthorizationScriptlet returns the authorization scriptlet source code.
+func (c *Config) AuthorizationScriptlet() string {
+	return c.m.GetString("authorization.scriptlet")
+}
+
 // InstancesLXCFSPerInstance returns whether LXCFS should be run on a per-instance basis.
 func (c *Config) InstancesLXCFSPerInstance() bool {
 	return c.m.GetBool("instances.lxcfs.per_instance")
@@ -204,8 +232,46 @@ func (c *Config) LokiServer() (string, string, string, string, string, string, [
 }
 
 // ACME returns all ACME settings needed for certificate renewal.
-func (c *Config) ACME() (string, string, string, bool) {
-	return c.m.GetString("acme.domain"), c.m.GetString("acme.email"), c.m.GetString("acme.ca_url"), c.m.GetBool("acme.agree_tos")
+func (c *Config) ACME() (string, string, string, bool, string) {
+	return c.m.GetString("acme.domain"), c.m.GetString("acme.email"), c.m.GetString("acme.ca_url"), c.m.GetBool("acme.agree_tos"), c.m.GetString("acme.challenge")
+}
+
+// ACMEDNS returns all ACME DNS settings needed for DNS-01 challenge.
+func (c *Config) ACMEDNS() (string, []string, []string) {
+	var environment []string
+	var resolvers []string
+
+	if c.m.GetString("acme.provider.environment") != "" {
+		lines := strings.Split(strings.TrimSpace(c.m.GetString("acme.provider.environment")), "\n")
+
+		for _, line := range lines {
+			if len(strings.TrimSpace(line)) == 0 {
+				continue
+			}
+
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) != 2 {
+				logrus.Warnf("Malformed line in config string: %q", line)
+				continue
+			}
+
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+
+			environment = append(environment, strings.Join([]string{key, value}, "="))
+		}
+	}
+
+	if c.m.GetString("acme.provider.resolvers") != "" {
+		resolvers = strings.Split(c.m.GetString("acme.provider.resolvers"), ",")
+	}
+
+	return c.m.GetString("acme.provider"), environment, resolvers
+}
+
+// ACMEHTTP returns all ACME HTTP settings needed for HTTP-01 challenge.
+func (c *Config) ACMEHTTP() string {
+	return c.m.GetString("acme.http.port")
 }
 
 // ClusterJoinTokenExpiry returns the cluster join token expiry.
@@ -248,6 +314,96 @@ func (c *Config) OpenFGA() (apiURL string, apiToken string, storeID string) {
 	return c.m.GetString("openfga.api.url"), c.m.GetString("openfga.api.token"), c.m.GetString("openfga.store.id")
 }
 
+// Loggers returns a map where the key is the logger name and the value is its type.
+func (c *Config) Loggers() (map[string]string, error) {
+	result := make(map[string]string)
+
+	// Backward compatibility with old Loki config keys
+	if c.m.GetString("loki.api.url") != "" {
+		result["loki"] = "loki"
+	}
+
+	for k, v := range c.m.Dump() {
+		if !strings.HasPrefix(k, "logging.") {
+			continue
+		}
+
+		fields := strings.Split(k, ".")
+		if len(fields) < 3 {
+			return nil, fmt.Errorf("%s is not a valid logging config key", k)
+		}
+
+		loggingKey := strings.Join(fields[2:], ".")
+
+		if loggingKey != "target.type" {
+			continue
+		}
+
+		loggerName := fields[1]
+
+		_, exists := result[loggerName]
+		if !exists {
+			result[loggerName] = v
+		}
+	}
+
+	return result, nil
+}
+
+// LoggingCommonConfig returns the logging configuration common to all types of loggers.
+func (c *Config) LoggingCommonConfig(loggerName string) (string, string, string, string) {
+	if loggerName == "loki" && c.m.GetString("loki.api.url") != "" {
+		return "", "", c.m.GetString("loki.loglevel"), c.m.GetString("loki.types")
+	}
+
+	prefix := fmt.Sprintf("logging.%s", loggerName)
+	lifecycleProjectsKey := fmt.Sprintf("%s.%s", prefix, "lifecycle.projects")
+	lifecycleTypesKey := fmt.Sprintf("%s.%s", prefix, "lifecycle.types")
+	loggingLevelKey := fmt.Sprintf("%s.%s", prefix, "logging.level")
+	typesKey := fmt.Sprintf("%s.%s", prefix, "types")
+
+	return c.m.GetString(lifecycleProjectsKey), c.m.GetString(lifecycleTypesKey), c.m.GetString(loggingLevelKey), c.m.GetString(typesKey)
+}
+
+// LoggingConfigForSyslog returns the logging configuration for the syslog logger type.
+func (c *Config) LoggingConfigForSyslog(loggerName string) (string, string) {
+	prefix := fmt.Sprintf("logging.%s", loggerName)
+	addressKey := fmt.Sprintf("%s.%s", prefix, "target.address")
+	facilityKey := fmt.Sprintf("%s.%s", prefix, "target.facility")
+
+	return c.m.GetString(addressKey), c.m.GetString(facilityKey)
+}
+
+// LoggingConfigForLoki returns all the Loki settings needed to connect to a server.
+func (c *Config) LoggingConfigForLoki(loggerName string) (string, string, string, string, string, string, int) {
+	if loggerName == "loki" && c.m.GetString("loki.api.url") != "" {
+		return c.m.GetString("loki.api.url"), c.m.GetString("loki.auth.username"), c.m.GetString("loki.auth.password"), c.m.GetString("loki.api.ca_cert"), c.m.GetString("loki.instance"), c.m.GetString("loki.labels"), 3
+	}
+
+	prefix := fmt.Sprintf("logging.%s", loggerName)
+	addressKey := fmt.Sprintf("%s.%s", prefix, "target.address")
+	usernameKey := fmt.Sprintf("%s.%s", prefix, "target.username")
+	passwordKey := fmt.Sprintf("%s.%s", prefix, "target.password")
+	caCertKey := fmt.Sprintf("%s.%s", prefix, "target.ca_cert")
+	instanceKey := fmt.Sprintf("%s.%s", prefix, "target.instance")
+	labelsKey := fmt.Sprintf("%s.%s", prefix, "target.labels")
+	retryKey := fmt.Sprintf("%s.%s", prefix, "target.retry")
+
+	return c.m.GetString(addressKey), c.m.GetString(usernameKey), c.m.GetString(passwordKey), c.m.GetString(caCertKey), c.m.GetString(instanceKey), c.m.GetString(labelsKey), int(c.m.GetInt64(retryKey))
+}
+
+// LoggingConfigForWebhook returns the logging configuration for the webhook logger type.
+func (c *Config) LoggingConfigForWebhook(loggerName string) (string, string, string, string, int) {
+	prefix := fmt.Sprintf("logging.%s", loggerName)
+	addressKey := fmt.Sprintf("%s.%s", prefix, "target.address")
+	usernameKey := fmt.Sprintf("%s.%s", prefix, "target.username")
+	passwordKey := fmt.Sprintf("%s.%s", prefix, "target.password")
+	caCertKey := fmt.Sprintf("%s.%s", prefix, "target.ca_cert")
+	retryKey := fmt.Sprintf("%s.%s", prefix, "target.retry")
+
+	return c.m.GetString(addressKey), c.m.GetString(usernameKey), c.m.GetString(passwordKey), c.m.GetString(caCertKey), int(c.m.GetInt64(retryKey))
+}
+
 // Dump current configuration keys and their values. Keys with values matching
 // their defaults are omitted.
 func (c *Config) Dump() map[string]string {
@@ -266,9 +422,7 @@ func (c *Config) Replace(values map[string]string) (map[string]string, error) {
 // Return what has actually changed.
 func (c *Config) Patch(patch map[string]string) (map[string]string, error) {
 	values := c.Dump() // Use current values as defaults
-	for name, value := range patch {
-		values[name] = value
-	}
+	maps.Copy(values, patch)
 
 	return c.update(values)
 }
@@ -296,7 +450,7 @@ var ConfigSchema = config.Schema{
 	//  scope: global
 	//  defaultdesc: `https://acme-v02.api.letsencrypt.org/directory`
 	//  shortdesc: URL to the directory resource of the ACME service
-	"acme.ca_url": {},
+	"acme.ca_url": {Default: "https://acme-v02.api.letsencrypt.org/directory"},
 
 	// gendoc:generate(entity=server, group=acme, key=acme.domain)
 	//
@@ -323,8 +477,61 @@ var ConfigSchema = config.Schema{
 	//  shortdesc: Agree to ACME terms of service
 	"acme.agree_tos": {Type: config.Bool, Default: "false"},
 
+	// gendoc:generate(entity=server, group=acme, key=acme.challenge)
+	// Possible values are `DNS-01` and `HTTP-01`.
+	// ---
+	//  type: string
+	//  scope: global
+	//  defaultdesc: `HTTP-01`
+	//  shortdesc: ACME challenge type to use
+	"acme.challenge": {Type: config.String, Default: "HTTP-01", Validator: validate.Optional(validate.IsOneOf("DNS-01", "HTTP-01"))},
+
+	// gendoc:generate(entity=server, group=acme, key=acme.provider)
+	//
+	// ---
+	//  type: string
+	//  scope: global
+	//  defaultdesc: ``
+	//  shortdesc: Backend provider for the challenge (used by DNS-01)
+	"acme.provider": {Type: config.String, Default: ""},
+
+	// gendoc:generate(entity=server, group=acme, key=acme.provider.environment)
+	//
+	// ---
+	//  type: string
+	//  scope: global
+	//  defaultdesc: ``
+	//  shortdesc: Environment variables to set during the challenge (used by DNS-01)
+	"acme.provider.environment": {Type: config.String, Default: ""},
+
+	// gendoc:generate(entity=server, group=acme, key=acme.provider.resolvers)
+	// DNS resolvers to use for performing (recursive) `CNAME` resolving and apex domain determination during DNS-01 challenge.
+	// ---
+	//  type: string
+	//  scope: global
+	//  defaultdesc: ``
+	//  shortdesc: Comma-separated list of DNS resolvers (used by DNS-01)
+	"acme.provider.resolvers": {Type: config.String, Default: ""},
+
+	// gendoc:generate(entity=server, group=acme, key=acme.http.port)
+	// Set the port and interface to use for HTTP-01 based challenges to listen on
+	// ---
+	//  type: string
+	//  scope: global
+	//  defaultdesc: `:80`
+	//  shortdesc: Port and interface for HTTP server (used by HTTP-01)
+	"acme.http.port": {Default: ":80", Validator: validate.Optional(validate.IsListenAddress(true, true, false))},
+
+	// gendoc:generate(entity=server, group=miscellaneous, key=authorization.scriptlet)
+	// When using scriptlet-based authorization, this option stores the scriptlet.
+	// ---
+	//  type: string
+	//  scope: global
+	//  shortdesc: Authorization scriptlet
+	"authorization.scriptlet": {Validator: validate.Optional(scriptletLoad.AuthorizationValidate)},
+
 	// gendoc:generate(entity=server, group=miscellaneous, key=backups.compression_algorithm)
-	// Possible values are `bzip2`, `gzip`, `lzma`, `xz`, or `none`.
+	// Possible values are `bzip2`, `gzip`, `lz4`, `lzma`, `xz`, `zstd` or `none`.
 	// ---
 	//  type: string
 	//  scope: global
@@ -389,6 +596,42 @@ var ConfigSchema = config.Schema{
 	//  defaultdesc: `2`
 	//  shortdesc: Number of database stand-by members
 	"cluster.max_standby": {Type: config.Int64, Default: "2", Validator: maxStandByValidator},
+
+	// gendoc:generate(entity=server, group=cluster, key=cluster.rebalance.batch)
+	//
+	// ---
+	//  type: integer
+	//  scope: global
+	//  defaultdesc: `1`
+	//  shortdesc: Maximum number of instances to move during one re-balancing run
+	"cluster.rebalance.batch": {Type: config.Int64, Default: "1"},
+
+	// gendoc:generate(entity=server, group=cluster, key=cluster.rebalance.cooldown)
+	//
+	// ---
+	//  type: string
+	//  scope: global
+	//  defaultdesc: `6H`
+	//  shortdesc: Amount of time during which an instance will not be moved again
+	"cluster.rebalance.cooldown": {Type: config.String, Default: "6H", Validator: validate.Optional(expiryValidator)},
+
+	// gendoc:generate(entity=server, group=cluster, key=cluster.rebalance.interval)
+	//
+	// ---
+	//  type: integer
+	//  scope: global
+	//  defaultdesc: `0`
+	//  shortdesc: How often (in minutes) to consider re-balancing things. 0 to disable (default)
+	"cluster.rebalance.interval": {Type: config.Int64, Default: "0"},
+
+	// gendoc:generate(entity=server, group=cluster, key=cluster.rebalance.threshold)
+	//
+	// ---
+	//  type: integer
+	//  scope: global
+	//  defaultdesc: `20`
+	//  shortdesc: Percentage load difference between most and least busy server needed to trigger a migration
+	"cluster.rebalance.threshold": {Type: config.Int64, Default: "20", Validator: validate.Optional(rebalanceThresholdValidator)},
 
 	// gendoc:generate(entity=server, group=core, key=core.metrics_authentication)
 	//
@@ -521,7 +764,7 @@ var ConfigSchema = config.Schema{
 	"images.auto_update_interval": {Type: config.Int64, Default: "6"},
 
 	// gendoc:generate(entity=server, group=images, key=images.compression_algorithm)
-	// Possible values are `bzip2`, `gzip`, `lzma`, `xz`, or `none`.
+	// Possible values are `bzip2`, `gzip`, `lz4`, `lzma`, `xz`, `zstd` or `none`.
 	// ---
 	//  type: string
 	//  scope: global
@@ -589,7 +832,7 @@ var ConfigSchema = config.Schema{
 	//  type: string
 	//  scope: global
 	//  shortdesc: User name used for Loki authentication
-	"loki.auth.username": {},
+	"loki.auth.username": {Deprecated: "Use 'logging.*.target.username' instead"},
 
 	// gendoc:generate(entity=server, group=loki, key=loki.auth.password)
 	//
@@ -597,7 +840,7 @@ var ConfigSchema = config.Schema{
 	//  type: string
 	//  scope: global
 	//  shortdesc: Password used for Loki authentication
-	"loki.auth.password": {},
+	"loki.auth.password": {Deprecated: "Use 'logging.*.target.password' instead"},
 
 	// gendoc:generate(entity=server, group=loki, key=loki.api.ca_cert)
 	//
@@ -605,7 +848,7 @@ var ConfigSchema = config.Schema{
 	//  type: string
 	//  scope: global
 	//  shortdesc: CA certificate for the Loki server
-	"loki.api.ca_cert": {},
+	"loki.api.ca_cert": {Deprecated: "Use 'logging.*.target.ca_cert' instead"},
 
 	// gendoc:generate(entity=server, group=loki, key=loki.api.url)
 	// Specify the protocol, name or IP and port. For example `https://loki.example.com:3100`. Incus will automatically add the `/loki/api/v1/push` suffix so there's no need to add it here.
@@ -613,7 +856,7 @@ var ConfigSchema = config.Schema{
 	//  type: string
 	//  scope: global
 	//  shortdesc: URL to the Loki server
-	"loki.api.url": {},
+	"loki.api.url": {Deprecated: "Use 'logging.*.target.address' instead"},
 
 	// gendoc:generate(entity=server, group=loki, key=loki.instance)
 	// This allows replacing the default instance value (server host name) by a more relevant value like a cluster identifier.
@@ -622,7 +865,7 @@ var ConfigSchema = config.Schema{
 	//  scope: global
 	//  defaultdesc: Local server host name or cluster member name
 	//  shortdesc: Name to use as the instance field in Loki events.
-	"loki.instance": {},
+	"loki.instance": {Deprecated: "Use 'logging.*.target.instance' instead"},
 
 	// gendoc:generate(entity=server, group=loki, key=loki.labels)
 	// Specify a comma-separated list of values that should be used as labels for a Loki log entry.
@@ -630,7 +873,7 @@ var ConfigSchema = config.Schema{
 	//  type: string
 	//  scope: global
 	//  shortdesc: Labels for a Loki log entry
-	"loki.labels": {},
+	"loki.labels": {Deprecated: "Use 'logging.*.target.labels' instead"},
 
 	// gendoc:generate(entity=server, group=loki, key=loki.loglevel)
 	//
@@ -639,7 +882,7 @@ var ConfigSchema = config.Schema{
 	//  scope: global
 	//  defaultdesc: `info`
 	//  shortdesc: Minimum log level to send to the Loki server
-	"loki.loglevel": {Validator: logLevelValidator, Default: logrus.InfoLevel.String()},
+	"loki.loglevel": {Validator: config.LogLevelValidator, Default: logrus.InfoLevel.String(), Deprecated: "Use 'logging.*.logging.level' instead"},
 
 	// gendoc:generate(entity=server, group=loki, key=loki.types)
 	// Specify a comma-separated list of events to send to the Loki server.
@@ -649,7 +892,7 @@ var ConfigSchema = config.Schema{
 	//  scope: global
 	//  defaultdesc: `lifecycle,logging`
 	//  shortdesc: Events to send to the Loki server
-	"loki.types": {Validator: validate.Optional(validate.IsListOf(validate.IsOneOf("lifecycle", "logging", "network-acl"))), Default: "lifecycle,logging"},
+	"loki.types": {Validator: validate.Optional(validate.IsListOf(validate.IsOneOf("lifecycle", "logging", "network-acl"))), Default: "lifecycle,logging", Deprecated: "Use 'logging.*.types' instead"},
 
 	// gendoc:generate(entity=server, group=openfga, key=openfga.api.token)
 	//
@@ -772,19 +1015,6 @@ func expiryValidator(value string) error {
 	return nil
 }
 
-func logLevelValidator(value string) error {
-	if value == "" {
-		return nil
-	}
-
-	_, err := logrus.ParseLevel(value)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func offlineThresholdDefault() string {
 	return strconv.Itoa(db.DefaultOfflineThreshold)
 }
@@ -796,7 +1026,7 @@ func offlineThresholdValidator(value string) error {
 	// which is the lower bound granularity of the offline check.
 	threshold, err := strconv.Atoi(value)
 	if err != nil {
-		return fmt.Errorf("Offline threshold is not a number")
+		return errors.New("Offline threshold is not a number")
 	}
 
 	if threshold <= minThreshold {
@@ -809,11 +1039,11 @@ func offlineThresholdValidator(value string) error {
 func imageMinimalReplicaValidator(value string) error {
 	count, err := strconv.Atoi(value)
 	if err != nil {
-		return fmt.Errorf("Minimal image replica count is not a number")
+		return errors.New("Minimal image replica count is not a number")
 	}
 
 	if count < 1 && count != -1 {
-		return fmt.Errorf("Invalid value for image replica count")
+		return errors.New("Invalid value for image replica count")
 	}
 
 	return nil
@@ -822,11 +1052,11 @@ func imageMinimalReplicaValidator(value string) error {
 func maxVotersValidator(value string) error {
 	n, err := strconv.Atoi(value)
 	if err != nil {
-		return fmt.Errorf("Value is not a number")
+		return errors.New("Value is not a number")
 	}
 
 	if n < 3 || n%2 != 1 {
-		return fmt.Errorf("Value must be an odd number equal to or higher than 3")
+		return errors.New("Value must be an odd number equal to or higher than 3")
 	}
 
 	return nil
@@ -835,11 +1065,24 @@ func maxVotersValidator(value string) error {
 func maxStandByValidator(value string) error {
 	n, err := strconv.Atoi(value)
 	if err != nil {
-		return fmt.Errorf("Value is not a number")
+		return errors.New("Value is not a number")
 	}
 
 	if n < 0 || n > 5 {
-		return fmt.Errorf("Value must be between 0 and 5")
+		return errors.New("Value must be between 0 and 5")
+	}
+
+	return nil
+}
+
+func rebalanceThresholdValidator(value string) error {
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return errors.New("Value is not a number")
+	}
+
+	if n < 10 || n > 100 {
+		return errors.New("Value must be between 10 and 100")
 	}
 
 	return nil

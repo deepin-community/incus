@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 )
 
@@ -34,7 +34,6 @@ func (d *cephobject) radosgwadmin(ctx context.Context, args ...string) (string, 
 // If no user exists returns api.StatusError with status code set to http.StatusNotFound.
 func (d *cephobject) radosgwadminGetUser(ctx context.Context, user string) (*S3Credentials, map[string]S3Credentials, error) {
 	out, err := d.radosgwadmin(ctx, "user", "info", "--uid", user)
-
 	if err != nil {
 		status, _ := linux.ExitStatus(err)
 		if status == 22 {
@@ -96,15 +95,15 @@ func (d *cephobject) radosgwadminGetUser(ctx context.Context, user string) (*S3C
 
 // radosgwadminUserAdd creates a radosgw user and return generated credentials.
 func (d *cephobject) radosgwadminUserAdd(ctx context.Context, user string, maxBuckets int) (*S3Credentials, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	out, err := d.radosgwadmin(ctx, "user", "create", "--max-buckets", fmt.Sprintf("%d", maxBuckets), "--display-name", user, "--uid", user)
 	if err != nil {
 		return nil, err
 	}
 
-	revert.Add(func() { _ = d.radosgwadminUserDelete(ctx, user) })
+	reverter.Add(func() { _ = d.radosgwadminUserDelete(ctx, user) })
 
 	creds := struct {
 		Keys []struct {
@@ -120,7 +119,7 @@ func (d *cephobject) radosgwadminUserAdd(ctx context.Context, user string, maxBu
 
 	for _, key := range creds.Keys {
 		if key.User == user {
-			revert.Success()
+			reverter.Success()
 
 			return &S3Credentials{AccessKey: key.AccessKey, SecretKey: key.SecretKey}, err
 		}
@@ -138,8 +137,8 @@ func (d *cephobject) radosgwadminUserDelete(ctx context.Context, user string) er
 
 // radosgwadminSubUserAdd adds a radosgw sub user.
 func (d *cephobject) radosgwadminSubUserAdd(ctx context.Context, user string, subuser string, accessRole string, accessKey string, secretKey string) (*S3Credentials, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	args := []string{"subuser", "create", "--uid", user, "--key-type", "s3", "--subuser", subuser, "--access", accessRole}
 
@@ -160,7 +159,7 @@ func (d *cephobject) radosgwadminSubUserAdd(ctx context.Context, user string, su
 		return nil, err
 	}
 
-	revert.Add(func() { _ = d.radosgwadminUserDelete(ctx, user) })
+	reverter.Add(func() { _ = d.radosgwadminUserDelete(ctx, user) })
 
 	creds := struct {
 		Keys []struct {
@@ -178,7 +177,7 @@ func (d *cephobject) radosgwadminSubUserAdd(ctx context.Context, user string, su
 
 	for _, key := range creds.Keys {
 		if key.User == keyUser {
-			revert.Success()
+			reverter.Success()
 
 			return &S3Credentials{AccessKey: key.AccessKey, SecretKey: key.SecretKey}, err
 		}

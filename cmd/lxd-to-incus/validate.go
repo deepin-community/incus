@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,8 +12,10 @@ import (
 	"github.com/lxc/incus/v6/shared/util"
 )
 
-var minLXDVersion = &version.DottedVersion{Major: 4, Minor: 0, Patch: 0}
-var maxLXDVersion = &version.DottedVersion{Major: 5, Minor: 21, Patch: 99}
+var (
+	minLXDVersion = &version.DottedVersion{Major: 4, Minor: 0, Patch: 0}
+	maxLXDVersion = &version.DottedVersion{Major: 5, Minor: 21, Patch: 99}
+)
 
 func (c *cmdMigrate) validate(source source, target target) error {
 	srcClient, err := source.connect()
@@ -81,7 +84,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 			return false, nil
 		}
 
-		// Check if any instance is persent.
+		// Check if any instance is present.
 		names, err = srcClient.GetInstanceNames(api.InstanceTypeAny)
 		if err != nil {
 			return false, err
@@ -123,7 +126,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 	}
 
 	if isEmpty {
-		return fmt.Errorf("Source server is empty, migration not needed")
+		return errors.New("Source server is empty, migration not needed")
 	}
 
 	// Validate target empty.
@@ -194,7 +197,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 	}
 
 	// Validate configuration.
-	errors := []error{}
+	validationErrors := []error{}
 
 	fmt.Println("=> Validating source server configuration")
 	deprecatedConfigs := []string{
@@ -218,7 +221,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 	for _, key := range deprecatedConfigs {
 		_, ok := srcServerInfo.Config[key]
 		if ok {
-			errors = append(errors, fmt.Errorf("Source server is using deprecated server configuration key %q", key))
+			validationErrors = append(validationErrors, fmt.Errorf("Source server is using deprecated server configuration key %q", key))
 		}
 	}
 
@@ -242,7 +245,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 		for _, key := range deprecatedNetworkConfigs {
 			_, ok := network.Config[key]
 			if ok {
-				errors = append(errors, fmt.Errorf("Source server has network %q using deprecated configuration key %q", network.Name, key))
+				validationErrors = append(validationErrors, fmt.Errorf("Source server has network %q using deprecated configuration key %q", network.Name, key))
 			}
 		}
 	}
@@ -256,28 +259,28 @@ func (c *cmdMigrate) validate(source source, target target) error {
 		if pool.Driver == "zfs" {
 			_, err = exec.LookPath("zfs")
 			if err != nil {
-				errors = append(errors, fmt.Errorf("Required command %q is missing for storage pool %q", "zfs", pool.Name))
+				validationErrors = append(validationErrors, fmt.Errorf("Required command %q is missing for storage pool %q", "zfs", pool.Name))
 			}
 		} else if pool.Driver == "btrfs" {
 			_, err = exec.LookPath("btrfs")
 			if err != nil {
-				errors = append(errors, fmt.Errorf("Required command %q is missing for storage pool %q", "btrfs", pool.Name))
+				validationErrors = append(validationErrors, fmt.Errorf("Required command %q is missing for storage pool %q", "btrfs", pool.Name))
 			}
 		} else if pool.Driver == "ceph" || pool.Driver == "cephfs" || pool.Driver == "cephobject" {
 			_, err = exec.LookPath("ceph")
 			if err != nil {
-				errors = append(errors, fmt.Errorf("Required command %q is missing for storage pool %q", "ceph", pool.Name))
+				validationErrors = append(validationErrors, fmt.Errorf("Required command %q is missing for storage pool %q", "ceph", pool.Name))
 			}
 		} else if pool.Driver == "lvm" || pool.Driver == "lvmcluster" {
 			_, err = exec.LookPath("lvm")
 			if err != nil {
-				errors = append(errors, fmt.Errorf("Required command %q is missing for storage pool %q", "lvm", pool.Name))
+				validationErrors = append(validationErrors, fmt.Errorf("Required command %q is missing for storage pool %q", "lvm", pool.Name))
 			}
 
 			if pool.Driver == "lvmcluster" {
 				_, err = exec.LookPath("lvmlockctl")
 				if err != nil {
-					errors = append(errors, fmt.Errorf("Required command %q is missing for storage pool %q", "lvmlockctl", pool.Name))
+					validationErrors = append(validationErrors, fmt.Errorf("Required command %q is missing for storage pool %q", "lvmlockctl", pool.Name))
 				}
 			}
 		}
@@ -312,7 +315,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 			for _, key := range deprecatedInstanceConfigs {
 				_, ok := inst.Config[key]
 				if ok {
-					errors = append(errors, fmt.Errorf("Source server has instance %q in project %q using deprecated configuration key %q", inst.Name, project.Name, key))
+					validationErrors = append(validationErrors, fmt.Errorf("Source server has instance %q in project %q using deprecated configuration key %q", inst.Name, project.Name, key))
 				}
 			}
 
@@ -320,7 +323,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 				for _, key := range deprecatedInstanceDeviceConfigs {
 					_, ok := device[key]
 					if ok {
-						errors = append(errors, fmt.Errorf("Source server has device %q for instance %q in project %q using deprecated configuration key %q", deviceName, inst.Name, project.Name, key))
+						validationErrors = append(validationErrors, fmt.Errorf("Source server has device %q for instance %q in project %q using deprecated configuration key %q", deviceName, inst.Name, project.Name, key))
 					}
 				}
 			}
@@ -335,7 +338,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 			for _, key := range deprecatedInstanceConfigs {
 				_, ok := profile.Config[key]
 				if ok {
-					errors = append(errors, fmt.Errorf("Source server has profile %q in project %q using deprecated configuration key %q", profile.Name, project.Name, key))
+					validationErrors = append(validationErrors, fmt.Errorf("Source server has profile %q in project %q using deprecated configuration key %q", profile.Name, project.Name, key))
 				}
 			}
 
@@ -343,7 +346,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 				for _, key := range deprecatedInstanceDeviceConfigs {
 					_, ok := device[key]
 					if ok {
-						errors = append(errors, fmt.Errorf("Source server has device %q for profile %q in project %q using deprecated configuration key %q", deviceName, profile.Name, project.Name, key))
+						validationErrors = append(validationErrors, fmt.Errorf("Source server has device %q for profile %q in project %q using deprecated configuration key %q", deviceName, profile.Name, project.Name, key))
 					}
 				}
 			}
@@ -354,7 +357,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 	if srcServerInfo.Environment.ServerClustered {
 		clusterMembers, err := srcClient.GetClusterMembers()
 		if err != nil {
-			return fmt.Errorf("Failed to retrieve the list of cluster members")
+			return errors.New("Failed to retrieve the list of cluster members")
 		}
 
 		for _, member := range clusterMembers {
@@ -363,19 +366,19 @@ func (c *cmdMigrate) validate(source source, target target) error {
 					continue
 				}
 
-				errors = append(errors, fmt.Errorf("Cluster member %q isn't in the online state", member.ServerName))
+				validationErrors = append(validationErrors, fmt.Errorf("Cluster member %q isn't in the online state", member.ServerName))
 			}
 		}
 	}
 
-	if len(errors) > 0 {
+	if len(validationErrors) > 0 {
 		fmt.Println("")
 		fmt.Println("Source server uses obsolete features:")
-		for _, err := range errors {
+		for _, err := range validationErrors {
 			fmt.Printf(" - %s\n", err.Error())
 		}
 
-		return fmt.Errorf("Source server is using incompatible configuration")
+		return errors.New("Source server is using incompatible configuration")
 	}
 
 	// Storage validation.
@@ -405,7 +408,7 @@ func (c *cmdMigrate) validate(source source, target target) error {
 	srcFilesystem, _ := linux.DetectFilesystem(sourcePaths.daemon)
 	targetFilesystem, _ := linux.DetectFilesystem(targetPaths.daemon)
 	if srcFilesystem == "btrfs" && targetFilesystem != "btrfs" && !linux.IsMountPoint(sourcePaths.daemon) {
-		return fmt.Errorf("Source daemon running on btrfs but being moved to non-btrfs target")
+		return errors.New("Source daemon running on btrfs but being moved to non-btrfs target")
 	}
 
 	// Shiftfs check.

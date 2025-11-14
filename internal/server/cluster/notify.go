@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/state"
 	"github.com/lxc/incus/v6/shared/logger"
@@ -21,7 +21,7 @@ type Notifier func(hook func(incus.InstanceServer) error) error
 // some nodes are down.
 type NotifierPolicy int
 
-// Possible notifcation policies.
+// Possible notification policies.
 const (
 	NotifyAll    NotifierPolicy = iota // Requires that all nodes are up.
 	NotifyAlive                        // Only notifies nodes that are alive

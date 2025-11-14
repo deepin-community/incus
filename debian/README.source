@@ -1,5 +1,24 @@
-incus-agent static linking
-==========================
+Packaging policy for LTS and Feature releases
+=============================================
+
+Debian packages the current LTS release of Incus in unstable, which will then migrate
+to testing and eventually become part of the next stable Debian release. Upstream
+supports a LTS branch for five years, including security fixes. This aligns well with
+Debian's development cycle and commitment to supporting packaged software.
+
+Monthly feature releases of Incus are uploaded on a best-effort basis to experimental,
+and _only_ to experimental. Upstream is very clear that each feature release is only
+supported until the next feature release is made. A given feature release of Incus will
+NEVER be uploaded to unstable, _except_ when a new LTS branch is created by upstream.
+
+Versions of Incus in experimental will by definition be less well tested than the version
+in unstable, though bug reports are always welcome.
+
+incus-agent versions and static linking
+=======================================
+
+During amd64 and arm64 builds, multiple versions of incus-agent will be built. Notably,
+a Windows version will be compiled to support incus-agent running in a Windows VM.
 
 The incus-agent binary is compiled as a statically-linked executable. This is done
 because if it is available on the host system, Incus will automatically copy the

@@ -73,7 +73,7 @@ func (b *InstanceBackup) Rename(newName string) error {
 
 	// Create the new backup path if doesn't exist.
 	if !util.PathExists(newParentBackupsPath) {
-		err := os.MkdirAll(newParentBackupsPath, 0700)
+		err := os.MkdirAll(newParentBackupsPath, 0o700)
 		if err != nil {
 			return err
 		}
@@ -152,4 +152,10 @@ func (b *InstanceBackup) Render() *api.InstanceBackup {
 		InstanceOnly:     b.instanceOnly,
 		OptimizedStorage: b.optimizedStorage,
 	}
+}
+
+// Upload pushes the backup to external storage.
+func (b *InstanceBackup) Upload(req *api.BackupTarget) error {
+	backupPath := internalUtil.VarPath("backups", "instances", project.Instance(b.instance.Project().Name, b.name))
+	return b.upload(backupPath, req)
 }

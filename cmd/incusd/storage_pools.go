@@ -3,16 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/gorilla/mux"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/internal/filter"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	clusterRequest "github.com/lxc/incus/v6/internal/server/cluster/request"
@@ -27,9 +29,11 @@ import (
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/util"
+	"github.com/lxc/incus/v6/shared/validate"
 )
 
-// Lock to prevent concurent storage pools creation.
+// Lock to prevent concurrent storage pools creation.
 var storagePoolCreateLock sync.Mutex
 
 var storagePoolsCmd = APIEndpoint{
@@ -61,6 +65,11 @@ var storagePoolCmd = APIEndpoint{
 //    - in: query
 //      name: project
 //      description: Project name
+//      type: string
+//      example: default
+//    - in: query
+//      name: filter
+//      description: Collection filter
 //      type: string
 //      example: default
 //  responses:
@@ -99,56 +108,71 @@ var storagePoolCmd = APIEndpoint{
 
 // swagger:operation GET /1.0/storage-pools?recursion=1 storage storage_pools_get_recursion1
 //
-//	Get the storage pools
+//  Get the storage pools
 //
-//	Returns a list of storage pools (structs).
+//  Returns a list of storage pools (structs).
 //
-//	---
-//	produces:
-//	  - application/json
-//	parameters:
-//	  - in: query
-//	    name: project
-//	    description: Project name
-//	    type: string
-//	    example: default
-//	responses:
-//	  "200":
-//	    description: API endpoints
-//	    schema:
-//	      type: object
-//	      description: Sync response
-//	      properties:
-//	        type:
-//	          type: string
-//	          description: Response type
-//	          example: sync
-//	        status:
-//	          type: string
-//	          description: Status description
-//	          example: Success
-//	        status_code:
-//	          type: integer
-//	          description: Status code
-//	          example: 200
-//	        metadata:
-//	          type: array
-//	          description: List of storage pools
-//	          items:
-//	            $ref: "#/definitions/StoragePool"
-//	  "403":
-//	    $ref: "#/responses/Forbidden"
-//	  "500":
-//	    $ref: "#/responses/InternalServerError"
+//  ---
+//  produces:
+//    - application/json
+//  parameters:
+//    - in: query
+//      name: project
+//      description: Project name
+//      type: string
+//      example: default
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
+//  responses:
+//    "200":
+//      description: API endpoints
+//      schema:
+//        type: object
+//        description: Sync response
+//        properties:
+//          type:
+//            type: string
+//            description: Response type
+//            example: sync
+//          status:
+//            type: string
+//            description: Status description
+//            example: Success
+//          status_code:
+//            type: integer
+//            description: Status code
+//            example: 200
+//          metadata:
+//            type: array
+//            description: List of storage pools
+//            items:
+//              $ref: "#/definitions/StoragePool"
+//    "403":
+//      $ref: "#/responses/Forbidden"
+//    "500":
+//      $ref: "#/responses/InternalServerError"
+
 func storagePoolsGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
 	recursion := localUtil.IsRecursionRequest(r)
 
+	// Parse filter value.
+	filterStr := r.FormValue("filter")
+	clauses, err := filter.Parse(filterStr, filter.QueryOperatorSet())
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid filter: %w", err))
+	}
+
+	mustLoadObjects := recursion || (clauses != nil && len(clauses.Clauses) > 0)
+
 	var poolNames []string
 	var hiddenPoolNames []string
 
-	err := s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
 		var err error
 
 		// Load the pool names.
@@ -174,17 +198,16 @@ func storagePoolsGet(d *Daemon, r *http.Request) response.Response {
 		return response.InternalError(err)
 	}
 
-	resultString := []string{}
-	resultMap := []api.StoragePool{}
+	linkResults := make([]string, 0)
+	fullResults := make([]api.StoragePool, 0)
+
 	for _, poolName := range poolNames {
 		// Hide storage pools with a 0 project limit.
 		if slices.Contains(hiddenPoolNames, poolName) {
 			continue
 		}
 
-		if !recursion {
-			resultString = append(resultString, fmt.Sprintf("/%s/storage-pools/%s", version.APIVersion, poolName))
-		} else {
+		if mustLoadObjects {
 			pool, err := storagePools.LoadByName(s, poolName)
 			if err != nil {
 				return response.SmartError(err)
@@ -214,15 +237,28 @@ func storagePoolsGet(d *Daemon, r *http.Request) response.Response {
 				poolAPI.Status = pool.LocalStatus()
 			}
 
-			resultMap = append(resultMap, poolAPI)
+			if clauses != nil && len(clauses.Clauses) > 0 {
+				match, err := filter.Match(poolAPI, *clauses)
+				if err != nil {
+					return response.SmartError(err)
+				}
+
+				if !match {
+					continue
+				}
+			}
+
+			fullResults = append(fullResults, poolAPI)
 		}
+
+		linkResults = append(linkResults, fmt.Sprintf("/%s/storage-pools/%s", version.APIVersion, poolName))
 	}
 
 	if !recursion {
-		return response.SyncResponse(true, resultString)
+		return response.SyncResponse(true, linkResults)
 	}
 
-	return response.SyncResponse(true, resultMap)
+	return response.SyncResponse(true, fullResults)
 }
 
 // swagger:operation POST /1.0/storage-pools storage storage_pools_post
@@ -279,15 +315,16 @@ func storagePoolsPost(d *Daemon, r *http.Request) response.Response {
 
 	// Quick checks.
 	if req.Name == "" {
-		return response.BadRequest(fmt.Errorf("No name provided"))
+		return response.BadRequest(errors.New("No name provided"))
 	}
 
-	if strings.Contains(req.Name, "/") {
-		return response.BadRequest(fmt.Errorf("Storage pool names may not contain slashes"))
+	err = validate.IsAPIName(req.Name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid storage pool name: %w", err))
 	}
 
 	if req.Driver == "" {
-		return response.BadRequest(fmt.Errorf("No driver provided"))
+		return response.BadRequest(errors.New("No driver provided"))
 	}
 
 	if req.Config == nil {
@@ -360,7 +397,7 @@ func storagePoolsPost(d *Daemon, r *http.Request) response.Response {
 			return tx.CreatePendingStoragePool(ctx, targetNode, req.Name, req.Driver, req.Config)
 		})
 		if err != nil {
-			if err == db.ErrAlreadyDefined {
+			if errors.Is(err, db.ErrAlreadyDefined) {
 				return response.BadRequest(fmt.Errorf("The storage pool already defined on member %q", targetNode))
 			}
 
@@ -462,7 +499,7 @@ func storagePoolsPostCluster(ctx context.Context, s *state.State, pool *api.Stor
 	if pool != nil {
 		// Check pool isn't already created.
 		if pool.Status == api.StoragePoolStatusCreated {
-			return fmt.Errorf("The storage pool is already created")
+			return errors.New("The storage pool is already created")
 		}
 
 		// Check the requested pool type matches the type created when adding the local member config.
@@ -486,7 +523,7 @@ func storagePoolsPostCluster(ctx context.Context, s *state.State, pool *api.Stor
 		// Check if any global config exists already, if so we should not create global config again.
 		if pool != nil && storagePoolPartiallyCreated(pool) {
 			if len(req.Config) > 0 {
-				return fmt.Errorf("Storage pool already partially created. Please do not specify any global config when re-running create")
+				return errors.New("Storage pool already partially created. Please do not specify any global config when re-running create")
 			}
 
 			logger.Debug("Skipping global storage pool create as global config already partially created", logger.Ctx{"pool": req.Name})
@@ -510,7 +547,7 @@ func storagePoolsPostCluster(ctx context.Context, s *state.State, pool *api.Stor
 	})
 	if err != nil {
 		if response.IsNotFoundError(err) {
-			return fmt.Errorf("Pool not pending on any node (use --target <node> first)")
+			return errors.New("Pool not pending on any node (use --target <node> first)")
 		}
 
 		return err
@@ -526,9 +563,7 @@ func storagePoolsPostCluster(ctx context.Context, s *state.State, pool *api.Stor
 	nodeReq := req
 
 	// Merge node specific config items into global config.
-	for key, value := range configs[s.ServerName] {
-		nodeReq.Config[key] = value
-	}
+	maps.Copy(nodeReq.Config, configs[s.ServerName])
 
 	updatedConfig, err := storagePoolCreateLocal(ctx, s, poolID, req, clientType)
 	if err != nil {
@@ -554,15 +589,10 @@ func storagePoolsPostCluster(ctx context.Context, s *state.State, pool *api.Stor
 
 		// Clone fresh node config so we don't modify req.Config with this node's specific config which
 		// could result in it being sent to other nodes later.
-		nodeReq.Config = make(map[string]string, len(req.Config))
-		for k, v := range req.Config {
-			nodeReq.Config[k] = v
-		}
+		nodeReq.Config = util.CloneMap(req.Config)
 
 		// Merge node specific config items into global config.
-		for key, value := range configs[server.Environment.ServerName] {
-			nodeReq.Config[key] = value
-		}
+		maps.Copy(nodeReq.Config, configs[server.Environment.ServerName])
 
 		err = client.CreateStoragePool(nodeReq)
 		if err != nil {
@@ -775,7 +805,7 @@ func storagePoolPut(d *Daemon, r *http.Request) response.Response {
 	targetNode := request.QueryParam(r, "target")
 
 	if targetNode == "" && pool.Status() != api.StoragePoolStatusCreated {
-		return response.BadRequest(fmt.Errorf("Cannot update storage pool global config when not in created state"))
+		return response.BadRequest(errors.New("Cannot update storage pool global config when not in created state"))
 	}
 
 	// Duplicate config for etag modification and generation.
@@ -1003,7 +1033,7 @@ func storagePoolDelete(d *Daemon, r *http.Request) response.Response {
 		}
 
 		if inUse {
-			return response.BadRequest(fmt.Errorf("The storage pool is currently in use"))
+			return response.BadRequest(errors.New("The storage pool is currently in use"))
 		}
 
 		// Get the cluster notifier

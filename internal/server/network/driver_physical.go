@@ -2,17 +2,20 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"slices"
 	"strconv"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/cluster/request"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/ip"
+	"github.com/lxc/incus/v6/internal/server/network/ovs"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
@@ -28,24 +31,172 @@ func (n *physical) DBType() db.NetworkType {
 }
 
 // Validate network config.
-func (n *physical) Validate(config map[string]string) error {
+func (n *physical) Validate(config map[string]string, clientType request.ClientType) error {
 	rules := map[string]func(value string) error{
-		"parent":                      validate.Required(validate.IsNotEmpty, validate.IsInterfaceName),
-		"mtu":                         validate.Optional(validate.IsNetworkMTU),
-		"vlan":                        validate.Optional(validate.IsNetworkVLAN),
-		"gvrp":                        validate.Optional(validate.IsBool),
-		"ipv4.gateway":                validate.Optional(validate.IsNetworkAddressCIDRV4),
-		"ipv6.gateway":                validate.Optional(validate.IsNetworkAddressCIDRV6),
-		"ipv4.ovn.ranges":             validate.Optional(validate.IsListOf(validate.IsNetworkRangeV4)),
-		"ipv6.ovn.ranges":             validate.Optional(validate.IsListOf(validate.IsNetworkRangeV6)),
-		"ipv4.routes":                 validate.Optional(validate.IsListOf(validate.IsNetworkV4)),
-		"ipv4.routes.anycast":         validate.Optional(validate.IsBool),
-		"ipv6.routes":                 validate.Optional(validate.IsListOf(validate.IsNetworkV6)),
-		"ipv6.routes.anycast":         validate.Optional(validate.IsBool),
-		"dns.nameservers":             validate.Optional(validate.IsListOf(validate.IsNetworkAddress)),
-		"ovn.ingress_mode":            validate.Optional(validate.IsOneOf("l2proxy", "routed")),
+		// gendoc:generate(entity=network_physical, group=common, key=parent)
+		//
+		// ---
+		// type: string
+		// condition: -
+		// shortdesc: Existing interface to use for network
+		"parent": validate.Required(validate.IsNotEmpty, validate.IsInterfaceName),
+
+		// gendoc:generate(entity=network_physical, group=common, key=mtu)
+		//
+		// ---
+		// type: integer
+		// condition: -
+		// shortdesc: The MTU of the new interface
+		"mtu": validate.Optional(validate.IsNetworkMTU),
+
+		// gendoc:generate(entity=network_physical, group=common, key=vlan)
+		//
+		// ---
+		// type: integer
+		// condition: -
+		// shortdesc: The VLAN ID to attach to
+		"vlan": validate.Optional(validate.IsNetworkVLAN),
+
+		// gendoc:generate(entity=network_physical, group=common, key=gvrp)
+		//
+		// ---
+		// type: bool
+		// condition: -
+		// defaultdesc: 'false'
+		// shortdesc: Register VLAN using GARP VLAN Registration Protocol
+		"gvrp": validate.Optional(validate.IsBool),
+
+		// gendoc:generate(entity=network_physical, group=ipv4, key=ipv4.gateway)
+		//
+		// ---
+		// type: string
+		// condition: standard mode
+		// shortdesc: IPv4 address for the gateway and network (CIDR)
+		"ipv4.gateway": validate.Optional(validate.IsNetworkAddressCIDRV4),
+
+		// gendoc:generate(entity=network_physical, group=ipv6, key=ipv6.gateway)
+		//
+		// ---
+		// type: string
+		// condition: standard mode
+		// shortdesc: IPv6 address for the gateway and network (CIDR)
+		"ipv6.gateway": validate.Optional(validate.IsNetworkAddressCIDRV6),
+
+		// gendoc:generate(entity=network_physical, group=ipv4, key=ipv4.gateway.hwaddr)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: MAC address of the gateway (to avoid discovery)
+		"ipv4.gateway.hwaddr": validate.Optional(validate.IsNetworkMAC),
+
+		// gendoc:generate(entity=network_physical, group=ipv6, key=ipv6.gateway.hwaddr)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: MAC address of the gateway (to avoid discovery)
+		"ipv6.gateway.hwaddr": validate.Optional(validate.IsNetworkMAC),
+
+		// gendoc:generate(entity=network_physical, group=ipv4, key=ipv4.ovn.ranges)
+		//
+		// ---
+		// type: string
+		// condition: -
+		// shortdesc: Comma-separated list of IPv4 ranges to use for child OVN network routers (FIRST-LAST format)
+		"ipv4.ovn.ranges": validate.Optional(validate.IsListOf(validate.IsNetworkRangeV4)),
+
+		// gendoc:generate(entity=network_physical, group=ipv6, key=ipv6.ovn.ranges)
+		//
+		// ---
+		// type: string
+		// condition: -
+		// shortdesc: Comma-separated list of IPv6 ranges to use for child OVN network routers (FIRST-LAST format)
+		"ipv6.ovn.ranges": validate.Optional(validate.IsListOf(validate.IsNetworkRangeV6)),
+
+		// gendoc:generate(entity=network_physical, group=ipv4, key=ipv4.routes)
+		//
+		// ---
+		// type: string
+		// condition: IPv4 address
+		// shortdesc: Comma-separated list of additional IPv4 CIDR subnets that can be used with child OVN networks `ipv4.routes.external` setting
+		"ipv4.routes": validate.Optional(validate.IsListOf(validate.IsNetworkV4)),
+
+		// gendoc:generate(entity=network_physical, group=ipv4, key=ipv4.routes.anycast)
+		//
+		// ---
+		// type: bool
+		// condition: IPv4 address
+		// defaultdesc: 'false'
+		// shortdesc: Allow the overlapping routes to be used on multiple networks/NIC at the same time
+		"ipv4.routes.anycast": validate.Optional(validate.IsBool),
+
+		// gendoc:generate(entity=network_physical, group=ipv6, key=ipv6.routes)
+		//
+		// ---
+		// type: string
+		// condition: IPv6 address
+		// shortdesc: Comma-separated list of additional IPv6 CIDR subnets that can be used with child OVN networks `ipv6.routes.external` setting
+		"ipv6.routes": validate.Optional(validate.IsListOf(validate.IsNetworkV6)),
+
+		// gendoc:generate(entity=network_physical, group=ipv6, key=ipv6.routes.anycast)
+		//
+		// ---
+		// type: bool
+		// condition: IPv6 address
+		// defaultdesc: 'false'
+		// shortdesc: Allow the overlapping routes to be used on multiple networks/NIC at the same time
+		"ipv6.routes.anycast": validate.Optional(validate.IsBool),
+
+		// gendoc:generate(entity=network_physical, group=dns, key=dns.nameservers)
+		//
+		// ---
+		// type: string
+		// condition: standard mode
+		// shortdesc: List of DNS server IPs on `physical` network
+		"dns.nameservers": validate.Optional(validate.IsListOf(validate.IsNetworkAddress)),
+
+		// gendoc:generate(entity=network_physical, group=ovn, key=ovn.ingress_mode)
+		//
+		// ---
+		// type: string
+		// condition: standard mode
+		// defaultdesc: `l2proxy`
+		// shortdesc: Sets the method how OVN NIC external IPs will be advertised on uplink network: `l2proxy` (proxy ARP/NDP) or `routed`
+		"ovn.ingress_mode": validate.Optional(validate.IsOneOf("l2proxy", "routed")),
+
 		"volatile.last_state.created": validate.Optional(validate.IsBool),
 	}
+
+	// gendoc:generate(entity=network_physical, group=bgp, key=bgp.peers.NAME.address)
+	//
+	// ---
+	// type: string
+	// condition: BGP server
+	// defaultdesc: -
+	// shortdesc: Peer address (IPv4 or IPv6) for use by `ovn` downstream networks
+
+	// gendoc:generate(entity=network_physical, group=bgp, key=bgp.peers.NAME.asn)
+	//
+	// ---
+	// type: integer
+	// condition: BGP server
+	// defaultdesc: -
+	// shortdesc: Peer AS number for use by `ovn` downstream networks
+
+	// gendoc:generate(entity=network_physical, group=bgp, key=bgp.peers.NAME.password)
+	//
+	// ---
+	// type: string
+	// condition: BGP server
+	// defaultdesc: - (no password)
+	// shortdesc: Peer session password (optional) for use by `ovn` downstream networks
+
+	// gendoc:generate(entity=network_physical, group=bgp, key=bgp.peers.NAME.holdtime)
+	//
+	// ---
+	// type: integer
+	// condition: BGP server
+	// defaultdesc: `180`
+	// shortdesc: Peer session hold time (in seconds; optional)
 
 	// Add the BGP validation rules.
 	bgpRules, err := n.bgpValidationRules(config)
@@ -53,9 +204,7 @@ func (n *physical) Validate(config map[string]string) error {
 		return err
 	}
 
-	for k, v := range bgpRules {
-		rules[k] = v
-	}
+	maps.Copy(rules, bgpRules)
 
 	// Validate the configuration.
 	err = n.validate(config, rules)
@@ -153,17 +302,17 @@ func (n *physical) Rename(newName string) error {
 func (n *physical) Start() error {
 	n.logger.Debug("Start")
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
-	revert.Add(func() { n.setUnavailable() })
+	reverter.Add(func() { n.setUnavailable() })
 
 	err := n.setup(nil)
 	if err != nil {
 		return err
 	}
 
-	revert.Success()
+	reverter.Success()
 
 	// Ensure network is marked as available now its started.
 	n.setAvailable()
@@ -172,8 +321,8 @@ func (n *physical) Start() error {
 }
 
 func (n *physical) setup(oldConfig map[string]string) error {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	if !InterfaceExists(n.config["parent"]) {
 		return fmt.Errorf("Parent interface %q not found", n.config["parent"])
@@ -187,7 +336,7 @@ func (n *physical) setup(oldConfig map[string]string) error {
 	}
 
 	if created {
-		revert.Add(func() { _ = InterfaceRemove(hostName) })
+		reverter.Add(func() { _ = InterfaceRemove(hostName) })
 	}
 
 	// Set the MTU.
@@ -222,7 +371,7 @@ func (n *physical) setup(oldConfig map[string]string) error {
 		return err
 	}
 
-	revert.Success()
+	reverter.Success()
 	return nil
 }
 
@@ -289,17 +438,17 @@ func (n *physical) Update(newNetwork api.NetworkPut, targetNode string, clientTy
 		return n.common.update(newNetwork, targetNode, clientType)
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	hostNameChanged := slices.Contains(changedKeys, "vlan") || slices.Contains(changedKeys, "parent")
 
 	// We only need to check in the database once, not on every clustered node.
 	if clientType == request.ClientTypeNormal {
 		if hostNameChanged {
-			isUsed, err := n.IsUsed()
+			isUsed, err := n.IsUsed(true)
 			if isUsed || err != nil {
-				return fmt.Errorf("Cannot update network parent interface when in use")
+				return errors.New("Cannot update network parent interface when in use")
 			}
 
 			inUse, err := n.checkParentUse(newNetwork.Config)
@@ -324,23 +473,48 @@ func (n *physical) Update(newNetwork api.NetworkPut, targetNode string, clientTy
 	}
 
 	// Define a function which reverts everything.
-	revert.Add(func() {
+	reverter.Add(func() {
 		// Reset changes to all nodes and database.
 		_ = n.common.update(oldNetwork, targetNode, clientType)
 	})
 
-	// Apply changes to all nodes and databse.
+	// Apply changes to all nodes and database.
 	err = n.common.update(newNetwork, targetNode, clientType)
 	if err != nil {
 		return err
 	}
 
-	err = n.setup(oldNetwork.Config)
-	if err != nil {
-		return err
+	if !hostNameChanged {
+		err = n.setup(oldNetwork.Config)
+		if err != nil {
+			return err
+		}
+	} else {
+		err = n.setup(nil)
+		if err != nil {
+			return err
+		}
 	}
 
-	revert.Success()
+	// Update OVS bridge entries (for dependent OVN networks).
+	if hostNameChanged {
+		vswitch, err := n.state.OVS()
+		if err == nil {
+			ovsBridge := fmt.Sprintf("incusovn%d", n.id)
+
+			err := vswitch.DeleteBridgePort(context.TODO(), ovsBridge, oldNetwork.Config["parent"])
+			if err != nil && !errors.Is(err, ovs.ErrNotFound) {
+				return err
+			}
+
+			err = vswitch.CreateBridgePort(context.TODO(), ovsBridge, newNetwork.Config["parent"], true)
+			if err != nil && !errors.Is(err, ovs.ErrNotFound) {
+				return err
+			}
+		}
+	}
+
+	reverter.Success()
 
 	// Notify dependent networks (those using this network as their uplink) of the changes.
 	// Do this after the network has been successfully updated so that a failure to notify a dependent network

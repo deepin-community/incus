@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strings"
 
 	"github.com/gorilla/mux"
 
@@ -21,6 +20,7 @@ import (
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/validate"
 )
 
 var targetGroupPrefix = "@"
@@ -73,7 +73,7 @@ func clusterGroupsPost(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
 	if !s.ServerClustered {
-		return response.BadRequest(fmt.Errorf("This server is not clustered"))
+		return response.BadRequest(errors.New("This server is not clustered"))
 	}
 
 	req := api.ClusterGroupsPost{}
@@ -85,9 +85,9 @@ func clusterGroupsPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Quick checks.
-	err = clusterGroupValidateName(req.Name)
+	err = validate.IsAPIName(req.Name, false)
 	if err != nil {
-		return response.BadRequest(err)
+		return response.BadRequest(fmt.Errorf("Invalid cluster group name: %w", err))
 	}
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -206,7 +206,7 @@ func clusterGroupsGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
 	if !s.ServerClustered {
-		return response.BadRequest(fmt.Errorf("This server is not clustered"))
+		return response.BadRequest(errors.New("This server is not clustered"))
 	}
 
 	recursion := localUtil.IsRecursionRequest(r)
@@ -301,7 +301,7 @@ func clusterGroupGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !s.ServerClustered {
-		return response.BadRequest(fmt.Errorf("This server is not clustered"))
+		return response.BadRequest(errors.New("This server is not clustered"))
 	}
 
 	var group *dbCluster.ClusterGroup
@@ -377,7 +377,7 @@ func clusterGroupPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !s.ServerClustered {
-		return response.BadRequest(fmt.Errorf("This server is not clustered"))
+		return response.BadRequest(errors.New("This server is not clustered"))
 	}
 
 	req := api.ClusterGroupPost{}
@@ -387,9 +387,9 @@ func clusterGroupPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Quick checks.
-	err = clusterGroupValidateName(name)
+	err = validate.IsAPIName(req.Name, false)
 	if err != nil {
-		return response.BadRequest(err)
+		return response.BadRequest(fmt.Errorf("Invalid cluster group name: %w", err))
 	}
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -456,7 +456,7 @@ func clusterGroupPut(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !s.ServerClustered {
-		return response.BadRequest(fmt.Errorf("This server is not clustered"))
+		return response.BadRequest(errors.New("This server is not clustered"))
 	}
 
 	req := api.ClusterGroupPut{}
@@ -576,7 +576,7 @@ func clusterGroupPatch(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !s.ServerClustered {
-		return response.BadRequest(fmt.Errorf("This server is not clustered"))
+		return response.BadRequest(errors.New("This server is not clustered"))
 	}
 
 	var clusterGroup *api.ClusterGroup
@@ -740,7 +740,7 @@ func clusterGroupDelete(d *Daemon, r *http.Request) response.Response {
 
 	// Quick checks.
 	if name == "default" {
-		return response.Forbidden(fmt.Errorf("The 'default' cluster group cannot be deleted"))
+		return response.Forbidden(errors.New("The 'default' cluster group cannot be deleted"))
 	}
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -750,12 +750,11 @@ func clusterGroupDelete(d *Daemon, r *http.Request) response.Response {
 		}
 
 		if len(members) > 0 {
-			return fmt.Errorf("Only empty cluster groups can be removed")
+			return errors.New("Only empty cluster groups can be removed")
 		}
 
 		return dbCluster.DeleteClusterGroup(ctx, tx.Tx(), name)
 	})
-
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -764,36 +763,4 @@ func clusterGroupDelete(d *Daemon, r *http.Request) response.Response {
 	s.Events.SendLifecycle(name, lifecycle.ClusterGroupDeleted.Event(name, requestor, nil))
 
 	return response.EmptySyncResponse
-}
-
-func clusterGroupValidateName(name string) error {
-	if name == "" {
-		return fmt.Errorf("No name provided")
-	}
-
-	if strings.Contains(name, "/") {
-		return fmt.Errorf("Cluster group names may not contain slashes")
-	}
-
-	if strings.Contains(name, " ") {
-		return fmt.Errorf("Cluster group names may not contain spaces")
-	}
-
-	if strings.Contains(name, "_") {
-		return fmt.Errorf("Cluster group names may not contain underscores")
-	}
-
-	if strings.Contains(name, "'") || strings.Contains(name, `"`) {
-		return fmt.Errorf("Cluster group names may not contain quotes")
-	}
-
-	if name == "*" {
-		return fmt.Errorf("Reserved cluster group name")
-	}
-
-	if slices.Contains([]string{".", ".."}, name) {
-		return fmt.Errorf("Invalid cluster group name %q", name)
-	}
-
-	return nil
 }

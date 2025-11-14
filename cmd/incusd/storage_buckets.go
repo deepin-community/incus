@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,7 +13,7 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/lxc/incus/v6/internal/revert"
+	"github.com/lxc/incus/v6/internal/filter"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	"github.com/lxc/incus/v6/internal/server/db"
@@ -29,7 +30,9 @@ import (
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
+	"github.com/lxc/incus/v6/shared/validate"
 )
 
 var storagePoolBucketsCmd = APIEndpoint{
@@ -85,6 +88,11 @@ var storagePoolBucketKeyCmd = APIEndpoint{
 //      description: Retrieve storage pool buckets from all projects
 //      type: boolean
 //      example: true
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
 //  responses:
 //    "200":
 //      description: API endpoints
@@ -121,52 +129,58 @@ var storagePoolBucketKeyCmd = APIEndpoint{
 
 // swagger:operation GET /1.0/storage-pools/{poolName}/buckets?recursion=1 storage storage_pool_buckets_get_recursion1
 //
-//	Get the storage pool buckets
+//  Get the storage pool buckets
 //
-//	Returns a list of storage pool buckets (structs).
+//  Returns a list of storage pool buckets (structs).
 //
-//	---
-//	produces:
-//	  - application/json
-//	parameters:
-//	  - in: query
-//	    name: project
-//	    description: Project name
-//	    type: string
-//	    example: default
-//	  - in: query
-//	    name: all-projects
-//	    description: Retrieve storage pool buckets from all projects
-//	    type: boolean
-//	    example: true
-//	responses:
-//	  "200":
-//	    description: API endpoints
-//	    schema:
-//	      type: object
-//	      description: Sync response
-//	      properties:
-//	        type:
-//	          type: string
-//	          description: Response type
-//	          example: sync
-//	        status:
-//	          type: string
-//	          description: Status description
-//	          example: Success
-//	        status_code:
-//	          type: integer
-//	          description: Status code
-//	          example: 200
-//	        metadata:
-//	          type: array
-//	          description: List of storage pool buckets
-//	          items:
-//	            $ref: "#/definitions/StorageBucket"
-//	  "403":
-//	    $ref: "#/responses/Forbidden"
-//	  "500":
-//	    $ref: "#/responses/InternalServerError"
+//  ---
+//  produces:
+//    - application/json
+//  parameters:
+//    - in: query
+//      name: project
+//      description: Project name
+//      type: string
+//      example: default
+//    - in: query
+//      name: all-projects
+//      description: Retrieve storage pool buckets from all projects
+//      type: boolean
+//      example: true
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
+//  responses:
+//    "200":
+//      description: API endpoints
+//      schema:
+//        type: object
+//        description: Sync response
+//        properties:
+//          type:
+//            type: string
+//            description: Response type
+//            example: sync
+//          status:
+//            type: string
+//            description: Status description
+//            example: Success
+//          status_code:
+//            type: integer
+//            description: Status code
+//            example: 200
+//          metadata:
+//            type: array
+//            description: List of storage pool buckets
+//            items:
+//              $ref: "#/definitions/StorageBucket"
+//    "403":
+//      $ref: "#/responses/Forbidden"
+//    "500":
+//      $ref: "#/responses/InternalServerError"
+
 func storagePoolBucketsGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
@@ -191,6 +205,13 @@ func storagePoolBucketsGet(d *Daemon, r *http.Request) response.Response {
 	driverInfo := pool.Driver().Info()
 	if !driverInfo.Buckets {
 		return response.BadRequest(fmt.Errorf("Storage pool driver %q does not support buckets", driverInfo.Name))
+	}
+
+	// Parse filter value.
+	filterStr := r.FormValue("filter")
+	clauses, err := filter.Parse(filterStr, filter.QueryOperatorSet())
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid filter: %w", err))
 	}
 
 	memberSpecific := false // Get buckets for all cluster members.
@@ -234,6 +255,17 @@ func storagePoolBucketsGet(d *Daemon, r *http.Request) response.Response {
 
 		if !userHasPermission(auth.ObjectStorageBucket(requestProjectName, poolName, bucket.Name, location)) {
 			continue
+		}
+
+		if clauses != nil && len(clauses.Clauses) > 0 {
+			match, err := filter.Match(bucket.StorageBucket, *clauses)
+			if err != nil {
+				return response.SmartError(err)
+			}
+
+			if !match {
+				continue
+			}
 		}
 
 		filteredDBBuckets = append(filteredDBBuckets, bucket)
@@ -333,7 +365,7 @@ func storagePoolBucketGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !pool.Driver().Info().Buckets {
-		return response.BadRequest(fmt.Errorf("Storage pool does not support buckets"))
+		return response.BadRequest(errors.New("Storage pool does not support buckets"))
 	}
 
 	bucketName, err := url.PathUnescape(mux.Vars(r)["bucketName"])
@@ -427,15 +459,21 @@ func storagePoolBucketsPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(fmt.Errorf("Failed loading storage pool: %w", err))
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	// Quick checks.
+	err = validate.IsAPIName(req.Name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid storage bucket name: %w", err))
+	}
+
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	err = pool.CreateBucket(bucketProjectName, req, nil)
 	if err != nil {
 		return response.SmartError(fmt.Errorf("Failed creating storage bucket: %w", err))
 	}
 
-	revert.Add(func() { _ = pool.DeleteBucket(bucketProjectName, req.Name, nil) })
+	reverter.Add(func() { _ = pool.DeleteBucket(bucketProjectName, req.Name, nil) })
 
 	// Create admin key for new bucket.
 	adminKeyReq := api.StorageBucketKeysPost{
@@ -465,7 +503,7 @@ func storagePoolBucketsPost(d *Daemon, r *http.Request) response.Response {
 
 	u := api.NewURL().Path(version.APIVersion, "storage-pools", pool.Name(), "buckets", req.Name)
 
-	revert.Success()
+	reverter.Success()
 	return response.SyncResponseLocation(true, adminKey, u.String())
 }
 
@@ -1064,7 +1102,7 @@ func storagePoolBucketKeyGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !pool.Driver().Info().Buckets {
-		return response.BadRequest(fmt.Errorf("Storage pool does not support buckets"))
+		return response.BadRequest(errors.New("Storage pool does not support buckets"))
 	}
 
 	bucketName, err := url.PathUnescape(mux.Vars(r)["bucketName"])

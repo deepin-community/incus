@@ -1,7 +1,7 @@
 package config
 
 import (
-	"github.com/lxc/incus/v6/internal/revert"
+	"github.com/lxc/incus/v6/shared/revert"
 )
 
 // MountOwnerShiftNone do not use owner shifting.
@@ -31,6 +31,7 @@ type MountEntryItem struct {
 	OwnerShift string      // Ownership shifting mode, use constants MountOwnerShiftNone, MountOwnerShiftStatic or MountOwnerShiftDynamic.
 	Limits     *DiskLimits // Disk limits.
 	Size       int64       // Expected disk size in bytes.
+	Attached   bool        // Whether the disk is attached
 }
 
 // RootFSEntryItem represents the root filesystem options for an Instance.
@@ -66,6 +67,7 @@ type RunConfig struct {
 	TPMDevice        []RunConfigItem  // TPM device configuration settings.
 	PCIDevice        []RunConfigItem  // PCI device configuration settings.
 	Revert           revert.Hook      // Revert setup of device on post-setup error.
+	UseUSBBus        bool             // Whether to use a USB bus for the device.
 }
 
 // NICConfigDir shared constant used to indicate where NIC config is stored.

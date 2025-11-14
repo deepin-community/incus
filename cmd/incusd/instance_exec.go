@@ -42,10 +42,12 @@ import (
 	"github.com/lxc/incus/v6/shared/ws"
 )
 
-const execWSControl = -1
-const execWSStdin = 0
-const execWSStdout = 1
-const execWSStderr = 2
+const (
+	execWSControl = -1
+	execWSStdin   = 0
+	execWSStdout  = 1
+	execWSStderr  = 2
+)
 
 type execWs struct {
 	req api.InstanceExecPost
@@ -59,7 +61,7 @@ type execWs struct {
 	s                     *state.State
 }
 
-func (s *execWs) Metadata() any {
+func (s *execWs) metadata() any {
 	fds := jmap.Map{}
 	for fd, secret := range s.fds {
 		if fd == execWSControl {
@@ -77,10 +79,15 @@ func (s *execWs) Metadata() any {
 	}
 }
 
-func (s *execWs) Connect(op *operations.Operation, r *http.Request, w http.ResponseWriter) error {
+func (s *execWs) connect(op *operations.Operation, r *http.Request, w http.ResponseWriter) error {
+	// Check that the user connecting is the same who started the session.
+	if !op.IsSameRequestor(r) {
+		return api.StatusErrorf(http.StatusForbidden, "Requestor mismatch")
+	}
+
 	secret := r.FormValue("secret")
 	if secret == "" {
-		return fmt.Errorf("missing secret")
+		return errors.New("missing secret")
 	}
 
 	for fd, fdSecret := range s.fds {
@@ -145,9 +152,9 @@ func (s *execWs) Connect(op *operations.Operation, r *http.Request, w http.Respo
 				s.waitRequiredConnected.Cancel() // All required connections now connected.
 				return nil
 			} else if !found {
-				return fmt.Errorf("Unknown websocket number")
+				return errors.New("Unknown websocket number")
 			} else {
-				return fmt.Errorf("Websocket number already connected")
+				return errors.New("Websocket number already connected")
 			}
 		}
 	}
@@ -157,7 +164,7 @@ func (s *execWs) Connect(op *operations.Operation, r *http.Request, w http.Respo
 	return os.ErrPermission
 }
 
-func (s *execWs) Do(op *operations.Operation) error {
+func (s *execWs) do(op *operations.Operation) error {
 	s.instance.SetOperation(op)
 
 	// Once this function ends ensure that any connected websockets are closed.
@@ -178,7 +185,7 @@ func (s *execWs) Do(op *operations.Operation) error {
 	case <-s.waitRequiredConnected.Done():
 		break
 	case <-time.After(time.Second * 5):
-		return fmt.Errorf("Timed out waiting for websockets to connect")
+		return errors.New("Timed out waiting for websockets to connect")
 	}
 
 	var err error
@@ -233,7 +240,7 @@ func (s *execWs) Do(op *operations.Operation) error {
 			// For VMs we rely on the agent PTY running inside the VM guest.
 			ttys = make([]*os.File, 2)
 			ptys = make([]*os.File, 2)
-			for i := 0; i < len(ttys); i++ {
+			for i := range ttys {
 				ptys[i], ttys[i], err = os.Pipe()
 				if err != nil {
 					return err
@@ -246,7 +253,7 @@ func (s *execWs) Do(op *operations.Operation) error {
 	} else {
 		ttys = make([]*os.File, 3)
 		ptys = make([]*os.File, 3)
-		for i := 0; i < len(ttys); i++ {
+		for i := range ttys {
 			ptys[i], ttys[i], err = os.Pipe()
 			if err != nil {
 				return err
@@ -290,7 +297,7 @@ func (s *execWs) Do(op *operations.Operation) error {
 		}
 
 		// Make VM disconnections (shutdown/reboot) match containers.
-		if cmdErr == drivers.ErrExecDisconnected {
+		if errors.Is(cmdErr, drivers.ErrExecDisconnected) {
 			cmdResult = 129
 			cmdErr = nil
 		}
@@ -443,7 +450,7 @@ func (s *execWs) Do(op *operations.Operation) error {
 		}()
 	} else {
 		wgEOF.Add(len(ttys) - 1)
-		for i := 0; i < len(ttys); i++ {
+		for i := range ttys {
 			go func(i int) {
 				var err error
 				l.Debug("Exec mirror websocket started", logger.Ctx{"number": i})
@@ -475,6 +482,15 @@ func (s *execWs) Do(op *operations.Operation) error {
 							l.Warn("Unexpected read on stdout websocket, killing command", logger.Ctx{"number": i, "err": err})
 							cmdKillOnce.Do(cmdKill)
 						}
+					}()
+				}
+
+				if i == execWSStderr {
+					// Consume data (e.g. websocket pings) from stderr too to
+					// avoid a situation where we hit an inactivity timeout on
+					// stderr during long exec sessions
+					go func() {
+						_, _, _ = conn.ReadMessage()
 					}()
 				}
 
@@ -537,11 +553,6 @@ func (s *execWs) Do(op *operations.Operation) error {
 func instanceExecPost(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -549,7 +560,7 @@ func instanceExecPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	post := api.InstanceExecPost{}
@@ -573,7 +584,7 @@ func instanceExecPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Forward the request if the container is remote.
-	client, err := cluster.ConnectIfInstanceIsRemote(s, projectName, name, r, instanceType)
+	client, err := cluster.ConnectIfInstanceIsRemote(s, projectName, name, r)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -599,11 +610,11 @@ func instanceExecPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !inst.IsRunning() {
-		return response.BadRequest(fmt.Errorf("Instance is not running"))
+		return response.BadRequest(errors.New("Instance is not running"))
 	}
 
 	if inst.IsFrozen() {
-		return response.BadRequest(fmt.Errorf("Instance is frozen"))
+		return response.BadRequest(errors.New("Instance is frozen"))
 	}
 
 	// Process environment.
@@ -613,8 +624,9 @@ func instanceExecPost(d *Daemon, r *http.Request) response.Response {
 
 	// Override any environment variable settings from the instance if not manually specified in post.
 	for k, v := range inst.ExpandedConfig() {
-		if strings.HasPrefix(k, "environment.") {
-			envKey := strings.TrimPrefix(k, "environment.")
+		after, ok := strings.CutPrefix(k, "environment.")
+		if ok {
+			envKey := after
 			_, found := post.Environment[envKey]
 			if !found {
 				post.Environment[envKey] = v
@@ -696,7 +708,7 @@ func instanceExecPost(d *Daemon, r *http.Request) response.Response {
 		resources := map[string][]api.URL{}
 		resources["instances"] = []api.URL{*api.NewURL().Path(version.APIVersion, "instances", ws.instance.Name())}
 
-		op, err := operations.OperationCreate(s, projectName, operations.OperationClassWebsocket, operationtype.CommandExec, resources, ws.Metadata(), ws.Do, nil, ws.Connect, r)
+		op, err := operations.OperationCreate(s, projectName, operations.OperationClassWebsocket, operationtype.CommandExec, resources, ws.metadata(), ws.do, nil, ws.connect, r)
 		if err != nil {
 			return response.InternalError(err)
 		}
@@ -715,20 +727,20 @@ func instanceExecPost(d *Daemon, r *http.Request) response.Response {
 		if post.RecordOutput {
 			// Ensure exec-output directory exists
 			execOutputDir := inst.ExecOutputPath()
-			err = os.Mkdir(execOutputDir, 0600)
+			err = os.Mkdir(execOutputDir, 0o600)
 			if err != nil && !errors.Is(err, fs.ErrExist) {
 				return err
 			}
 
 			// Prepare stdout and stderr recording.
-			stdout, err = os.OpenFile(filepath.Join(execOutputDir, fmt.Sprintf("exec_%s.stdout", op.ID())), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+			stdout, err = os.OpenFile(filepath.Join(execOutputDir, fmt.Sprintf("exec_%s.stdout", op.ID())), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
 			if err != nil {
 				return err
 			}
 
 			defer func() { _ = stdout.Close() }()
 
-			stderr, err = os.OpenFile(filepath.Join(execOutputDir, fmt.Sprintf("exec_%s.stderr", op.ID())), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+			stderr, err = os.OpenFile(filepath.Join(execOutputDir, fmt.Sprintf("exec_%s.stderr", op.ID())), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
 			if err != nil {
 				return err
 			}

@@ -1,20 +1,22 @@
 package device
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/google/uuid"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	pcidev "github.com/lxc/incus/v6/internal/server/device/pci"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
-	"github.com/lxc/incus/v6/internal/server/resources"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/resources"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -61,8 +63,8 @@ func (d *gpuMdev) startVM() (*deviceConfig.RunConfig, error) {
 		return nil, err
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	var pciAddress string
 	for _, gpu := range gpus.Cards {
@@ -72,7 +74,7 @@ func (d *gpuMdev) startVM() (*deviceConfig.RunConfig, error) {
 		}
 
 		if pciAddress != "" {
-			return nil, fmt.Errorf("VMs cannot match multiple GPUs per device")
+			return nil, errors.New("VMs cannot match multiple GPUs per device")
 		}
 
 		pciAddress = gpu.PCIAddress
@@ -126,20 +128,20 @@ func (d *gpuMdev) startVM() (*deviceConfig.RunConfig, error) {
 		if mdevUUID == "" || !util.PathExists(fmt.Sprintf("/sys/bus/pci/devices/%s/%s", pciAddress, mdevUUID)) {
 			mdevUUID = uuid.New().String()
 
-			err = os.WriteFile(filepath.Join(fmt.Sprintf("/sys/bus/pci/devices/%s/mdev_supported_types/%s/create", pciAddress, d.config["mdev"])), []byte(mdevUUID), 0200)
+			err = os.WriteFile(filepath.Join(fmt.Sprintf("/sys/bus/pci/devices/%s/mdev_supported_types/%s/create", pciAddress, d.config["mdev"])), []byte(mdevUUID), 0o200)
 			if err != nil {
-				if os.IsNotExist(err) {
+				if errors.Is(err, fs.ErrNotExist) {
 					return nil, fmt.Errorf("The requested profile %q does not exist", d.config["mdev"])
 				}
 
 				return nil, fmt.Errorf("Failed to create virtual gpu %q: %w", mdevUUID, err)
 			}
 
-			revert.Add(func() {
+			reverter.Add(func() {
 				path := fmt.Sprintf("/sys/bus/mdev/devices/%s", mdevUUID)
 
 				if util.PathExists(path) {
-					err := os.WriteFile(filepath.Join(path, "remove"), []byte("1\n"), 0200)
+					err := os.WriteFile(filepath.Join(path, "remove"), []byte("1\n"), 0o200)
 					if err != nil {
 						d.logger.Error("Failed to remove vgpu", logger.Ctx{"device": mdevUUID, "err": err})
 					}
@@ -149,7 +151,7 @@ func (d *gpuMdev) startVM() (*deviceConfig.RunConfig, error) {
 	}
 
 	if pciAddress == "" {
-		return nil, fmt.Errorf("Failed to detect requested GPU device")
+		return nil, errors.New("Failed to detect requested GPU device")
 	}
 
 	// Get PCI information about the GPU device.
@@ -177,7 +179,7 @@ func (d *gpuMdev) startVM() (*deviceConfig.RunConfig, error) {
 		return nil, err
 	}
 
-	revert.Success()
+	reverter.Success()
 
 	return &runConf, nil
 }
@@ -198,7 +200,7 @@ func (d *gpuMdev) postStop() error {
 		path := fmt.Sprintf("/sys/bus/mdev/devices/%s", v["vgpu.uuid"])
 
 		if util.PathExists(path) {
-			err := os.WriteFile(filepath.Join(path, "remove"), []byte("1\n"), 0200)
+			err := os.WriteFile(filepath.Join(path, "remove"), []byte("1\n"), 0o200)
 			if err != nil {
 				d.logger.Error("Failed to remove vgpu", logger.Ctx{"device": v["vgpu.uuid"], "err": err})
 			}
@@ -215,13 +217,46 @@ func (d *gpuMdev) validateConfig(instConf instance.ConfigReader) error {
 	}
 
 	requiredFields := []string{
+		// gendoc:generate(entity=devices, group=gpu_mdev, key=mdev)
+		//
+		// ---
+		//  type: string
+		//  required: yes
+		//  shortdesc: The mediated device profile to use (required - for example, `i915-GVTg_V5_4`)
 		"mdev",
 	}
 
 	optionalFields := []string{
+		// gendoc:generate(entity=devices, group=gpu_mdev, key=vendorid)
+		//
+		// ---
+		//  type: string
+		//  required: no
+		//  shortdesc: The vendor ID of the GPU device
 		"vendorid",
+
+		// gendoc:generate(entity=devices, group=gpu_mdev, key=productid)
+		//
+		// ---
+		//  type: string
+		//  required: no
+		//  shortdesc: The product ID of the GPU device
 		"productid",
+
+		// gendoc:generate(entity=devices, group=gpu_mdev, key=id)
+		//
+		// ---
+		//  type: string
+		//  required: no
+		//  shortdesc: The DRM card ID of the GPU device
 		"id",
+
+		// gendoc:generate(entity=devices, group=gpu_mdev, key=pci
+		//
+		// ---
+		//  type: strong
+		//  required: no
+		//  shortdesc: The PCI address of the GPU device
 		"pci",
 	}
 
@@ -254,7 +289,7 @@ func (d *gpuMdev) validateConfig(instConf instance.ConfigReader) error {
 // validateEnvironment checks the runtime environment for correctness.
 func (d *gpuMdev) validateEnvironment() error {
 	if d.inst.Type() == instancetype.VM && util.IsTrue(d.inst.ExpandedConfig()["migration.stateful"]) {
-		return fmt.Errorf("GPU devices cannot be used when migration.stateful is enabled")
+		return errors.New("GPU devices cannot be used when migration.stateful is enabled")
 	}
 
 	return validatePCIDevice(d.config["pci"])

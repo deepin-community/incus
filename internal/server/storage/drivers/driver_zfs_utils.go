@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -291,7 +292,7 @@ func (d *zfs) version() (string, error) {
 		return strings.TrimSpace(string(out)), nil
 	}
 
-	return "", fmt.Errorf("Could not determine ZFS module version")
+	return "", errors.New("Could not determine ZFS module version")
 }
 
 // initialDatasets returns the list of all expected datasets.
@@ -393,7 +394,7 @@ func (d *zfs) receiveDataset(vol Volume, r io.Reader, tracker *ioprogress.Progre
 	}
 
 	// Setup progress tracker.
-	var stdin = r
+	stdin := r
 	if tracker != nil {
 		stdin = &ioprogress.ProgressReader{
 			Reader:  r,
@@ -418,7 +419,7 @@ func ValidateZfsBlocksize(value string) error {
 	}
 
 	if sizeBytes < zfsMinBlocksize || sizeBytes > zfsMaxBlocksize || (sizeBytes&(sizeBytes-1)) != 0 {
-		return fmt.Errorf("Value should be between 512B and 16MiB, and be power of 2")
+		return errors.New("Value should be between 512B and 16MiB, and be power of 2")
 	}
 
 	return nil
@@ -462,6 +463,11 @@ func (d *zfs) randomVolumeName(vol Volume) string {
 func (d *zfs) delegateDataset(vol Volume, pid int) error {
 	_, err := subprocess.RunCommand("zfs", "zone", fmt.Sprintf("/proc/%d/ns/user", pid), d.dataset(vol, false))
 	if err != nil {
+		// Detect cases where the same dataset is attached multiple times.
+		if strings.Contains(err.Error(), "dataset already exists") {
+			return nil
+		}
+
 		return err
 	}
 

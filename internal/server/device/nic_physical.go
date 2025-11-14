@@ -1,21 +1,26 @@
 package device
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
 
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
+	"github.com/lxc/incus/v6/internal/server/db"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	pcidev "github.com/lxc/incus/v6/internal/server/device/pci"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
 	"github.com/lxc/incus/v6/internal/server/ip"
 	"github.com/lxc/incus/v6/internal/server/network"
-	"github.com/lxc/incus/v6/internal/server/resources"
+	"github.com/lxc/incus/v6/internal/server/project"
+	"github.com/lxc/incus/v6/internal/server/state"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/resources"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -38,17 +43,66 @@ func (d *nicPhysical) validateConfig(instConf instance.ConfigReader) error {
 
 	requiredFields := []string{}
 	optionalFields := []string{
+		// gendoc:generate(entity=devices, group=nic_physical, key=parent)
+		//
+		// ---
+		//  type: string
+		//  managed: yes
+		//  shortdesc: The name of the parent host device (required if specifying the `nictype` directly)
 		"parent",
+
+		// gendoc:generate(entity=devices, group=nic_physical, key=name)
+		//
+		// ---
+		//  type: string
+		//  default: kernel assigned
+		//  managed: no
+		//  shortdesc: The name of the interface inside the instance
 		"name",
+
+		// gendoc:generate(entity=devices, group=nic_physical, key=boot.priority)
+		//
+		// ---
+		//  type: integer
+		//  managed: no
+		//  shortdesc: Boot priority for VMs (higher value boots first)
 		"boot.priority",
+
+		// gendoc:generate(entity=devices, group=nic_physical, key=gvrp)
+		//
+		// ---
+		//  type: bool
+		//  default: false
+		//  managed: no
+		//  shortdesc: Register VLAN using GARP VLAN Registration Protocol
 		"gvrp",
+
+		// gendoc:generate(entity=devices, group=nic_physical, key=mtu)
+		//
+		// ---
+		//  type: integer
+		//  default: MTU of the parent device
+		//  managed: no
+		//  shortdesc: The Maximum Transmit Unit (MTU) of the new interface
 		"mtu",
 	}
 
 	if instConf.Type() == instancetype.Container || instConf.Type() == instancetype.Any {
+		// gendoc:generate(entity=devices, group=nic_physical, key=vlan)
+		//
+		// ---
+		//  type: integer
+		//  managed: no
+		//  shortdesc: The VLAN ID to attach to
 		optionalFields = append(optionalFields, "hwaddr", "vlan")
 	}
 
+	// gendoc:generate(entity=devices, group=nic_physical, key=network)
+	//
+	// ---
+	//  type: string
+	//  managed: no
+	//  shortdesc: The managed network to link the device to (instead of specifying the `nictype` directly)
 	if d.config["network"] != "" {
 		requiredFields = append(requiredFields, "network")
 
@@ -68,17 +122,32 @@ func (d *nicPhysical) validateConfig(instConf instance.ConfigReader) error {
 		}
 
 		if d.network.Status() != api.NetworkStatusCreated {
-			return fmt.Errorf("Specified network is not fully created")
+			return errors.New("Specified network is not fully created")
 		}
 
 		if d.network.Type() != "physical" {
-			return fmt.Errorf("Specified network must be of type physical")
+			return errors.New("Specified network must be of type physical")
 		}
 
 		netConfig := d.network.Config()
 
 		// Get actual parent device from network's parent setting.
 		d.config["parent"] = netConfig["parent"]
+
+		// If parent is a bridge, ensure it's managed.
+		isParentBridge := d.config["parent"] != "" && util.PathExists(fmt.Sprintf("/sys/class/net/%s/bridge", d.config["parent"]))
+		if isParentBridge && d.network == nil {
+			return fmt.Errorf("Parent device is a bridge, use nictype=bridged instead")
+		}
+
+		// gendoc:generate(entity=devices, group=nic_physical, key=hwaddr)
+		//
+		// ---
+		//  type: string
+		//  default: randomly assigned
+		//  managed: no
+		//  shortdesc: The MAC address of the new interface
+		optionalFields = append(optionalFields, "hwaddr")
 
 		// Copy certain keys verbatim from the network's settings.
 		for _, field := range optionalFields {
@@ -103,11 +172,11 @@ func (d *nicPhysical) validateConfig(instConf instance.ConfigReader) error {
 // validateEnvironment checks the runtime environment for correctness.
 func (d *nicPhysical) validateEnvironment() error {
 	if d.inst.Type() == instancetype.VM && util.IsTrue(d.inst.ExpandedConfig()["migration.stateful"]) {
-		return fmt.Errorf("Network physical devices cannot be used when migration.stateful is enabled")
+		return errors.New("Network physical devices cannot be used when migration.stateful is enabled")
 	}
 
 	if d.inst.Type() == instancetype.Container && d.config["name"] == "" {
-		return fmt.Errorf("Requires name property to start")
+		return errors.New("Requires name property to start")
 	}
 
 	if !util.PathExists(fmt.Sprintf("/sys/class/net/%s", d.config["parent"])) {
@@ -124,14 +193,33 @@ func (d *nicPhysical) Start() (*deviceConfig.RunConfig, error) {
 		return nil, err
 	}
 
+	// Handle the case where the parent is a bridge.
+	isParentBridge := util.PathExists(fmt.Sprintf("/sys/class/net/%s/bridge", d.config["parent"]))
+	if isParentBridge {
+		// Convert the device to a nictype=bridged internally.
+		bridgedConfig := d.config.Clone()
+		bridgedConfig["type"] = "nic"
+		bridgedConfig["nictype"] = "bridged"
+		bridgedConfig["network"] = ""
+
+		// Instantiate the new device.
+		bridged, err := load(d.inst, d.state, d.inst.Project().Name, d.inst.Name(), bridgedConfig, d.volatileGet, d.volatileSet)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to initialize bridged device: %w", err)
+		}
+
+		// Forward the start call.
+		return bridged.Start()
+	}
+
 	// Lock to avoid issues with containers starting in parallel.
 	networkCreateSharedDeviceLock.Lock()
 	defer networkCreateSharedDeviceLock.Unlock()
 
 	saveData := make(map[string]string)
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// pciIOMMUGroup, used for VM physical passthrough.
 	var pciIOMMUGroup uint64
@@ -157,7 +245,7 @@ func (d *nicPhysical) Start() (*deviceConfig.RunConfig, error) {
 		saveData["last_state.created"] = fmt.Sprintf("%t", statusDev != "existing")
 
 		if util.IsTrue(saveData["last_state.created"]) {
-			revert.Add(func() {
+			reverter.Add(func() {
 				_ = networkRemoveInterfaceIfNeeded(d.state, saveData["host_name"], d.inst, d.config["parent"], d.config["vlan"])
 			})
 		}
@@ -203,7 +291,7 @@ func (d *nicPhysical) Start() (*deviceConfig.RunConfig, error) {
 		ueventPath := fmt.Sprintf("/sys/class/net/%s/device/uevent", saveData["host_name"])
 		pciDev, err := pcidev.ParseUeventFile(ueventPath)
 		if err != nil {
-			if err == pcidev.ErrDeviceIsUSB {
+			if errors.Is(err, pcidev.ErrDeviceIsUSB) {
 				// Device is USB rather than PCI.
 				return d.startVMUSB(saveData["host_name"])
 			}
@@ -247,7 +335,8 @@ func (d *nicPhysical) Start() (*deviceConfig.RunConfig, error) {
 			}...)
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return &runConf, nil
 }
 
@@ -315,6 +404,25 @@ func (d *nicPhysical) startVMUSB(name string) (*deviceConfig.RunConfig, error) {
 
 // Stop is run when the device is removed from the instance.
 func (d *nicPhysical) Stop() (*deviceConfig.RunConfig, error) {
+	// Handle the case where the parent is a bridge.
+	isParentBridge := util.PathExists(fmt.Sprintf("/sys/class/net/%s/bridge", d.config["parent"]))
+	if isParentBridge {
+		// Convert the device to a nictype=bridged internally.
+		bridgedConfig := d.config.Clone()
+		bridgedConfig["type"] = "nic"
+		bridgedConfig["nictype"] = "bridged"
+		bridgedConfig["network"] = ""
+
+		// Instantiate the new device.
+		bridged, err := load(d.inst, d.state, d.inst.Project().Name, d.inst.Name(), bridgedConfig, d.volatileGet, d.volatileSet)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to initialize bridged device: %w", err)
+		}
+
+		// Forward the stop call.
+		return bridged.Stop()
+	}
+
 	v := d.volatileGet()
 
 	runConf := deviceConfig.RunConfig{
@@ -383,4 +491,40 @@ func (d *nicPhysical) postStop() error {
 	}
 
 	return nil
+}
+
+// IsPhysicalNICWithBridge returns true if the given NIC is of type "physical"
+// and has a non-empty Parent field, indicating it's attached to a bridge.
+func IsPhysicalNICWithBridge(s *state.State, deviceProjectName string, d deviceConfig.Device) bool {
+	if d["network"] != "" {
+		// Translate device's project name into a network project name.
+		networkProjectName, _, err := project.NetworkProject(s.DB.Cluster, deviceProjectName)
+		if err != nil {
+			return false
+		}
+
+		var netInfo *api.Network
+
+		err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+			_, netInfo, _, err = tx.GetNetworkInAnyState(ctx, networkProjectName, d["network"])
+
+			return err
+		})
+		if err != nil {
+			return false
+		}
+
+		if netInfo.Type != "physical" {
+			return false
+		}
+
+		parent := netInfo.Config["parent"]
+		if parent == "" {
+			return false
+		}
+
+		return util.PathExists(fmt.Sprintf("/sys/class/net/%s/bridge", parent))
+	}
+
+	return false
 }

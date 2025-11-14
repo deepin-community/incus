@@ -1,0 +1,14 @@
+# Flagged spelling errors come from other golang packages
+incus-base: spelling-error-in-binary
+
+# incusd binary is installed under /usr/libexec/incus/
+incus-base: spare-manual-page
+
+# Silence an experimental tag
+incus-base: systemd-service-file-missing-hardening-features
+
+# Ignore error about long field length
+incus-base: field-too-long
+
+# Hack for /usr-move (#1099444)
+incus-base: conflicts-with-version

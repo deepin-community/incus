@@ -5,14 +5,17 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
+	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
+	ovsdbCache "github.com/ovn-org/libovsdb/cache"
 	ovsdbClient "github.com/ovn-org/libovsdb/client"
+	ovsdbModel "github.com/ovn-org/libovsdb/model"
 
 	ovnSB "github.com/lxc/incus/v6/internal/server/network/ovn/schema/ovn-sb"
 )
@@ -42,11 +45,11 @@ func NewSB(dbAddr string, sslCACert string, sslClientCert string, sslClientKey s
 	if strings.Contains(dbAddr, "ssl:") {
 		// Validation.
 		if sslClientCert == "" {
-			return nil, fmt.Errorf("OVN is configured to use SSL but no client certificate was found")
+			return nil, errors.New("OVN is configured to use SSL but no client certificate was found")
 		}
 
 		if sslClientKey == "" {
-			return nil, fmt.Errorf("OVN is configured to use SSL but no client key was found")
+			return nil, errors.New("OVN is configured to use SSL but no client key was found")
 		}
 
 		// Prepare the client.
@@ -64,7 +67,7 @@ func NewSB(dbAddr string, sslCACert string, sslClientCert string, sslClientKey s
 		if sslCACert != "" {
 			tlsCAder, _ := pem.Decode([]byte(sslCACert))
 			if tlsCAder == nil {
-				return nil, fmt.Errorf("Couldn't parse CA certificate")
+				return nil, errors.New("Couldn't parse CA certificate")
 			}
 
 			tlsCAcert, err := x509.ParseCertificate(tlsCAder.Bytes)
@@ -80,7 +83,7 @@ func NewSB(dbAddr string, sslCACert string, sslClientCert string, sslClientKey s
 
 			tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, chains [][]*x509.Certificate) error {
 				if len(rawCerts) < 1 {
-					return fmt.Errorf("Missing server certificate")
+					return errors.New("Missing server certificate")
 				}
 
 				// Load the chain.
@@ -95,7 +98,7 @@ func NewSB(dbAddr string, sslCACert string, sslClientCert string, sslClientKey s
 				// Load the main server certificate.
 				cert, _ := x509.ParseCertificate(rawCerts[0])
 				if cert == nil {
-					return fmt.Errorf("Bad server certificate")
+					return errors.New("Bad server certificate")
 				}
 
 				// Validate.
@@ -128,10 +131,63 @@ func NewSB(dbAddr string, sslCACert string, sslClientCert string, sslClientKey s
 		return nil, err
 	}
 
-	monitorCookie, err := ovn.MonitorAll(context.TODO())
+	// Set up monitor for the tables we use.
+	monitorCookie, err := ovn.Monitor(context.TODO(), ovn.NewMonitor(
+		ovsdbClient.WithTable(&ovnSB.Chassis{}),
+		ovsdbClient.WithTable(&ovnSB.PortBinding{}),
+		ovsdbClient.WithTable(&ovnSB.ServiceMonitor{})))
 	if err != nil {
 		return nil, err
 	}
+
+	// Set up event handlers.
+	eventHandler := &ovsdbCache.EventHandlerFuncs{}
+	eventHandler.AddFunc = func(table string, newModel ovsdbModel.Model) {
+		sbEventHandlersMu.Lock()
+		defer sbEventHandlersMu.Unlock()
+
+		if sbEventHandlers == nil {
+			return
+		}
+
+		for _, handler := range sbEventHandlers {
+			if handler.Hook != nil && slices.Contains(handler.Tables, table) {
+				go handler.Hook("add", table, nil, newModel)
+			}
+		}
+	}
+
+	eventHandler.UpdateFunc = func(table string, oldModel ovsdbModel.Model, newModel ovsdbModel.Model) {
+		sbEventHandlersMu.Lock()
+		defer sbEventHandlersMu.Unlock()
+
+		if sbEventHandlers == nil {
+			return
+		}
+
+		for _, handler := range sbEventHandlers {
+			if handler.Hook != nil && slices.Contains(handler.Tables, table) {
+				go handler.Hook("update", table, oldModel, newModel)
+			}
+		}
+	}
+
+	eventHandler.DeleteFunc = func(table string, oldModel ovsdbModel.Model) {
+		sbEventHandlersMu.Lock()
+		defer sbEventHandlersMu.Unlock()
+
+		if sbEventHandlers == nil {
+			return
+		}
+
+		for _, handler := range sbEventHandlers {
+			if handler.Hook != nil && slices.Contains(handler.Tables, table) {
+				go handler.Hook("remove", table, oldModel, nil)
+			}
+		}
+	}
+
+	ovn.Cache().AddEventHandler(eventHandler)
 
 	// Create the SB struct.
 	client := &SB{

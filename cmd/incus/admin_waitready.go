@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/shared/logger"
@@ -20,6 +20,7 @@ type cmdAdminWaitready struct {
 	flagTimeout int
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdAdminWaitready) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("waitready")
@@ -35,7 +36,8 @@ func (c *cmdAdminWaitready) Command() *cobra.Command {
 	return cmd
 }
 
-func (c *cmdAdminWaitready) Run(cmd *cobra.Command, args []string) error {
+// Run runs the actual command logic.
+func (c *cmdAdminWaitready) Run(_ *cobra.Command, _ []string) error {
 	finger := make(chan error, 1)
 	var errLast error
 	go func() {
@@ -88,7 +90,6 @@ func (c *cmdAdminWaitready) Run(cmd *cobra.Command, args []string) error {
 	if c.flagTimeout > 0 {
 		select {
 		case <-finger:
-			break
 		case <-time.After(time.Second * time.Duration(c.flagTimeout)):
 			return fmt.Errorf(i18n.G("Daemon still not running after %ds timeout (%v)"), c.flagTimeout, errLast)
 		}

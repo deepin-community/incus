@@ -1,7 +1,9 @@
 package drivers
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,19 +11,21 @@ import (
 
 	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
 
-var cephfsVersion string
-var cephfsLoaded bool
+var (
+	cephfsVersion string
+	cephfsLoaded  bool
+)
 
 type cephfs struct {
 	common
@@ -111,8 +115,8 @@ func (d *cephfs) FillConfig() error {
 // Create is called during pool creation and is effectively using an empty driver struct.
 // WARNING: The Create() function cannot rely on any of the struct attributes being set.
 func (d *cephfs) Create() error {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	err := d.FillConfig()
 	if err != nil {
@@ -121,22 +125,18 @@ func (d *cephfs) Create() error {
 
 	// Config validation.
 	if d.config["source"] == "" {
-		return fmt.Errorf("Missing required source name/path")
+		return errors.New("Missing required source name/path")
 	}
 
 	if d.config["cephfs.path"] != "" && d.config["cephfs.path"] != d.config["source"] {
-		return fmt.Errorf("cephfs.path must match the source")
+		return errors.New("cephfs.path must match the source")
 	}
 
 	d.config["cephfs.path"] = d.config["source"]
 
 	// Parse the namespace / path.
-	fields := strings.SplitN(d.config["cephfs.path"], "/", 2)
-	fsName := fields[0]
-	fsPath := "/"
-	if len(fields) > 1 {
-		fsPath = fields[1]
-	}
+	fsName, fsPath, _ := strings.Cut(d.config["cephfs.path"], "/")
+	fsPath = "/" + fsPath
 
 	// If the filesystem already exists, disallow keys associated to creating the filesystem.
 	fsExists, err := d.fsExists(d.config["cephfs.cluster_name"], d.config["cephfs.user.name"], fsName)
@@ -191,7 +191,7 @@ func (d *cephfs) Create() error {
 					return fmt.Errorf("Failed to create ceph OSD pool %q: %w", pool, err)
 				}
 
-				revert.Add(func() {
+				reverter.Add(func() {
 					// Delete the OSD pool.
 					_, _ = subprocess.RunCommand("ceph",
 						"--name", fmt.Sprintf("client.%s", d.config["cephfs.user.name"]),
@@ -221,7 +221,7 @@ func (d *cephfs) Create() error {
 			return fmt.Errorf("Failed to create CephFS %q: %w", fsName, err)
 		}
 
-		revert.Add(func() {
+		reverter.Add(func() {
 			// Set the FS to fail so that we can remove it.
 			_, _ = subprocess.RunCommand("ceph",
 				"--name", fmt.Sprintf("client.%s", d.config["cephfs.user.name"]),
@@ -251,27 +251,47 @@ func (d *cephfs) Create() error {
 
 	defer func() { _ = os.RemoveAll(mountPath) }()
 
-	err = os.Chmod(mountPath, 0700)
+	err = os.Chmod(mountPath, 0o700)
 	if err != nil {
 		return fmt.Errorf("Failed to chmod '%s': %w", mountPath, err)
 	}
 
 	mountPoint := filepath.Join(mountPath, "mount")
 
-	err = os.Mkdir(mountPoint, 0700)
+	err = os.Mkdir(mountPoint, 0o700)
 	if err != nil {
 		return fmt.Errorf("Failed to create directory '%s': %w", mountPoint, err)
 	}
 
-	// Get the credentials and host.
-	monAddresses, userSecret, err := d.getConfig(d.config["cephfs.cluster_name"], d.config["cephfs.user.name"])
+	// Collect Ceph information.
+	clusterName := d.config["cephfs.cluster_name"]
+	userName := d.config["cephfs.user.name"]
+
+	fsid, err := CephFsid(clusterName, userName)
 	if err != nil {
 		return err
 	}
 
+	monitors, err := CephMonitors(clusterName, userName)
+	if err != nil {
+		return err
+	}
+
+	key, err := CephKeyring(clusterName, userName)
+	if err != nil {
+		return err
+	}
+
+	srcPath, options := CephBuildMount(
+		userName,
+		key,
+		fsid,
+		monitors,
+		fsName, "/",
+	)
+
 	// Mount the pool.
-	srcPath := strings.Join(monAddresses, ",") + ":/"
-	err = TryMount(srcPath, mountPoint, "ceph", 0, fmt.Sprintf("name=%v,secret=%v,mds_namespace=%v", d.config["cephfs.user.name"], userSecret, fsName))
+	err = TryMount(srcPath, mountPoint, "ceph", 0, strings.Join(options, ","))
 	if err != nil {
 		return err
 	}
@@ -279,7 +299,7 @@ func (d *cephfs) Create() error {
 	defer func() { _, _ = forceUnmount(mountPoint) }()
 
 	// Create the path if missing.
-	err = os.MkdirAll(filepath.Join(mountPoint, fsPath), 0755)
+	err = os.MkdirAll(filepath.Join(mountPoint, fsPath), 0o755)
 	if err != nil {
 		return fmt.Errorf("Failed to create directory '%s': %w", filepath.Join(mountPoint, fsPath), err)
 	}
@@ -287,10 +307,10 @@ func (d *cephfs) Create() error {
 	// Check that the existing path is empty.
 	ok, _ := internalUtil.PathIsEmpty(filepath.Join(mountPoint, fsPath))
 	if !ok {
-		return fmt.Errorf("Only empty CephFS paths can be used as a storage pool")
+		return errors.New("Only empty CephFS paths can be used as a storage pool")
 	}
 
-	revert.Success()
+	reverter.Success()
 
 	return nil
 }
@@ -298,12 +318,8 @@ func (d *cephfs) Create() error {
 // Delete clears any local and remote data related to this driver instance.
 func (d *cephfs) Delete(op *operations.Operation) error {
 	// Parse the namespace / path.
-	fields := strings.SplitN(d.config["cephfs.path"], "/", 2)
-	fsName := fields[0]
-	fsPath := "/"
-	if len(fields) > 1 {
-		fsPath = fields[1]
-	}
+	fsName, fsPath, _ := strings.Cut(d.config["cephfs.path"], "/")
+	fsPath = "/" + fsPath
 
 	// Create a temporary mountpoint.
 	mountPath, err := os.MkdirTemp("", "incus_cephfs_")
@@ -313,26 +329,46 @@ func (d *cephfs) Delete(op *operations.Operation) error {
 
 	defer func() { _ = os.RemoveAll(mountPath) }()
 
-	err = os.Chmod(mountPath, 0700)
+	err = os.Chmod(mountPath, 0o700)
 	if err != nil {
 		return fmt.Errorf("Failed to chmod '%s': %w", mountPath, err)
 	}
 
 	mountPoint := filepath.Join(mountPath, "mount")
-	err = os.Mkdir(mountPoint, 0700)
+	err = os.Mkdir(mountPoint, 0o700)
 	if err != nil {
 		return fmt.Errorf("Failed to create directory '%s': %w", mountPoint, err)
 	}
 
-	// Get the credentials and host.
-	monAddresses, userSecret, err := d.getConfig(d.config["cephfs.cluster_name"], d.config["cephfs.user.name"])
+	// Collect Ceph information.
+	clusterName := d.config["cephfs.cluster_name"]
+	userName := d.config["cephfs.user.name"]
+
+	fsid, err := CephFsid(clusterName, userName)
 	if err != nil {
 		return err
 	}
 
+	monitors, err := CephMonitors(clusterName, userName)
+	if err != nil {
+		return err
+	}
+
+	key, err := CephKeyring(clusterName, userName)
+	if err != nil {
+		return err
+	}
+
+	srcPath, options := CephBuildMount(
+		userName,
+		key,
+		fsid,
+		monitors,
+		fsName, "/",
+	)
+
 	// Mount the pool.
-	srcPath := strings.Join(monAddresses, ",") + ":/"
-	err = TryMount(srcPath, mountPoint, "ceph", 0, fmt.Sprintf("name=%v,secret=%v,mds_namespace=%v", d.config["cephfs.user.name"], userSecret, fsName))
+	err = TryMount(srcPath, mountPoint, "ceph", 0, strings.Join(options, ","))
 	if err != nil {
 		return err
 	}
@@ -350,7 +386,7 @@ func (d *cephfs) Delete(op *operations.Operation) error {
 		// Delete the path itself.
 		if fsPath != "" && fsPath != "/" {
 			err = os.Remove(filepath.Join(mountPoint, fsPath))
-			if err != nil && !os.IsNotExist(err) {
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("Failed to remove directory '%s': %w", filepath.Join(mountPoint, fsPath), err)
 			}
 		}
@@ -395,28 +431,39 @@ func (d *cephfs) Mount() (bool, error) {
 	}
 
 	// Parse the namespace / path.
-	fields := strings.SplitN(d.config["cephfs.path"], "/", 2)
-	fsName := fields[0]
-	fsPath := ""
-	if len(fields) > 1 {
-		fsPath = fields[1]
-	}
+	fsName, fsPath, _ := strings.Cut(d.config["cephfs.path"], "/")
+	fsPath = "/" + fsPath
 
-	// Get the credentials and host.
-	monAddresses, userSecret, err := d.getConfig(d.config["cephfs.cluster_name"], d.config["cephfs.user.name"])
+	// Collect Ceph information.
+	clusterName := d.config["cephfs.cluster_name"]
+	userName := d.config["cephfs.user.name"]
+
+	fsid, err := CephFsid(clusterName, userName)
 	if err != nil {
 		return false, err
 	}
 
-	// Mount options.
-	options := fmt.Sprintf("name=%s,secret=%s,mds_namespace=%s", d.config["cephfs.user.name"], userSecret, fsName)
-	if util.IsTrue(d.config["cephfs.fscache"]) {
-		options += ",fsc"
+	monitors, err := CephMonitors(clusterName, userName)
+	if err != nil {
+		return false, err
 	}
 
+	key, err := CephKeyring(clusterName, userName)
+	if err != nil {
+		return false, err
+	}
+
+	srcPath, options := CephBuildMount(
+		userName,
+		key,
+		fsid,
+		monitors,
+		fsName,
+		fsPath,
+	)
+
 	// Mount the pool.
-	srcPath := strings.Join(monAddresses, ",") + ":/" + fsPath
-	err = TryMount(srcPath, GetPoolMountPath(d.name), "ceph", 0, options)
+	err = TryMount(srcPath, GetPoolMountPath(d.name), "ceph", 0, strings.Join(options, ","))
 	if err != nil {
 		return false, err
 	}
@@ -435,7 +482,7 @@ func (d *cephfs) GetResources() (*api.ResourcesStoragePool, error) {
 }
 
 // MigrationTypes returns the supported migration types and options supported by the driver.
-func (d *cephfs) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool) []localMigration.Type {
+func (d *cephfs) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool, clusterMove bool, storageMove bool) []localMigration.Type {
 	var rsyncFeatures []string
 
 	// Do not pass compression argument to rsync if the associated

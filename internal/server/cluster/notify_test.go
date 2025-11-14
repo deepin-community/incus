@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/node"
@@ -20,6 +20,7 @@ import (
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
 	"github.com/lxc/incus/v6/shared/api"
 	localtls "github.com/lxc/incus/v6/shared/tls"
+	"github.com/lxc/incus/v6/shared/tls/tlstest"
 )
 
 // The returned notifier connects to all nodes.
@@ -27,7 +28,7 @@ func TestNewNotifier(t *testing.T) {
 	state, cleanup := state.NewTestState(t)
 	defer cleanup()
 
-	cert := localtls.TestingKeyPair()
+	cert := tlstest.TestingKeyPair(t)
 
 	f := notifyFixtures{t: t, state: state}
 	defer f.Nodes(cert, 3)()
@@ -75,7 +76,7 @@ func TestNewNotify_NotifyAllError(t *testing.T) {
 	state, cleanup := state.NewTestState(t)
 	defer cleanup()
 
-	cert := localtls.TestingKeyPair()
+	cert := tlstest.TestingKeyPair(t)
 
 	f := notifyFixtures{t: t, state: state}
 	defer f.Nodes(cert, 3)()
@@ -105,7 +106,7 @@ func TestNewNotify_NotifyAlive(t *testing.T) {
 	state, cleanup := state.NewTestState(t)
 	defer cleanup()
 
-	cert := localtls.TestingKeyPair()
+	cert := tlstest.TestingKeyPair(t)
 
 	f := notifyFixtures{t: t, state: state}
 	defer f.Nodes(cert, 3)()
@@ -150,13 +151,13 @@ type notifyFixtures struct {
 // cluster.https_address.
 func (h *notifyFixtures) Nodes(cert *localtls.CertInfo, n int) func() {
 	servers := make([]*httptest.Server, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		servers[i] = newRestServer(cert)
 	}
 
 	// Insert new entries in the nodes table of the cluster database.
 	err := h.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			name := strconv.Itoa(i)
 			address := servers[i].Listener.Addr().String()
 			var err error

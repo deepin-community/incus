@@ -3,6 +3,7 @@
 package sys
 
 import (
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/lxc/incus/v6/shared/idmap"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/osarch"
+	"github.com/lxc/incus/v6/shared/util"
 )
 
 // InotifyTargetInfo records the inotify information associated with a given
@@ -56,6 +58,7 @@ type OS struct {
 	MockMode        bool   // If true some APIs will be mocked (for testing)
 	Nodev           bool
 	RunningInUserNS bool
+	Hostname        string
 
 	// Privilege dropping
 	UnprivUser  string
@@ -98,6 +101,7 @@ type OS struct {
 	KernelVersion version.DottedVersion
 	Uname         *linux.Utsname
 	BootTime      time.Time
+	IncusOS       bool
 }
 
 // DefaultOS returns a fresh uninitialized OS instance with default values.
@@ -172,13 +176,17 @@ func (s *OS) Init() ([]cluster.Warning, error) {
 	s.IdmapSet = getIdmapset()
 	s.ExecPath = localUtil.GetExecPath()
 	s.RunningInUserNS = linux.RunningInUserNS()
+	s.Hostname, err = os.Hostname()
+	if err != nil {
+		return nil, err
+	}
 
 	dbWarnings = s.initAppArmor()
 	cgroup.Init()
 	s.CGInfo = cgroup.GetInfo()
 
 	// Fill in the OS release info.
-	osInfo, err := osarch.GetLSBRelease()
+	osInfo, err := osarch.GetOSRelease()
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +204,8 @@ func (s *OS) Init() ([]cluster.Warning, error) {
 	if err == nil {
 		s.KernelVersion = *kernelVersion
 	}
+
+	s.IncusOS = util.PathExists("/var/lib/incus-os/")
 
 	// Fill in the boot time.
 	out, err := os.ReadFile("/proc/stat")
@@ -242,8 +252,8 @@ func (s *OS) GetUnixSocket() string {
 
 func getIdmapset() *idmap.Set {
 	// Try getting the system map.
-	idmapset, err := idmap.NewSetFromSystem("", "root")
-	if err != nil && err != idmap.ErrSubidUnsupported {
+	idmapset, err := idmap.NewSetFromSystem("root")
+	if err != nil && !errors.Is(err, idmap.ErrSubidUnsupported) {
 		logger.Error("Unable to parse system idmap", logger.Ctx{"err": err})
 		return nil
 	}
@@ -290,7 +300,7 @@ func getIdmapset() *idmap.Set {
 
 	// Try splitting a larger chunk from the current map.
 	submap, err := idmapset.Split(65536, 1000000000, 1000000, -1)
-	if err != nil && err != idmap.ErrNoSuitableSubmap {
+	if err != nil && !errors.Is(err, idmap.ErrNoSuitableSubmap) {
 		logger.Error("Unable to split a submap", logger.Ctx{"err": err})
 		return nil
 	}
@@ -307,7 +317,7 @@ func getIdmapset() *idmap.Set {
 	// Try splitting a smaller chunk from the current map.
 	submap, err = idmapset.Split(65536, 1000000000, 65536, -1)
 	if err != nil {
-		if err == idmap.ErrNoSuitableSubmap {
+		if errors.Is(err, idmap.ErrNoSuitableSubmap) {
 			logger.Warn("Not enough uid/gid available, only privileged containers will be functional")
 			return nil
 		}

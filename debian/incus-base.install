@@ -1,0 +1,7 @@
+etc/dnsmasq.d-available/incus
+etc/sysctl.d/10-incus-inotify.conf
+usr/bin/incusd usr/libexec/incus/
+usr/bin/incus-user usr/libexec/incus/
+debian/wrappers/incus-apparmor-load usr/libexec/incus/
+debian/wrappers/shutdown usr/libexec/incus/
+debian/wrappers/startup usr/libexec/incus/

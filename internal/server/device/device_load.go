@@ -1,6 +1,7 @@
 package device
 
 import (
+	"errors"
 	"fmt"
 
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
@@ -10,10 +11,10 @@ import (
 	"github.com/lxc/incus/v6/shared/validate"
 )
 
-// newByType returns a new unitialized device based of the type indicated by the project and device config.
+// newByType returns a new uninitialized device based of the type indicated by the project and device config.
 func newByType(state *state.State, projectName string, conf deviceConfig.Device) (device, error) {
 	if conf["type"] == "" {
-		return nil, fmt.Errorf("Missing device type in config")
+		return nil, errors.New("Missing device type in config")
 	}
 
 	// NIC type is required to lookup network devices.
@@ -46,6 +47,12 @@ func newByType(state *state.State, projectName string, conf deviceConfig.Device)
 		}
 
 	case "infiniband":
+		// gendoc:generate(entity=devices, group=infiniband, key=nictype)
+		//
+		// ---
+		//  type: string
+		//  required: yes
+		//  shortdesc: The device type (one of `physical` or `sriov`)
 		switch nicType {
 		case "physical":
 			dev = &infinibandPhysical{}

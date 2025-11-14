@@ -5,15 +5,16 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/lxc/incus/v6/internal/server/db/cluster"
-	"github.com/lxc/incus/v6/internal/server/db/operationtype"
 	"github.com/lxc/incus/v6/internal/server/db/query"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
 	"github.com/lxc/incus/v6/internal/version"
@@ -195,7 +196,7 @@ func (c *ClusterTx) GetNodeByAddress(ctx context.Context, address string) (NodeI
 	case 1:
 		return nodes[0], nil
 	default:
-		return null, fmt.Errorf("more than one node matches")
+		return null, errors.New("more than one node matches")
 	}
 }
 
@@ -239,7 +240,7 @@ func (c *ClusterTx) GetNodeWithID(ctx context.Context, nodeID int) (NodeInfo, er
 	case 1:
 		return nodes[0], nil
 	default:
-		return null, fmt.Errorf("More than one cluster member matches")
+		return null, errors.New("More than one cluster member matches")
 	}
 }
 
@@ -257,7 +258,25 @@ func (c *ClusterTx) GetPendingNodeByAddress(ctx context.Context, address string)
 	case 1:
 		return nodes[0], nil
 	default:
-		return null, fmt.Errorf("More than one cluster member matches")
+		return null, errors.New("More than one cluster member matches")
+	}
+}
+
+// GetPendingNodeByName returns the pending node with the given name.
+func (c *ClusterTx) GetPendingNodeByName(ctx context.Context, name string) (NodeInfo, error) {
+	null := NodeInfo{}
+	nodes, err := c.nodes(ctx, true /* pending */, "name=?", name)
+	if err != nil {
+		return null, err
+	}
+
+	switch len(nodes) {
+	case 0:
+		return null, api.StatusErrorf(http.StatusNotFound, "Cluster member not found")
+	case 1:
+		return nodes[0], nil
+	default:
+		return null, errors.New("More than one cluster member matches")
 	}
 }
 
@@ -275,7 +294,7 @@ func (c *ClusterTx) GetNodeByName(ctx context.Context, name string) (NodeInfo, e
 	case 1:
 		return nodes[0], nil
 	default:
-		return null, fmt.Errorf("More than one cluster member matches")
+		return null, errors.New("More than one cluster member matches")
 	}
 }
 
@@ -294,7 +313,7 @@ func (c *ClusterTx) GetLocalNodeName(ctx context.Context) (string, error) {
 	case 1:
 		return names[0], nil
 	default:
-		return "", fmt.Errorf("inconsistency: non-unique node ID")
+		return "", errors.New("inconsistency: non-unique node ID")
 	}
 }
 
@@ -312,7 +331,7 @@ func (c *ClusterTx) GetLocalNodeAddress(ctx context.Context) (string, error) {
 	case 1:
 		return addresses[0], nil
 	default:
-		return "", fmt.Errorf("inconsistency: non-unique node ID")
+		return "", errors.New("inconsistency: non-unique node ID")
 	}
 }
 
@@ -332,7 +351,7 @@ func (c *ClusterTx) NodeIsOutdated(ctx context.Context) (bool, error) {
 		}
 	}
 	if version[0] == 0 || version[1] == 0 {
-		return false, fmt.Errorf("Inconsistency: local member not found")
+		return false, errors.New("Inconsistency: local member not found")
 	}
 
 	// Check if any of the other nodes is greater than us.
@@ -534,7 +553,7 @@ JOIN cluster_groups ON cluster_groups.id = nodes_cluster_groups.group_id`
 		}
 	}
 
-	config, err := cluster.GetConfig(context.TODO(), c.Tx(), "node")
+	config, err := cluster.GetConfig(context.TODO(), c.Tx(), "nodes", "node")
 	if err != nil {
 		return nil, fmt.Errorf("Failed to fetch nodes config: %w", err)
 	}
@@ -617,7 +636,7 @@ func (c *ClusterTx) BootstrapNode(name string, address string) error {
 
 // UpdateNodeConfig updates the replaces the node's config with the specified config.
 func (c *ClusterTx) UpdateNodeConfig(ctx context.Context, id int64, config map[string]string) error {
-	err := cluster.UpdateConfig(ctx, c.Tx(), "node", int(id), config)
+	err := cluster.UpdateConfig(ctx, c.Tx(), "nodes", "node", int(id), config)
 	if err != nil {
 		return fmt.Errorf("Unable to update node config: %w", err)
 	}
@@ -718,7 +737,7 @@ func (c *ClusterTx) UpdateNodeFailureDomain(ctx context.Context, id int64, domai
 	var domainID any
 
 	if domain == "" {
-		return fmt.Errorf("Failure domain name can't be empty")
+		return errors.New("Failure domain name can't be empty")
 	}
 
 	if domain == "default" {
@@ -727,7 +746,7 @@ func (c *ClusterTx) UpdateNodeFailureDomain(ctx context.Context, id int64, domai
 		row := c.tx.QueryRowContext(ctx, "SELECT id FROM nodes_failure_domains WHERE name=?", domain)
 		err := row.Scan(&domainID)
 		if err != nil {
-			if err != sql.ErrNoRows {
+			if !errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("Load failure domain name: %w", err)
 			}
 
@@ -1135,40 +1154,14 @@ func (c *ClusterTx) GetCandidateMembers(ctx context.Context, allMembers []NodeIn
 		}
 	}
 
+	sort.Slice(candidateMembers, func(i int, j int) bool {
+		iCount, _ := c.GetInstancesCount(ctx, "", candidateMembers[i].Name, true)
+		jCount, _ := c.GetInstancesCount(ctx, "", candidateMembers[j].Name, true)
+
+		return iCount < jCount
+	})
+
 	return candidateMembers, nil
-}
-
-// GetNodeWithLeastInstances returns the name of the member with the least number of instances that are either
-// already created or being created with an operation.
-func (c *ClusterTx) GetNodeWithLeastInstances(ctx context.Context, members []NodeInfo) (*NodeInfo, error) {
-	var member *NodeInfo
-	var lowestInstanceCount = -1
-
-	for i := range members {
-		// Fetch the number of instances already created on this member.
-		created, err := query.Count(ctx, c.tx, "instances", "node_id=?", members[i].ID)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to get instances count: %w", err)
-		}
-
-		// Fetch the number of instances currently being created on this member.
-		pending, err := query.Count(ctx, c.tx, "operations", "node_id=? AND type=?", members[i].ID, operationtype.InstanceCreate)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to get pending instances count: %w", err)
-		}
-
-		memberInstanceCount := created + pending
-		if lowestInstanceCount == -1 || memberInstanceCount < lowestInstanceCount {
-			lowestInstanceCount = memberInstanceCount
-			member = &members[i]
-		}
-	}
-
-	if member == nil {
-		return nil, api.StatusErrorf(http.StatusNotFound, "No suitable cluster member could be found")
-	}
-
-	return member, nil
 }
 
 // SetNodeVersion updates the schema and API version of the node with the
@@ -1187,7 +1180,7 @@ func (c *ClusterTx) SetNodeVersion(id int64, version [2]int) error {
 	}
 
 	if n != 1 {
-		return fmt.Errorf("Expected exactly one row to be updated")
+		return errors.New("Expected exactly one row to be updated")
 	}
 
 	return nil

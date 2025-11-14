@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,7 +15,8 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/internal/filter"
 	"github.com/lxc/incus/v6/internal/jmap"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/db"
@@ -73,6 +75,12 @@ var projectAccessCmd = APIEndpoint{
 //  ---
 //  produces:
 //    - application/json
+//  parameters:
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
 //  responses:
 //    "200":
 //      description: API endpoints
@@ -109,59 +117,72 @@ var projectAccessCmd = APIEndpoint{
 
 // swagger:operation GET /1.0/projects?recursion=1 projects projects_get_recursion1
 //
-//	Get the projects
+//  Get the projects
 //
-//	Returns a list of projects (structs).
+//  Returns a list of projects (structs).
 //
-//	---
-//	produces:
-//	  - application/json
-//	responses:
-//	  "200":
-//	    description: API endpoints
-//	    schema:
-//	      type: object
-//	      description: Sync response
-//	      properties:
-//	        type:
-//	          type: string
-//	          description: Response type
-//	          example: sync
-//	        status:
-//	          type: string
-//	          description: Status description
-//	          example: Success
-//	        status_code:
-//	          type: integer
-//	          description: Status code
-//	          example: 200
-//	        metadata:
-//	          type: array
-//	          description: List of projects
-//	          items:
-//	            $ref: "#/definitions/Project"
-//	  "403":
-//	    $ref: "#/responses/Forbidden"
-//	  "500":
-//	    $ref: "#/responses/InternalServerError"
+//  ---
+//  produces:
+//    - application/json
+//  parameters:
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
+//  responses:
+//    "200":
+//      description: API endpoints
+//      schema:
+//        type: object
+//        description: Sync response
+//        properties:
+//          type:
+//            type: string
+//            description: Response type
+//            example: sync
+//          status:
+//            type: string
+//            description: Status description
+//            example: Success
+//          status_code:
+//            type: integer
+//            description: Status code
+//            example: 200
+//          metadata:
+//            type: array
+//            description: List of projects
+//            items:
+//              $ref: "#/definitions/Project"
+//    "403":
+//      $ref: "#/responses/Forbidden"
+//    "500":
+//      $ref: "#/responses/InternalServerError"
+
 func projectsGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
 	recursion := localUtil.IsRecursionRequest(r)
+
+	// Parse filter value.
+	filterStr := r.FormValue("filter")
+	clauses, err := filter.Parse(filterStr, filter.QueryOperatorSet())
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid filter: %w", err))
+	}
 
 	userHasPermission, err := s.Authorizer.GetPermissionChecker(r.Context(), r, auth.EntitlementCanView, auth.ObjectTypeProject)
 	if err != nil {
 		return response.InternalError(err)
 	}
 
-	var result any
+	filtered := make([]api.Project, 0)
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
 		projects, err := cluster.GetProjects(ctx, tx.Tx())
 		if err != nil {
 			return err
 		}
 
-		filtered := []api.Project{}
 		for _, project := range projects {
 			if !userHasPermission(auth.ObjectProject(project.Name)) {
 				continue
@@ -177,18 +198,18 @@ func projectsGet(d *Daemon, r *http.Request) response.Response {
 				return err
 			}
 
-			filtered = append(filtered, *apiProject)
-		}
+			if clauses != nil && len(clauses.Clauses) > 0 {
+				match, err := filter.Match(*apiProject, *clauses)
+				if err != nil {
+					return err
+				}
 
-		if recursion {
-			result = filtered
-		} else {
-			urls := make([]string, len(filtered))
-			for i, p := range filtered {
-				urls[i] = p.URL(version.APIVersion).String()
+				if !match {
+					continue
+				}
 			}
 
-			result = urls
+			filtered = append(filtered, *apiProject)
 		}
 
 		return nil
@@ -197,7 +218,16 @@ func projectsGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	return response.SyncResponse(true, result)
+	if recursion {
+		return response.SyncResponse(true, filtered)
+	}
+
+	urls := make([]string, len(filtered))
+	for i, p := range filtered {
+		urls[i] = p.URL(version.APIVersion).String()
+	}
+
+	return response.SyncResponse(true, urls)
 }
 
 // projectUsedBy returns a list of URLs for all instances, images, profiles,
@@ -231,16 +261,26 @@ func projectUsedBy(ctx context.Context, tx *db.ClusterTx, project *cluster.Proje
 
 	usedBy = append(usedBy, networks...)
 
-	networkACLs, err := tx.GetNetworkACLURIs(ctx, project.ID, project.Name)
+	acls, err := cluster.GetNetworkACLs(ctx, tx.Tx(), cluster.NetworkACLFilter{Project: &project.Name})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Unable to get URIs for network acl: %w", err)
 	}
 
-	usedBy = append(usedBy, networkACLs...)
+	for _, acl := range acls {
+		apiNetworkACL := api.NetworkACL{NetworkACLPost: api.NetworkACLPost{Name: acl.Name}}
+		usedBy = append(usedBy, apiNetworkACL.URL(version.APIVersion, project.Name).String())
+	}
 
-	networkZones, err := tx.GetNetworkZoneURIs(ctx, project.ID, project.Name)
+	var zones []cluster.NetworkZone
+	zones, err = cluster.GetNetworkZones(ctx, tx.Tx(), cluster.NetworkZoneFilter{Project: &project.Name})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Unable to get URIs for network zones: %w", err)
+	}
+
+	// Create URIs for each zone.
+	networkZones := make([]string, len(zones))
+	for i, zone := range zones {
+		networkZones[i] = api.NewURL().Path(version.APIVersion, "network-zones", zone.Name).Project(project.Name).String()
 	}
 
 	usedBy = append(usedBy, networkZones...)
@@ -323,6 +363,11 @@ func projectsPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Quick checks.
+	err = validate.IsAPIName(project.Name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid project name: %w", err))
+	}
+
 	err = projectValidateName(project.Name)
 	if err != nil {
 		return response.BadRequest(err)
@@ -695,7 +740,7 @@ func projectChange(ctx context.Context, s *state.State, project *api.Project, re
 	// Quick checks.
 	if len(featuresChanged) > 0 {
 		if project.Name == api.ProjectDefaultName {
-			return response.BadRequest(fmt.Errorf("You can't change the features of the default project"))
+			return response.BadRequest(errors.New("You can't change the features of the default project"))
 		}
 
 		// Consider the project empty if it is only used by the default profile.
@@ -761,7 +806,6 @@ func projectChange(ctx context.Context, s *state.State, project *api.Project, re
 
 		return nil
 	})
-
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -814,7 +858,7 @@ func projectPost(d *Daemon, r *http.Request) response.Response {
 
 	// Quick checks.
 	if name == api.ProjectDefaultName {
-		return response.Forbidden(fmt.Errorf("The 'default' project cannot be renamed"))
+		return response.Forbidden(errors.New("The 'default' project cannot be renamed"))
 	}
 
 	// Perform the rename.
@@ -841,7 +885,7 @@ func projectPost(d *Daemon, r *http.Request) response.Response {
 			}
 
 			if !empty {
-				return fmt.Errorf("Only empty projects can be renamed")
+				return errors.New("Only empty projects can be renamed")
 			}
 
 			id, err = cluster.GetProjectID(ctx, tx.Tx(), name)
@@ -849,9 +893,14 @@ func projectPost(d *Daemon, r *http.Request) response.Response {
 				return fmt.Errorf("Failed getting project ID for project %q: %w", name, err)
 			}
 
+			err = validate.IsAPIName(name, false)
+			if err != nil {
+				return fmt.Errorf("Invalid project name: %w", err)
+			}
+
 			err = projectValidateName(req.Name)
 			if err != nil {
-				return err
+				return fmt.Errorf("Invalid project name: %w", err)
 			}
 
 			return cluster.RenameProject(ctx, tx.Tx(), name, req.Name)
@@ -862,7 +911,7 @@ func projectPost(d *Daemon, r *http.Request) response.Response {
 
 		err = s.Authorizer.RenameProject(s.ShutdownCtx, id, name, req.Name)
 		if err != nil {
-			return err
+			logger.Error("Failed to rename project in authorizer", logger.Ctx{"name": name, "new_name": req.Name, "err": err})
 		}
 
 		requestor := request.CreateRequestor(r)
@@ -914,7 +963,7 @@ func projectDelete(d *Daemon, r *http.Request) response.Response {
 
 	// Quick checks.
 	if name == api.ProjectDefaultName {
-		return response.Forbidden(fmt.Errorf("The 'default' project cannot be deleted"))
+		return response.Forbidden(errors.New("The 'default' project cannot be deleted"))
 	}
 
 	var id int64
@@ -932,7 +981,7 @@ func projectDelete(d *Daemon, r *http.Request) response.Response {
 			}
 
 			if !empty {
-				return fmt.Errorf("Only empty projects can be removed.")
+				return errors.New("Only empty projects can be removed.")
 			}
 		} else {
 			usedBy, err = projectUsedBy(ctx, tx, project)
@@ -1183,7 +1232,7 @@ func projectDelete(d *Daemon, r *http.Request) response.Response {
 
 		// Check if anything is left.
 		if count != 0 {
-			return response.BadRequest(fmt.Errorf("Project couldn't be automatically emptied"))
+			return response.BadRequest(errors.New("Project couldn't be automatically emptied"))
 		}
 	}
 
@@ -1196,7 +1245,7 @@ func projectDelete(d *Daemon, r *http.Request) response.Response {
 
 	err = s.Authorizer.DeleteProject(r.Context(), id, name)
 	if err != nil {
-		return response.SmartError(err)
+		logger.Error("Failed to remove project from authorizer", logger.Ctx{"name": name, "err": err})
 	}
 
 	requestor := request.CreateRequestor(r)
@@ -1301,7 +1350,7 @@ func projectValidateConfig(s *state.State, config map[string]string) error {
 	projectConfigKeys := map[string]func(value string) error{
 		// gendoc:generate(entity=project, group=specific, key=backups.compression_algorithm)
 		// Specify which compression algorithm to use for backups in this project.
-		// Possible values are `bzip2`, `gzip`, `lzma`, `xz`, or `none`.
+		// Possible values are `bzip2`, `gzip`, `lz4`, `lzma`, `xz`, `zstd` or `none`.
 		// ---
 		//  type: string
 		//  shortdesc: Compression algorithm to use for backups
@@ -1377,7 +1426,7 @@ func projectValidateConfig(s *state.State, config map[string]string) error {
 		"images.auto_update_interval": validate.Optional(validate.IsInt64),
 
 		// gendoc:generate(entity=project, group=specific, key=images.compression_algorithm)
-		// Possible values are `bzip2`, `gzip`, `lzma`, `xz`, or `none`.
+		// Possible values are `bzip2`, `gzip`, `lz4`, `lzma`, `xz`, `zstd` or `none`.
 		// ---
 		//  type: string
 		//  shortdesc: Compression algorithm to use for new images in the project
@@ -1550,7 +1599,7 @@ func projectValidateConfig(s *state.State, config map[string]string) error {
 		// gendoc:generate(entity=project, group=restricted, key=restricted.containers.privilege)
 		// Possible values are `unprivileged`, `isolated`, and `allow`.
 		//
-		// - When set to `unpriviliged`, this option prevents setting {config:option}`instance-security:security.privileged` to `true`.
+		// - When set to `unprivileged`, this option prevents setting {config:option}`instance-security:security.privileged` to `true`.
 		// - When set to `isolated`, this option prevents setting {config:option}`instance-security:security.privileged` and {config:option}`instance-security:security.idmap.isolated` to `true`.
 		// - When set to `allow`, there is no restriction.
 		// ---
@@ -1789,35 +1838,23 @@ func projectValidateConfig(s *state.State, config map[string]string) error {
 	// be bypassed by settings from the default project's profiles that are not checked against this project's
 	// restrictions when they are configured.
 	if util.IsTrue(config["restricted"]) && util.IsFalse(config["features.profiles"]) {
-		return fmt.Errorf("Projects without their own profiles cannot be restricted")
+		return errors.New("Projects without their own profiles cannot be restricted")
 	}
 
 	return nil
 }
 
 func projectValidateName(name string) error {
-	if name == "" {
-		return fmt.Errorf("No name provided")
-	}
-
-	if strings.Contains(name, "/") {
-		return fmt.Errorf("Project names may not contain slashes")
-	}
-
-	if strings.Contains(name, " ") {
-		return fmt.Errorf("Project names may not contain spaces")
-	}
-
 	if strings.Contains(name, "_") {
-		return fmt.Errorf("Project names may not contain underscores")
+		return errors.New("Project names may not contain underscores")
 	}
 
 	if strings.Contains(name, "'") || strings.Contains(name, `"`) {
-		return fmt.Errorf("Project names may not contain quotes")
+		return errors.New("Project names may not contain quotes")
 	}
 
 	if name == "*" {
-		return fmt.Errorf("Reserved project name")
+		return errors.New("Reserved project name")
 	}
 
 	if slices.Contains([]string{".", ".."}, name) {
@@ -1935,6 +1972,11 @@ func projectAccess(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Quick checks.
+	err = validate.IsAPIName(name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid project name: %w", err))
+	}
+
 	err = projectValidateName(name)
 	if err != nil {
 		return response.BadRequest(err)
@@ -1942,7 +1984,6 @@ func projectAccess(d *Daemon, r *http.Request) response.Response {
 
 	// get the access struct
 	access, err := s.Authorizer.GetProjectAccess(context.TODO(), name)
-
 	if err != nil {
 		return response.InternalError(err)
 	}

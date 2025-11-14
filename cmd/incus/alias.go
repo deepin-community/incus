@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 
 	"github.com/spf13/cobra"
@@ -42,7 +43,7 @@ func (c *cmdAlias) Command() *cobra.Command {
 
 	// Workaround for subcommand usage errors. See: https://github.com/spf13/cobra/issues/706
 	cmd.Args = cobra.NoArgs
-	cmd.Run = func(cmd *cobra.Command, args []string) { _ = cmd.Usage() }
+	cmd.Run = func(cmd *cobra.Command, _ []string) { _ = cmd.Usage() }
 	return cmd
 }
 
@@ -57,6 +58,7 @@ type cmdAliasAdd struct {
 func (c *cmdAliasAdd) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("add", i18n.G("<alias> <target>"))
+	cmd.Aliases = []string{"create"}
 	cmd.Short = i18n.G("Add new aliases")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Add new aliases`))
@@ -75,7 +77,7 @@ func (c *cmdAliasAdd) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 2, 2)
+	exit, err := c.global.checkArgs(cmd, args, 2, 2)
 	if exit {
 		return err
 	}
@@ -110,7 +112,11 @@ func (c *cmdAliasList) Command() *cobra.Command {
 	cmd.Short = i18n.G("List aliases")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`List aliases`))
-	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G("Format (csv|json|table|yaml|compact)")+"``")
+	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", c.global.defaultListFormat(), i18n.G(`Format (csv|json|table|yaml|compact|markdown), use suffix ",noheader" to disable headers and ",header" to enable it if missing, e.g. csv,header`)+"``")
+
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		return cli.ValidateFlagFormatForListOutput(cmd.Flag("format").Value.String())
+	}
 
 	cmd.RunE = c.Run
 
@@ -123,7 +129,7 @@ func (c *cmdAliasList) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 0, 0)
+	exit, err := c.global.checkArgs(cmd, args, 0, 0)
 	if exit {
 		return err
 	}
@@ -149,7 +155,7 @@ func (c *cmdAliasList) Run(cmd *cobra.Command, args []string) error {
 		i18n.G("TARGET"),
 	}
 
-	return cli.RenderTable(c.flagFormat, header, data, conf.Aliases)
+	return cli.RenderTable(os.Stdout, c.flagFormat, header, data, conf.Aliases)
 }
 
 // Rename.
@@ -182,7 +188,7 @@ func (c *cmdAliasRename) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 2, 2)
+	exit, err := c.global.checkArgs(cmd, args, 2, 2)
 	if exit {
 		return err
 	}
@@ -218,7 +224,7 @@ type cmdAliasRemove struct {
 func (c *cmdAliasRemove) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("remove", i18n.G("<alias>"))
-	cmd.Aliases = []string{"rm"}
+	cmd.Aliases = []string{"delete", "rm"}
 	cmd.Short = i18n.G("Remove aliases")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Remove aliases`))
@@ -237,7 +243,7 @@ func (c *cmdAliasRemove) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 1)
+	exit, err := c.global.checkArgs(cmd, args, 1, 1)
 	if exit {
 		return err
 	}

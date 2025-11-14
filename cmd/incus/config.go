@@ -1,15 +1,17 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/instance"
@@ -77,7 +79,7 @@ func (c *cmdConfig) Command() *cobra.Command {
 
 	// Workaround for subcommand usage errors. See: https://github.com/spf13/cobra/issues/706
 	cmd.Args = cobra.NoArgs
-	cmd.Run = func(cmd *cobra.Command, args []string) { _ = cmd.Usage() }
+	cmd.Run = func(cmd *cobra.Command, _ []string) { _ = cmd.Usage() }
 	return cmd
 }
 
@@ -101,7 +103,7 @@ func (c *cmdConfigEdit) Command() *cobra.Command {
 	cmd.Flags().StringVar(&c.config.flagTarget, "target", "", i18n.G("Cluster member name")+"``")
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -123,7 +125,7 @@ func (c *cmdConfigEdit) helpTemplate() string {
 ### profiles:
 ### - default
 ### config:
-###   volatile.eth0.hwaddr: 00:16:3e:e9:f8:7f
+###   volatile.eth0.hwaddr: 10:66:6a:e9:f8:7f
 ### devices:
 ###   homedir:
 ###     path: /extra
@@ -137,7 +139,7 @@ func (c *cmdConfigEdit) helpTemplate() string {
 // Run executes the config edit command, allowing users to edit instance or server configurations via an interactive YAML editor.
 func (c *cmdConfigEdit) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 0, 1)
+	exit, err := c.global.checkArgs(cmd, args, 0, 1)
 	if exit {
 		return err
 	}
@@ -148,7 +150,7 @@ func (c *cmdConfigEdit) Run(cmd *cobra.Command, args []string) error {
 		remote = args[0]
 	}
 
-	resources, err := c.global.ParseServers(remote)
+	resources, err := c.global.parseServers(remote)
 	if err != nil {
 		return err
 	}
@@ -162,7 +164,7 @@ func (c *cmdConfigEdit) Run(cmd *cobra.Command, args []string) error {
 	if resource.name != "" {
 		// Quick checks.
 		if c.config.flagTarget != "" {
-			return fmt.Errorf(i18n.G("--target cannot be used with instances"))
+			return errors.New(i18n.G("--target cannot be used with instances"))
 		}
 
 		// If stdin isn't a terminal, read text from it
@@ -298,7 +300,7 @@ func (c *cmdConfigEdit) Run(cmd *cobra.Command, args []string) error {
 	// Targeting
 	if c.config.flagTarget != "" {
 		if !resource.server.IsClustered() {
-			return fmt.Errorf(i18n.G("To use --target, the destination remote must be a cluster"))
+			return errors.New(i18n.G("To use --target, the destination remote must be a cluster"))
 		}
 
 		resource.server = resource.server.UseTarget(c.config.flagTarget)
@@ -393,7 +395,7 @@ func (c *cmdConfigGet) Command() *cobra.Command {
 	cmd.Flags().StringVar(&c.config.flagTarget, "target", "", i18n.G("Cluster member name")+"``")
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -411,7 +413,7 @@ func (c *cmdConfigGet) Command() *cobra.Command {
 // Run fetches and prints the specified configuration key's value for an instance or server, also handling target and expansion flags.
 func (c *cmdConfigGet) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 2)
+	exit, err := c.global.checkArgs(cmd, args, 1, 2)
 	if exit {
 		return err
 	}
@@ -422,7 +424,7 @@ func (c *cmdConfigGet) Run(cmd *cobra.Command, args []string) error {
 		remote = args[0]
 	}
 
-	resources, err := c.global.ParseServers(remote)
+	resources, err := c.global.parseServers(remote)
 	if err != nil {
 		return err
 	}
@@ -435,7 +437,7 @@ func (c *cmdConfigGet) Run(cmd *cobra.Command, args []string) error {
 	if resource.name != "" {
 		// Quick checks.
 		if c.config.flagTarget != "" {
-			return fmt.Errorf(i18n.G("--target cannot be used with instances"))
+			return errors.New(i18n.G("--target cannot be used with instances"))
 		}
 
 		if isSnapshot {
@@ -445,7 +447,7 @@ func (c *cmdConfigGet) Run(cmd *cobra.Command, args []string) error {
 			}
 
 			if c.flagIsProperty {
-				res, err := getFieldByJsonTag(inst, args[len(args)-1])
+				res, err := getFieldByJSONTag(inst, args[len(args)-1])
 				if err != nil {
 					return fmt.Errorf(i18n.G("The property %q does not exist on the instance snapshot %s/%s: %v"), args[len(args)-1], fields[0], fields[1], err)
 				}
@@ -469,7 +471,7 @@ func (c *cmdConfigGet) Run(cmd *cobra.Command, args []string) error {
 
 		if c.flagIsProperty {
 			w := resp.Writable()
-			res, err := getFieldByJsonTag(&w, args[len(args)-1])
+			res, err := getFieldByJSONTag(&w, args[len(args)-1])
 			if err != nil {
 				return fmt.Errorf(i18n.G("The property %q does not exist on the instance %q: %v"), args[len(args)-1], resource.name, err)
 			}
@@ -485,13 +487,13 @@ func (c *cmdConfigGet) Run(cmd *cobra.Command, args []string) error {
 	} else {
 		// Quick check.
 		if c.flagExpanded {
-			return fmt.Errorf(i18n.G("--expanded cannot be used with a server"))
+			return errors.New(i18n.G("--expanded cannot be used with a server"))
 		}
 
 		// Targeting
 		if c.config.flagTarget != "" {
 			if !resource.server.IsClustered() {
-				return fmt.Errorf(i18n.G("To use --target, the destination remote must be a cluster"))
+				return errors.New(i18n.G("To use --target, the destination remote must be a cluster"))
 			}
 
 			resource.server = resource.server.UseTarget(c.config.flagTarget)
@@ -531,6 +533,9 @@ For backward compatibility, a single configuration key may still be set with:
 		`incus config set [<remote>:]<instance> limits.cpu=2
     Will set a CPU limit of "2" for the instance.
 
+incus config set my-instance cloud-init.user-data - < cloud-init.yaml
+    Sets the cloud-init user-data for instance "my-instance" by reading "cloud-init.yaml" through stdin.
+
 incus config set core.https_address=[::]:8443
     Will have the server listen on IPv4 and IPv6 port 8443.`))
 
@@ -538,7 +543,7 @@ incus config set core.https_address=[::]:8443
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Set the key as an instance property"))
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -556,7 +561,7 @@ incus config set core.https_address=[::]:8443
 // Run executes the "set" command, updating instance or server configuration keys based on provided arguments.
 func (c *cmdConfigSet) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, -1)
+	exit, err := c.global.checkArgs(cmd, args, 1, -1)
 	if exit {
 		return err
 	}
@@ -599,7 +604,7 @@ func (c *cmdConfigSet) Run(cmd *cobra.Command, args []string) error {
 		remote = args[0]
 	}
 
-	resources, err := c.global.ParseServers(remote)
+	resources, err := c.global.parseServers(remote)
 	if err != nil {
 		return err
 	}
@@ -612,7 +617,7 @@ func (c *cmdConfigSet) Run(cmd *cobra.Command, args []string) error {
 	if resource.name != "" {
 		// Quick checks.
 		if c.config.flagTarget != "" {
-			return fmt.Errorf(i18n.G("--target cannot be used with instances"))
+			return errors.New(i18n.G("--target cannot be used with instances"))
 		}
 
 		keys, err := getConfig(args[1:]...)
@@ -630,7 +635,7 @@ func (c *cmdConfigSet) Run(cmd *cobra.Command, args []string) error {
 			if c.flagIsProperty {
 				if cmd.Name() == "unset" {
 					for k := range keys {
-						err := unsetFieldByJsonTag(&writable, k)
+						err := unsetFieldByJSONTag(&writable, k)
 						if err != nil {
 							return fmt.Errorf(i18n.G("Error unsetting properties: %v"), err)
 						}
@@ -648,9 +653,9 @@ func (c *cmdConfigSet) Run(cmd *cobra.Command, args []string) error {
 				}
 
 				return op.Wait()
-			} else {
-				return fmt.Errorf(i18n.G("The is no config key to set on an instance snapshot."))
 			}
+
+			return errors.New(i18n.G("The is no config key to set on an instance snapshot."))
 		}
 
 		inst, etag, err := resource.server.GetInstance(resource.name)
@@ -662,7 +667,7 @@ func (c *cmdConfigSet) Run(cmd *cobra.Command, args []string) error {
 		if c.flagIsProperty {
 			if cmd.Name() == "unset" {
 				for k := range keys {
-					err := unsetFieldByJsonTag(&writable, k)
+					err := unsetFieldByJSONTag(&writable, k)
 					if err != nil {
 						return fmt.Errorf(i18n.G("Error unsetting properties: %v"), err)
 					}
@@ -699,7 +704,7 @@ func (c *cmdConfigSet) Run(cmd *cobra.Command, args []string) error {
 	// Targeting
 	if c.config.flagTarget != "" {
 		if !resource.server.IsClustered() {
-			return fmt.Errorf(i18n.G("To use --target, the destination remote must be a cluster"))
+			return errors.New(i18n.G("To use --target, the destination remote must be a cluster"))
 		}
 
 		resource.server = resource.server.UseTarget(c.config.flagTarget)
@@ -728,9 +733,7 @@ func (c *cmdConfigSet) Run(cmd *cobra.Command, args []string) error {
 		server.Config = map[string]string{}
 	}
 
-	for k, v := range keys {
-		server.Config[k] = v
-	}
+	maps.Copy(server.Config, keys)
 
 	return resource.server.UpdateServer(server.Writable(), etag)
 }
@@ -755,7 +758,7 @@ func (c *cmdConfigShow) Command() *cobra.Command {
 	cmd.Flags().StringVar(&c.config.flagTarget, "target", "", i18n.G("Cluster member name")+"``")
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) != 0 {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
@@ -769,7 +772,7 @@ func (c *cmdConfigShow) Command() *cobra.Command {
 // Run executes the "show" command, displaying the YAML-formatted configuration of a specified server or instance.
 func (c *cmdConfigShow) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 0, 1)
+	exit, err := c.global.checkArgs(cmd, args, 0, 1)
 	if exit {
 		return err
 	}
@@ -780,7 +783,7 @@ func (c *cmdConfigShow) Run(cmd *cobra.Command, args []string) error {
 		remote = args[0]
 	}
 
-	resources, err := c.global.ParseServers(remote)
+	resources, err := c.global.parseServers(remote)
 	if err != nil {
 		return err
 	}
@@ -793,13 +796,13 @@ func (c *cmdConfigShow) Run(cmd *cobra.Command, args []string) error {
 	if resource.name == "" {
 		// Quick check.
 		if c.flagExpanded {
-			return fmt.Errorf(i18n.G("--expanded cannot be used with a server"))
+			return errors.New(i18n.G("--expanded cannot be used with a server"))
 		}
 
 		// Targeting
 		if c.config.flagTarget != "" {
 			if !resource.server.IsClustered() {
-				return fmt.Errorf(i18n.G("To use --target, the destination remote must be a cluster"))
+				return errors.New(i18n.G("To use --target, the destination remote must be a cluster"))
 			}
 
 			resource.server = resource.server.UseTarget(c.config.flagTarget)
@@ -819,7 +822,7 @@ func (c *cmdConfigShow) Run(cmd *cobra.Command, args []string) error {
 	} else {
 		// Quick checks.
 		if c.config.flagTarget != "" {
-			return fmt.Errorf(i18n.G("--target cannot be used with instances"))
+			return errors.New(i18n.G("--target cannot be used with instances"))
 		}
 
 		// Instance or snapshot config
@@ -887,7 +890,7 @@ func (c *cmdConfigUnset) Command() *cobra.Command {
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Unset the key as an instance property"))
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -905,7 +908,7 @@ func (c *cmdConfigUnset) Command() *cobra.Command {
 // Run executes the "unset" command, delegating to the "set" command to remove specific configuration keys.
 func (c *cmdConfigUnset) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 2)
+	exit, err := c.global.checkArgs(cmd, args, 1, 2)
 	if exit {
 		return err
 	}

@@ -1,7 +1,8 @@
 package instance
 
 import (
-	"fmt"
+	"errors"
+	"strings"
 )
 
 // IsRootDiskDevice returns true if the given device representation is configured as root disk for
@@ -19,7 +20,7 @@ func IsRootDiskDevice(device map[string]string) bool {
 }
 
 // ErrNoRootDisk means there is no root disk device found.
-var ErrNoRootDisk = fmt.Errorf("No root device could be found")
+var ErrNoRootDisk = errors.New("No root device could be found")
 
 // GetRootDiskDevice returns the instance device that is configured as root disk.
 // Returns the device name and device config map.
@@ -30,7 +31,7 @@ func GetRootDiskDevice(devices map[string]map[string]string) (string, map[string
 	for n, d := range devices {
 		if IsRootDiskDevice(d) {
 			if devName != "" {
-				return "", nil, fmt.Errorf("More than one root device found")
+				return "", nil, errors.New("More than one root device found")
 			}
 
 			devName = n
@@ -43,4 +44,14 @@ func GetRootDiskDevice(devices map[string]map[string]string) (string, map[string
 	}
 
 	return "", nil, ErrNoRootDisk
+}
+
+// SplitVolumeSource splits the volume name and any provided sub-path.
+func SplitVolumeSource(source string) (string, string) {
+	volFields := strings.SplitN(source, "/", 2)
+	if len(volFields) == 1 {
+		return volFields[0], ""
+	}
+
+	return volFields[0], volFields[1]
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/lxc/incus/v6/internal/filter"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/db"
 	dbCluster "github.com/lxc/incus/v6/internal/server/db/cluster"
@@ -52,6 +54,12 @@ var networkIntegrationCmd = APIEndpoint{
 //  ---
 //  produces:
 //    - application/json
+//  parameters:
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
 //  responses:
 //    "200":
 //      description: API endpoints
@@ -88,54 +96,70 @@ var networkIntegrationCmd = APIEndpoint{
 
 // swagger:operation GET /1.0/network-integrations?recursion=1 network-integrations network_integrations_get_recursion1
 //
-//	Get the network integrations
+//  Get the network integrations
 //
-//	Returns a list of network integrations (structs).
+//  Returns a list of network integrations (structs).
 //
-//	---
-//	produces:
-//	  - application/json
-//	responses:
-//	  "200":
-//	    description: API endpoints
-//	    schema:
-//	      type: object
-//	      description: Sync response
-//	      properties:
-//	        type:
-//	          type: string
-//	          description: Response type
-//	          example: sync
-//	        status:
-//	          type: string
-//	          description: Status description
-//	          example: Success
-//	        status_code:
-//	          type: integer
-//	          description: Status code
-//	          example: 200
-//	        metadata:
-//	          type: array
-//	          description: List of network integrations
-//	          items:
-//	            $ref: "#/definitions/NetworkIntegration"
-//	  "403":
-//	    $ref: "#/responses/Forbidden"
-//	  "500":
-//	    $ref: "#/responses/InternalServerError"
+//  ---
+//  produces:
+//    - application/json
+//  parameters:
+//     - in: query
+//       name: filter
+//       description: Collection filter
+//       type: string
+//       example: default
+//  responses:
+//    "200":
+//      description: API endpoints
+//      schema:
+//        type: object
+//        description: Sync response
+//        properties:
+//          type:
+//            type: string
+//            description: Response type
+//            example: sync
+//          status:
+//            type: string
+//            description: Status description
+//            example: Success
+//          status_code:
+//            type: integer
+//            description: Status code
+//            example: 200
+//          metadata:
+//            type: array
+//            description: List of network integrations
+//            items:
+//              $ref: "#/definitions/NetworkIntegration"
+//    "403":
+//      $ref: "#/responses/Forbidden"
+//    "500":
+//      $ref: "#/responses/InternalServerError"
+
 func networkIntegrationsGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
 	recursion := localUtil.IsRecursionRequest(r)
 
+	// Parse filter value.
+	filterStr := r.FormValue("filter")
+	clauses, err := filter.Parse(filterStr, filter.QueryOperatorSet())
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid filter: %w", err))
+	}
+
+	mustLoadObjects := recursion || (clauses != nil && len(clauses.Clauses) > 0)
+
 	// Network integrations aren't project aware, we only load the per-project data to apply name restrictions.
 	projectName := request.ProjectParam(r)
 
 	// Get list of Network integrations.
-	resultString := []string{}
-	resultMap := []api.NetworkIntegration{}
+	linkResults := make([]string, 0)
+	fullResults := make([]api.NetworkIntegration, 0)
 
-	err := s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
 		var err error
 
 		// Load the project.
@@ -161,9 +185,7 @@ func networkIntegrationsGet(d *Daemon, r *http.Request) response.Response {
 				continue
 			}
 
-			if !recursion {
-				resultString = append(resultString, api.NewURL().Path(version.APIVersion, "network-integrations", integration.Name).String())
-			} else {
+			if mustLoadObjects {
 				// Get the integration.
 				result, err := integration.ToAPI(r.Context(), tx.Tx())
 				if err != nil {
@@ -177,15 +199,55 @@ func networkIntegrationsGet(d *Daemon, r *http.Request) response.Response {
 				}
 
 				// Add UsedBy field.
-				usedBy, err := tx.GetNetworkPeersURLByIntegration(ctx, integration.Name)
+				integrationID := integration.ID
+				allPeers, err := dbCluster.GetNetworkPeers(ctx, tx.Tx()) // Fetch all peers
 				if err != nil {
-					return err
+					return fmt.Errorf("Failed to load network peers: %w", err)
 				}
 
+				usedBy := []string{}
+				for _, peer := range allPeers {
+					if peer.TargetNetworkIntegrationID.Valid && peer.TargetNetworkIntegrationID.Int64 == int64(integrationID) {
+						// Fetch the network associated with the peer
+						networkName, networkProjectName, err := tx.GetNetworkNameAndProjectWithID(ctx, int(peer.NetworkID))
+						if err != nil {
+							continue
+						}
+
+						_, network, _, err := tx.GetNetworkInAnyState(ctx, networkProjectName, networkName)
+						if err != nil {
+							continue
+						}
+
+						// Fetch the project associated with the network
+						project, err := dbCluster.GetProject(ctx, tx.Tx(), networkProjectName)
+						if err != nil {
+							continue
+						}
+
+						// Construct the URL
+						url := api.NewURL().Path(version.APIVersion, "networks", network.Name, "peers", peer.Name).Project(project.Name).String()
+						usedBy = append(usedBy, url)
+					}
+				}
+				// Assign the collected URLs (original 'err' check is implicitly handled by checks above)
 				result.UsedBy = usedBy
 
-				resultMap = append(resultMap, *result)
+				if clauses != nil && len(clauses.Clauses) > 0 {
+					match, err := filter.Match(*result, *clauses)
+					if err != nil {
+						return err
+					}
+
+					if !match {
+						continue
+					}
+				}
+
+				fullResults = append(fullResults, *result)
 			}
+
+			linkResults = append(linkResults, api.NewURL().Path(version.APIVersion, "network-integrations", integration.Name).String())
 		}
 
 		return nil
@@ -195,10 +257,10 @@ func networkIntegrationsGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !recursion {
-		return response.SyncResponse(true, resultString)
+		return response.SyncResponse(true, linkResults)
 	}
 
-	return response.SyncResponse(true, resultMap)
+	return response.SyncResponse(true, fullResults)
 }
 
 // swagger:operation POST /1.0/network-integrations network-integrations network_integrations_post
@@ -237,6 +299,12 @@ func networkIntegrationsPost(d *Daemon, r *http.Request) response.Response {
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
 		return response.BadRequest(err)
+	}
+
+	// Quick checks.
+	err = validate.IsAPIName(req.Name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid network integration name: %w", err))
 	}
 
 	// Validate the config.
@@ -325,13 +393,44 @@ func networkIntegrationDelete(d *Daemon, r *http.Request) response.Response {
 	// Delete the DB record.
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
 		// Get UsedBy for the integration.
-		usedBy, err := tx.GetNetworkPeersURLByIntegration(ctx, integrationName)
+		integrationID, err := dbCluster.GetNetworkIntegrationID(ctx, tx.Tx(), integrationName)
 		if err != nil {
-			return err
+			return fmt.Errorf("Failed to get network integration ID: %w", err)
+		}
+
+		allPeers, err := dbCluster.GetNetworkPeers(ctx, tx.Tx()) // Fetch all peers
+		if err != nil {
+			return fmt.Errorf("Failed to load network peers: %w", err)
+		}
+
+		usedBy := []string{}
+		for _, peer := range allPeers {
+			if peer.TargetNetworkIntegrationID.Valid && peer.TargetNetworkIntegrationID.Int64 == int64(integrationID) {
+				// Fetch the network associated with the peer
+				networkName, networkProjectName, err := tx.GetNetworkNameAndProjectWithID(ctx, int(peer.NetworkID))
+				if err != nil {
+					continue
+				}
+
+				_, network, _, err := tx.GetNetworkInAnyState(ctx, networkProjectName, networkName)
+				if err != nil {
+					continue
+				}
+
+				// Fetch the project associated with the network
+				project, err := dbCluster.GetProject(ctx, tx.Tx(), networkProjectName)
+				if err != nil {
+					continue
+				}
+
+				// Construct the URL
+				url := api.NewURL().Path(version.APIVersion, "networks", network.Name, "peers", peer.Name).Project(project.Name).String()
+				usedBy = append(usedBy, url)
+			}
 		}
 
 		if len(usedBy) > 0 {
-			return fmt.Errorf("Network integration is currently in use")
+			return errors.New("Network integration is currently in use")
 		}
 
 		err = dbCluster.DeleteNetworkIntegration(ctx, tx.Tx(), integrationName)
@@ -441,11 +540,38 @@ func networkIntegrationGet(d *Daemon, r *http.Request) response.Response {
 		}
 
 		// Add UsedBy field.
-		usedBy, err := tx.GetNetworkPeersURLByIntegration(ctx, info.Name)
+		integrationID := dbRecord.ID
+		allPeers, err := dbCluster.GetNetworkPeers(ctx, tx.Tx()) // Fetch all peers
 		if err != nil {
-			return err
+			return fmt.Errorf("Failed to load network peers: %w", err)
 		}
 
+		usedBy := []string{}
+		for _, peer := range allPeers {
+			if peer.TargetNetworkIntegrationID.Valid && peer.TargetNetworkIntegrationID.Int64 == int64(integrationID) {
+				// Fetch the network associated with the peer
+				networkName, networkProjectName, err := tx.GetNetworkNameAndProjectWithID(ctx, int(peer.NetworkID))
+				if err != nil {
+					continue
+				}
+
+				_, network, _, err := tx.GetNetworkInAnyState(ctx, networkProjectName, networkName)
+				if err != nil {
+					continue
+				}
+
+				// Fetch the project associated with the network
+				project, err := dbCluster.GetProject(ctx, tx.Tx(), networkProjectName)
+				if err != nil {
+					continue
+				}
+
+				// Construct the URL
+				url := api.NewURL().Path(version.APIVersion, "networks", network.Name, "peers", peer.Name).Project(project.Name).String()
+				usedBy = append(usedBy, url)
+			}
+		}
+		// Assign the collected URLs (original 'err' check is implicitly handled by checks above)
 		info.UsedBy = usedBy
 
 		return nil
@@ -544,9 +670,44 @@ func networkIntegrationPut(d *Daemon, r *http.Request) response.Response {
 			return err
 		}
 
-		usedBy, err = tx.GetNetworkPeersURLByIntegration(ctx, integrationName)
+		integrationID := dbRecord.ID
+		allPeers, err := dbCluster.GetNetworkPeers(ctx, tx.Tx()) // Fetch all peers
 		if err != nil {
-			return err
+			return fmt.Errorf("Failed to load network peers: %w", err)
+		}
+
+		// Build usedBy slice in two passes to avoid SA4010.
+		count := 0
+		for _, peer := range allPeers {
+			if peer.TargetNetworkIntegrationID.Valid && peer.TargetNetworkIntegrationID.Int64 == int64(integrationID) {
+				count++
+			}
+		}
+		usedBy = make([]string, count)
+		idx := 0
+		for _, peer := range allPeers {
+			if peer.TargetNetworkIntegrationID.Valid && peer.TargetNetworkIntegrationID.Int64 == int64(integrationID) {
+				// Fetch the network associated with the peer
+				networkName, networkProjectName, err := tx.GetNetworkNameAndProjectWithID(ctx, int(peer.NetworkID))
+				if err != nil {
+					continue
+				}
+
+				_, network, _, err := tx.GetNetworkInAnyState(ctx, networkProjectName, networkName)
+				if err != nil {
+					continue
+				}
+
+				// Fetch the project associated with the network
+				project, err := dbCluster.GetProject(ctx, tx.Tx(), networkProjectName)
+				if err != nil {
+					continue
+				}
+
+				// Construct the URL
+				usedBy[idx] = api.NewURL().Path(version.APIVersion, "networks", network.Name, "peers", peer.Name).Project(project.Name).String()
+				idx++
+			}
 		}
 
 		return nil
@@ -661,6 +822,12 @@ func networkIntegrationPost(d *Daemon, r *http.Request) response.Response {
 		return response.BadRequest(err)
 	}
 
+	// Quick checks.
+	err = validate.IsAPIName(req.Name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid network integration name: %w", err))
+	}
+
 	// Rename the DB record.
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
 		err := dbCluster.RenameNetworkIntegration(ctx, tx.Tx(), integrationName, req.Name)
@@ -770,7 +937,7 @@ func networkIntegrationValidate(integrationType string, inUse bool, oldConfig ma
 	}
 
 	if oldConfig != nil && oldConfig["ovn.transit.pattern"] != config["ovn.transit.pattern"] && inUse {
-		return fmt.Errorf("The OVN transit switch pattern cannot be changed while the integration is in use")
+		return errors.New("The OVN transit switch pattern cannot be changed while the integration is in use")
 	}
 
 	return nil

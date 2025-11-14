@@ -1,0 +1,183 @@
+From: Mathias Gibbens <gibmat@debian.org>
+Description: Temporarily revert commit that broke running `incus exec` for VMs
+Forwarded: https://github.com/lxc/incus/issues/2513
+diff --git a/cmd/incus-agent/dev_incus.go b/cmd/incus-agent/dev_incus.go
+index 9dbf0c175..bc64243b6 100644
+--- a/cmd/incus-agent/dev_incus.go
++++ b/cmd/incus-agent/dev_incus.go
+@@ -4,11 +4,14 @@ import (
+ 	"fmt"
+ 	"net"
+ 	"net/http"
++	"net/url"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+ 	"time"
+ 
++	"github.com/gorilla/mux"
++
+ 	incus "github.com/lxc/incus/v6/client"
+ 	"github.com/lxc/incus/v6/internal/server/daemon"
+ 	"github.com/lxc/incus/v6/internal/server/device/config"
+@@ -83,8 +86,8 @@ var DevIncusConfigGet = devIncusHandler{"/1.0/config", func(d *Daemon, w http.Re
+ }}
+ 
+ var DevIncusConfigKeyGet = devIncusHandler{"/1.0/config/{key}", func(d *Daemon, w http.ResponseWriter, r *http.Request) *devIncusResponse {
+-	key := r.PathValue("key")
+-	if key == "" {
++	key, err := url.PathUnescape(mux.Vars(r)["key"])
++	if err != nil {
+ 		return &devIncusResponse{"bad request", http.StatusBadRequest, "raw"}
+ 	}
+ 
+@@ -248,7 +251,8 @@ func hoistReq(f func(*Daemon, http.ResponseWriter, *http.Request) *devIncusRespo
+ }
+ 
+ func devIncusAPI(d *Daemon) http.Handler {
+-	router := http.NewServeMux()
++	router := mux.NewRouter()
++	router.UseEncodedPath() // Allow encoded values in path segments.
+ 
+ 	for _, handler := range handlers {
+ 		router.HandleFunc(handler.path, hoistReq(handler.f, d))
+diff --git a/cmd/incus-agent/operations.go b/cmd/incus-agent/operations.go
+index a35d34b04..021ee8465 100644
+--- a/cmd/incus-agent/operations.go
++++ b/cmd/incus-agent/operations.go
+@@ -5,10 +5,13 @@ import (
+ 	"fmt"
+ 	"log"
+ 	"net/http"
++	"net/url"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+ 
++	"github.com/gorilla/mux"
++
+ 	"github.com/lxc/incus/v6/internal/jmap"
+ 	"github.com/lxc/incus/v6/internal/server/operations"
+ 	"github.com/lxc/incus/v6/internal/server/response"
+@@ -41,9 +44,9 @@ var operationWait = APIEndpoint{
+ }
+ 
+ func operationDelete(d *Daemon, r *http.Request) response.Response {
+-	id := r.PathValue("id")
+-	if id == "" {
+-		return response.BadRequest(fmt.Errorf("Failed to extract operation ID from URL"))
++	id, err := url.PathUnescape(mux.Vars(r)["id"])
++	if err != nil {
++		return response.SmartError(err)
+ 	}
+ 
+ 	// First check if the query is for a local operation from this node
+@@ -61,9 +64,9 @@ func operationDelete(d *Daemon, r *http.Request) response.Response {
+ }
+ 
+ func operationGet(d *Daemon, r *http.Request) response.Response {
+-	id := r.PathValue("id")
+-	if id == "" {
+-		return response.BadRequest(fmt.Errorf("Failed to extract operation ID from URL"))
++	id, err := url.PathUnescape(mux.Vars(r)["id"])
++	if err != nil {
++		return response.SmartError(err)
+ 	}
+ 
+ 	var body *api.Operation
+@@ -150,9 +153,9 @@ func operationsGet(d *Daemon, r *http.Request) response.Response {
+ }
+ 
+ func operationWebsocketGet(d *Daemon, r *http.Request) response.Response {
+-	id := r.PathValue("id")
+-	if id == "" {
+-		return response.BadRequest(fmt.Errorf("Failed to extract operation ID from URL"))
++	id, err := url.PathUnescape(mux.Vars(r)["id"])
++	if err != nil {
++		return response.SmartError(err)
+ 	}
+ 
+ 	// First check if the query is for a local operation from this node
+@@ -165,21 +168,17 @@ func operationWebsocketGet(d *Daemon, r *http.Request) response.Response {
+ }
+ 
+ func operationWaitGet(d *Daemon, r *http.Request) response.Response {
+-	id := r.PathValue("id")
+-	if id == "" {
+-		return response.BadRequest(fmt.Errorf("Failed to extract operation ID from URL"))
++	id, err := url.PathUnescape(mux.Vars(r)["id"])
++	if err != nil {
++		return response.InternalError(fmt.Errorf("Failed to extract operation ID from URL: %w", err))
+ 	}
+ 
+-	var err error
+-	var timeoutSecs int
+-	timeout := r.FormValue("timeout")
+-	if timeout != "" {
+-		timeoutSecs, err = strconv.Atoi(timeout)
++	timeoutSecs := -1
++	if r.FormValue("timeout") != "" {
++		timeoutSecs, err = strconv.Atoi(r.FormValue("timeout"))
+ 		if err != nil {
+ 			return response.InternalError(fmt.Errorf("Failed to extract operation wait timeout from URL: %w", err))
+ 		}
+-	} else {
+-		timeoutSecs = -1
+ 	}
+ 
+ 	var ctx context.Context
+diff --git a/cmd/incus-agent/server.go b/cmd/incus-agent/server.go
+index 0f4d512e7..baf34c8c1 100644
+--- a/cmd/incus-agent/server.go
++++ b/cmd/incus-agent/server.go
+@@ -9,6 +9,8 @@ import (
+ 	"io"
+ 	"net/http"
+ 
++	"github.com/gorilla/mux"
++
+ 	internalIO "github.com/lxc/incus/v6/internal/io"
+ 	"github.com/lxc/incus/v6/internal/server/response"
+ 	localUtil "github.com/lxc/incus/v6/internal/server/util"
+@@ -16,7 +18,9 @@ import (
+ )
+ 
+ func restServer(tlsConfig *tls.Config, cert *x509.Certificate, debug bool, d *Daemon) *http.Server {
+-	router := http.NewServeMux()
++	router := mux.NewRouter()
++	router.StrictSlash(false) // Don't redirect to URL with trailing slash.
++	router.UseEncodedPath()   // Allow encoded values in path segments.
+ 
+ 	router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+ 		w.Header().Set("Content-Type", "application/json")
+@@ -30,7 +34,7 @@ func restServer(tlsConfig *tls.Config, cert *x509.Certificate, debug bool, d *Da
+ 	return &http.Server{Handler: router, TLSConfig: tlsConfig}
+ }
+ 
+-func createCmd(restAPI *http.ServeMux, version string, c APIEndpoint, cert *x509.Certificate, debug bool, d *Daemon) {
++func createCmd(restAPI *mux.Router, version string, c APIEndpoint, cert *x509.Certificate, debug bool, d *Daemon) {
+ 	var uri string
+ 	if c.Path == "" {
+ 		uri = fmt.Sprintf("/%s", version)
+@@ -38,7 +42,7 @@ func createCmd(restAPI *http.ServeMux, version string, c APIEndpoint, cert *x509
+ 		uri = fmt.Sprintf("/%s/%s", version, c.Path)
+ 	}
+ 
+-	restAPI.HandleFunc(uri, func(w http.ResponseWriter, r *http.Request) {
++	route := restAPI.HandleFunc(uri, func(w http.ResponseWriter, r *http.Request) {
+ 		w.Header().Set("Content-Type", "application/json")
+ 
+ 		if !authenticate(r, cert) {
+@@ -97,6 +101,12 @@ func createCmd(restAPI *http.ServeMux, version string, c APIEndpoint, cert *x509
+ 			}
+ 		}
+ 	})
++
++	// If the endpoint has a canonical name then record it so it can be used to build URLS
++	// and accessed in the context of the request by the handler function.
++	if c.Name != "" {
++		route.Name(c.Name)
++	}
+ }
+ 
+ func authenticate(r *http.Request, cert *x509.Certificate) bool {
