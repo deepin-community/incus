@@ -1,5 +1,8 @@
-# Ignore error about statically-linked incus-agent binary; see README.source for details
+# Ignore error statically-linked-binary; see README.source for details
 incus-agent: statically-linked-binary
+
+# Ignore warning executable-not-elf-or-script for Windows version of incus-agent binaries
+incus-agent: executable-not-elf-or-script
 
 # The service file depends on activation via udev rule
 incus-agent: systemd-service-file-missing-install-key

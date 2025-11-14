@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"runtime"
@@ -31,8 +32,10 @@ type metricsCacheEntry struct {
 	expiry  time.Time
 }
 
-var metricsCache map[string]metricsCacheEntry
-var metricsCacheLock sync.Mutex
+var (
+	metricsCache     map[string]metricsCacheEntry
+	metricsCacheLock sync.Mutex
+)
 
 var metricsCmd = APIEndpoint{
 	Path: "metrics",
@@ -118,7 +121,7 @@ func metricsGet(d *Daemon, r *http.Request) response.Response {
 		}
 
 		// Add internal metrics.
-		metricSet.Merge(internalMetrics(ctx, s.StartTime, tx))
+		metricSet.Merge(internalMetrics(ctx, s, tx))
 
 		return nil
 	})
@@ -220,7 +223,7 @@ func metricsGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Start metrics builder routines.
-	for i := 0; i < maxConcurrent; i++ {
+	for range maxConcurrent {
 		go func(instMetricsCh <-chan instance.Instance) {
 			for inst := range instMetricsCh {
 				projectName := inst.Project().Name
@@ -312,7 +315,7 @@ func getFilteredMetrics(s *state.State, r *http.Request, compress bool, metricSe
 	return response.SyncResponsePlain(true, compress, metricSet.String())
 }
 
-func internalMetrics(ctx context.Context, daemonStartTime time.Time, tx *db.ClusterTx) *metrics.MetricSet {
+func internalMetrics(ctx context.Context, s *state.State, tx *db.ClusterTx) *metrics.MetricSet {
 	out := metrics.NewMetricSet(nil)
 
 	warnings, err := dbCluster.GetWarnings(ctx, tx.Tx())
@@ -332,7 +335,7 @@ func internalMetrics(ctx context.Context, daemonStartTime time.Time, tx *db.Clus
 	}
 
 	// Daemon uptime
-	out.AddSamples(metrics.UptimeSeconds, metrics.Sample{Value: time.Since(daemonStartTime).Seconds()})
+	out.AddSamples(metrics.UptimeSeconds, metrics.Sample{Value: time.Since(s.StartTime).Seconds()})
 
 	// Number of goroutines
 	out.AddSamples(metrics.GoGoroutines, metrics.Sample{Value: float64(runtime.NumGoroutine())})
@@ -364,6 +367,29 @@ func internalMetrics(ctx context.Context, daemonStartTime time.Time, tx *db.Clus
 	out.AddSamples(metrics.GoStackInuseBytes, metrics.Sample{Value: float64(ms.StackInuse)})
 	out.AddSamples(metrics.GoStackSysBytes, metrics.Sample{Value: float64(ms.StackSys)})
 	out.AddSamples(metrics.GoSysBytes, metrics.Sample{Value: float64(ms.Sys)})
+
+	// If on Incus OS, include OS metrics.
+	if s.OS.IncusOS {
+		client := http.Client{}
+		client.Transport = &http.Transport{
+			DialContext: func(_ context.Context, network, addr string) (net.Conn, error) {
+				return net.DialTimeout("tcp", "127.0.0.1:9100", 50*time.Millisecond)
+			},
+			DisableKeepAlives:     true,
+			ExpectContinueTimeout: time.Second * 3,
+			ResponseHeaderTimeout: time.Second * 3,
+		}
+
+		resp, err := client.Get("http://incus-os/metrics")
+		if err == nil {
+			defer resp.Body.Close()
+
+			osMetrics, err := io.ReadAll(resp.Body)
+			if err == nil {
+				out.AddRaw(osMetrics)
+			}
+		}
+	}
 
 	return out
 }

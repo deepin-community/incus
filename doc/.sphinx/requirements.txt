@@ -1,8 +1,8 @@
 furo
 gitpython
 linkify-it-py
-lxd-sphinx-extensions
-myst-parser<3.0.0
+canonical-sphinx-extensions @ git+https://github.com/canonical/canonical-sphinx-extensions@bc648473619f93fdfefb9ae8becbe7d00dad675a
+myst-parser
 pyspelling
 sphinx
 sphinx-autobuild

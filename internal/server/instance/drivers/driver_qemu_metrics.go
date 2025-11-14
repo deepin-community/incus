@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +20,7 @@ import (
 
 func (d *qemu) getQemuMetrics() (*metrics.MetricSet, error) {
 	// Connect to the monitor.
-	monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+	monitor, err := d.qmpConnect()
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +129,7 @@ func (d *qemu) getQemuMemoryMetrics(monitor *qmp.Monitor) (metrics.MemoryMetrics
 
 		// Extract the before last (value) and last (unit) fields
 		fields := strings.Split(line, "\t")
-		value := strings.Replace(fields[len(fields)-1], " ", "", -1)
+		value := strings.ReplaceAll(fields[len(fields)-1], " ", "")
 
 		// Feed the result to units.ParseByteSizeString to get an int value
 		valueBytes, err := units.ParseByteSizeString(value)
@@ -141,7 +142,7 @@ func (d *qemu) getQemuMemoryMetrics(monitor *qmp.Monitor) (metrics.MemoryMetrics
 	}
 
 	if memRSS == -1 {
-		return out, fmt.Errorf("Couldn't find VM memory usage")
+		return out, errors.New("Couldn't find VM memory usage")
 	}
 
 	// Get max memory usage.
@@ -153,6 +154,11 @@ func (d *qemu) getQemuMemoryMetrics(monitor *qmp.Monitor) (metrics.MemoryMetrics
 	memTotalBytes, err := units.ParseByteSizeString(memTotal)
 	if err != nil {
 		return out, err
+	}
+
+	// Handle host usage being larger than limit.
+	if memRSS > memTotalBytes {
+		memRSS = memTotalBytes
 	}
 
 	// Prepare struct.

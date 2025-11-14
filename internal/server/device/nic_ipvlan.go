@@ -1,24 +1,27 @@
 package device
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"slices"
 	"strings"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
 	"github.com/lxc/incus/v6/internal/server/ip"
 	"github.com/lxc/incus/v6/internal/server/network"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
 
-const ipvlanModeL3S = "l3s"
-const ipvlanModeL2 = "l2"
+const (
+	ipvlanModeL3S = "l3s"
+	ipvlanModeL2  = "l2"
+)
 
 type nicIPVLAN struct {
 	deviceCommon
@@ -37,19 +40,84 @@ func (d *nicIPVLAN) validateConfig(instConf instance.ConfigReader) error {
 
 	requiredFields := []string{"parent"}
 	optionalFields := []string{
+		// gendoc:generate(entity=devices, group=nic_ipvlan, key=name)
+		//
+		// ---
+		//  type: string
+		//  default: kernel assigned
+		//  shortdesc: The name of the interface inside the instance
 		"name",
+
+		// gendoc:generate(entity=devices, group=nic_ipvlan, key=mtu)
+		//
+		// ---
+		//  type: integer
+		//  default: MTU of the parent device
+		//  shortdesc: The Maximum Transmit Unit (MTU) of the new interface
 		"mtu",
+
+		// gendoc:generate(entity=devices, group=nic_ipvlan, key=hwaddr)
+		//
+		// ---
+		//  type: string
+		//  default: randomly assigned
+		//  shortdesc: The MAC address of the new interface
 		"hwaddr",
+
+		// gendoc:generate(entity=devices, group=nic_ipvlan, key=vlan)
+		//
+		// ---
+		//  type: integer
+		//  shortdesc: The VLAN ID to attach to
 		"vlan",
+
+		// gendoc:generate(entity=devices, group=nic_ipvlan, key=ipv4.gateway)
+		//
+		// ---
+		//  type: string
+		//  default: `auto` (in `l3s` mode), `-` (in `l2` mode)
+		//  shortdesc: In `l3s` mode, whether to add an automatic default IPv4 gateway (can be `auto` or `none`). In `l2` mode, the IPv4 address of the gateway
 		"ipv4.gateway",
+
+		// gendoc:generate(entity=devices, group=nic_ipvlan, key=ipv6.gateway)
+		//
+		// ---
+		//  type: string
+		//  default: `auto` (in `l3s` mode), `-` (in `l2` mode)
+		//  shortdesc: In `l3s` mode, whether to add an automatic default IPv6 gateway (can be `auto` or `none`). In `l2` mode, the IPv6 address of the gateway
 		"ipv6.gateway",
+
+		// gendoc:generate(entity=devices, group=nic_ipvlan, key=ipv4.host_table)
+		//
+		// ---
+		//  type: integer
+		//  shortdesc: The custom policy routing table ID to add IPv4 static routes to (in addition to the main routing table)
 		"ipv4.host_table",
+
+		// gendoc:generate(entity=devices, group=nic_ipvlan, key=ipv6.host_table)
+		//
+		// ---
+		//  type: integer
+		//  shortdesc: The custom policy routing table ID to add IPv6 static routes to (in addition to the main routing table)
 		"ipv6.host_table",
+
+		// gendoc:generate(entity=devices, group=nic_ipvlan, key=gvrp)
+		//
+		// ---
+		//  type: bool
+		//  default: false
+		//  shortdesc: Register VLAN using GARP VLAN Registration Protocol
 		"gvrp",
 	}
 
 	rules := nicValidationRules(requiredFields, optionalFields, instConf)
 	rules["gvrp"] = validate.Optional(validate.IsBool)
+
+	// gendoc:generate(entity=devices, group=nic_ipvlan, key=ipv4.address)
+	//
+	// ---
+	//  type: string
+	//  shortdesc: Comma-delimited list of IPv4 static addresses to add to the instance (in l2 mode, these can be specified as CIDR values or singular addresses using a subnet of /24)
 	rules["ipv4.address"] = func(value string) error {
 		if value == "" {
 			return nil
@@ -80,6 +148,11 @@ func (d *nicIPVLAN) validateConfig(instConf instance.ConfigReader) error {
 		return validate.IsListOf(validate.IsNetworkAddressV4)(value)
 	}
 
+	// gendoc:generate(entity=devices, group=nic_ipvlan, key=ipv6.address)
+	//
+	// ---
+	//  type: string
+	//  shortdesc: Comma-delimited list of IPv6 static addresses to add to the instance (in `l2` mode, these can be specified as CIDR values or singular addresses using a subnet of /64)
 	rules["ipv6.address"] = func(value string) error {
 		if value == "" {
 			return nil
@@ -110,6 +183,12 @@ func (d *nicIPVLAN) validateConfig(instConf instance.ConfigReader) error {
 		return validate.IsListOf(validate.IsNetworkAddressV6)(value)
 	}
 
+	// gendoc:generate(entity=devices, group=nic_ipvlan, key=mode)
+	//
+	// ---
+	//  type: string
+	//  default: `l3s`
+	//  shortdesc: The IPVLAN mode (either `l2` or `l3s`)
 	rules["mode"] = func(value string) error {
 		if value == "" {
 			return nil
@@ -134,7 +213,7 @@ func (d *nicIPVLAN) validateConfig(instConf instance.ConfigReader) error {
 	}
 
 	if d.config["mode"] == ipvlanModeL2 && d.config["host_table"] != "" {
-		return fmt.Errorf("host_table option cannot be used in l2 mode")
+		return errors.New("host_table option cannot be used in l2 mode")
 	}
 
 	return nil
@@ -143,20 +222,25 @@ func (d *nicIPVLAN) validateConfig(instConf instance.ConfigReader) error {
 // validateEnvironment checks the runtime environment for correctness.
 func (d *nicIPVLAN) validateEnvironment() error {
 	if d.inst.Type() == instancetype.Container && d.config["name"] == "" {
-		return fmt.Errorf("Requires name property to start")
+		return errors.New("Requires name property to start")
 	}
 
 	extensions := d.state.OS.LXCFeatures
 	if !extensions["network_ipvlan"] || !extensions["network_l2proxy"] || !extensions["network_gateway_device_route"] {
-		return fmt.Errorf("Requires liblxc has following API extensions: network_ipvlan, network_l2proxy, network_gateway_device_route")
+		return errors.New("Requires liblxc has following API extensions: network_ipvlan, network_l2proxy, network_gateway_device_route")
 	}
 
+	// gendoc:generate(entity=devices, group=nic_ipvlan, key=parent)
+	//
+	// ---
+	//  type: string
+	//  shortdesc: The name of the host device (required)
 	if !network.InterfaceExists(d.config["parent"]) {
 		return fmt.Errorf("Parent device '%s' doesn't exist", d.config["parent"])
 	}
 
 	if d.config["parent"] == "" && d.config["vlan"] != "" {
-		return fmt.Errorf("The vlan setting can only be used when combined with a parent interface")
+		return errors.New("The vlan setting can only be used when combined with a parent interface")
 	}
 
 	// Only check sysctls for l2proxy if mode is l3s.
@@ -183,7 +267,7 @@ func (d *nicIPVLAN) validateEnvironment() error {
 
 		if sysctlVal != "1\n" {
 			// Replace . in parent name with / for sysctl formatting.
-			return fmt.Errorf("IPVLAN in L3S mode requires sysctl net.ipv4.conf.%s.forwarding=1", strings.Replace(effectiveParentName, ".", "/", -1))
+			return fmt.Errorf("IPVLAN in L3S mode requires sysctl net.ipv4.conf.%s.forwarding=1", strings.ReplaceAll(effectiveParentName, ".", "/"))
 		}
 	}
 
@@ -197,7 +281,7 @@ func (d *nicIPVLAN) validateEnvironment() error {
 
 		if sysctlVal != "1\n" {
 			// Replace . in parent name with / for sysctl formatting.
-			return fmt.Errorf("IPVLAN in L3S mode requires sysctl net.ipv6.conf.%s.forwarding=1", strings.Replace(effectiveParentName, ".", "/", -1))
+			return fmt.Errorf("IPVLAN in L3S mode requires sysctl net.ipv6.conf.%s.forwarding=1", strings.ReplaceAll(effectiveParentName, ".", "/"))
 		}
 
 		ipv6ProxyNdpPath := fmt.Sprintf("net/ipv6/conf/%s/proxy_ndp", effectiveParentName)
@@ -208,7 +292,7 @@ func (d *nicIPVLAN) validateEnvironment() error {
 
 		if sysctlVal != "1\n" {
 			// Replace . in parent name with / for sysctl formatting.
-			return fmt.Errorf("IPVLAN in L3S mode requires sysctl net.ipv6.conf.%s.proxy_ndp=1", strings.Replace(effectiveParentName, ".", "/", -1))
+			return fmt.Errorf("IPVLAN in L3S mode requires sysctl net.ipv6.conf.%s.proxy_ndp=1", strings.ReplaceAll(effectiveParentName, ".", "/"))
 		}
 	}
 
@@ -226,8 +310,8 @@ func (d *nicIPVLAN) Start() (*deviceConfig.RunConfig, error) {
 	networkCreateSharedDeviceLock.Lock()
 	defer networkCreateSharedDeviceLock.Unlock()
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	saveData := make(map[string]string)
 
@@ -281,13 +365,13 @@ func (d *nicIPVLAN) Start() (*deviceConfig.RunConfig, error) {
 
 	// Perform network configuration.
 	for _, keyPrefix := range []string{"ipv4", "ipv6"} {
-		var ipFamilyArg string
+		var ipFamily ip.Family
 
 		switch keyPrefix {
 		case "ipv4":
-			ipFamilyArg = ip.FamilyV4
+			ipFamily = ip.FamilyV4
 		case "ipv6":
-			ipFamilyArg = ip.FamilyV6
+			ipFamily = ip.FamilyV6
 		}
 
 		addresses := util.SplitNTrimSpace(d.config[fmt.Sprintf("%s.address", keyPrefix)], ",", -1, true)
@@ -309,9 +393,9 @@ func (d *nicIPVLAN) Start() (*deviceConfig.RunConfig, error) {
 				// Apply host-side static routes to main routing table to allow neighbour proxy.
 				r := ip.Route{
 					DevName: "lo",
-					Route:   addr.String(),
+					Route:   addr,
 					Table:   "main",
-					Family:  ipFamilyArg,
+					Family:  ipFamily,
 				}
 
 				err = r.Add()
@@ -319,16 +403,16 @@ func (d *nicIPVLAN) Start() (*deviceConfig.RunConfig, error) {
 					return nil, fmt.Errorf("Failed adding host route %q: %w", r.Route, err)
 				}
 
-				revert.Add(func() { _ = r.Delete() })
+				reverter.Add(func() { _ = r.Delete() })
 
 				// Add static routes to instance IPs from custom routing tables if specified.
 				hostTableKey := fmt.Sprintf("%s.host_table", keyPrefix)
 				if d.config[hostTableKey] != "" {
 					r := &ip.Route{
 						DevName: "lo",
-						Route:   addr.String(),
+						Route:   addr,
 						Table:   d.config[hostTableKey],
-						Family:  ipFamilyArg,
+						Family:  ipFamily,
 					}
 
 					err := r.Add()
@@ -336,7 +420,7 @@ func (d *nicIPVLAN) Start() (*deviceConfig.RunConfig, error) {
 						return nil, fmt.Errorf("Failed adding host route %q: %w", r.Route, err)
 					}
 
-					revert.Add(func() { _ = r.Delete() })
+					reverter.Add(func() { _ = r.Delete() })
 				}
 
 				// Add neighbour proxy entries on the host for l3s mode.
@@ -350,7 +434,7 @@ func (d *nicIPVLAN) Start() (*deviceConfig.RunConfig, error) {
 					return nil, fmt.Errorf("Failed adding neighbour proxy %q to %q: %w", np.Addr.String(), np.DevName, err)
 				}
 
-				revert.Add(func() { _ = np.Delete() })
+				reverter.Add(func() { _ = np.Delete() })
 			}
 		}
 
@@ -375,7 +459,8 @@ func (d *nicIPVLAN) Start() (*deviceConfig.RunConfig, error) {
 
 	runConf.NetworkInterface = nic
 
-	revert.Success()
+	reverter.Success()
+
 	return &runConf, nil
 }
 
@@ -455,13 +540,13 @@ func (d *nicIPVLAN) postStop() error {
 
 	// Clean up host-side network configuration.
 	for _, keyPrefix := range []string{"ipv4", "ipv6"} {
-		var ipFamilyArg string
+		var ipFamily ip.Family
 
 		switch keyPrefix {
 		case "ipv4":
-			ipFamilyArg = ip.FamilyV4
+			ipFamily = ip.FamilyV4
 		case "ipv6":
-			ipFamilyArg = ip.FamilyV6
+			ipFamily = ip.FamilyV6
 		}
 
 		addresses := util.SplitNTrimSpace(d.config[fmt.Sprintf("%s.address", keyPrefix)], ",", -1, true)
@@ -478,9 +563,9 @@ func (d *nicIPVLAN) postStop() error {
 			if mode == ipvlanModeL3S {
 				r := ip.Route{
 					DevName: "lo",
-					Route:   addr.String(),
+					Route:   addr,
 					Table:   "main",
-					Family:  ipFamilyArg,
+					Family:  ipFamily,
 				}
 
 				err := r.Delete()
@@ -503,9 +588,9 @@ func (d *nicIPVLAN) postStop() error {
 				if d.config[hostTableKey] != "" {
 					r := &ip.Route{
 						DevName: "lo",
-						Route:   addr.String(),
+						Route:   addr,
 						Table:   d.config[hostTableKey],
-						Family:  ipFamilyArg,
+						Family:  ipFamily,
 					}
 
 					err := r.Delete()

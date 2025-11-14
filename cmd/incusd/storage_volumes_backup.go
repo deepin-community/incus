@@ -28,6 +28,7 @@ import (
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/validate"
 )
 
 var storagePoolVolumeTypeCustomBackupsCmd = APIEndpoint{
@@ -423,9 +424,10 @@ func storagePoolVolumeTypeCustomBackupsPost(d *Daemon, r *http.Request) response
 		req.Name = fmt.Sprintf("backup%d", max)
 	}
 
-	// Validate the name.
-	if strings.Contains(req.Name, "/") {
-		return response.BadRequest(fmt.Errorf("Backup names may not contain slashes"))
+	// Quick checks.
+	err = validate.IsAPIName(req.Name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid storage volume backup name: %w", err))
 	}
 
 	fullName := volumeName + internalInstance.SnapshotDelimiter + req.Name
@@ -442,9 +444,31 @@ func storagePoolVolumeTypeCustomBackupsPost(d *Daemon, r *http.Request) response
 			CompressionAlgorithm: req.CompressionAlgorithm,
 		}
 
+		// Create the backup.
 		err := volumeBackupCreate(s, args, projectName, poolName, volumeName)
 		if err != nil {
-			return fmt.Errorf("Create volume backup: %w", err)
+			return err
+		}
+
+		// Upload it if requested.
+		if req.Target != nil {
+			// Load the backup.
+			entry, err := storagePoolVolumeBackupLoadByName(r.Context(), s, projectName, poolName, volumeName)
+			if err != nil {
+				return err
+			}
+
+			// Upload it.
+			err = entry.Upload(req.Target)
+			if err != nil {
+				return err
+			}
+
+			// Delete the backup on successful upload.
+			err = entry.Delete()
+			if err != nil {
+				return err
+			}
 		}
 
 		s.Events.SendLifecycle(projectName, lifecycle.StorageVolumeBackupCreated.Event(poolName, volumeTypeName, args.Name, projectName, op.Requestor(), logger.Ctx{"type": volumeTypeName}))
@@ -668,9 +692,10 @@ func storagePoolVolumeTypeCustomBackupPost(d *Daemon, r *http.Request) response.
 		return response.BadRequest(err)
 	}
 
-	// Validate the name
-	if strings.Contains(req.Name, "/") {
-		return response.BadRequest(fmt.Errorf("Backup names may not contain slashes"))
+	// Quick checks.
+	err = validate.IsAPIName(req.Name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid storage volume backup name: %w", err))
 	}
 
 	oldName := volumeName + internalInstance.SnapshotDelimiter + backupName

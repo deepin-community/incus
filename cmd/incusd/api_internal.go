@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,7 +23,6 @@ import (
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
 	"github.com/lxc/incus/v6/internal/jmap"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	"github.com/lxc/incus/v6/internal/server/db"
@@ -43,6 +43,7 @@ import (
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/osarch"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -62,10 +63,18 @@ var apiInternal = []APIEndpoint{
 	internalImageOptimizeCmd,
 	internalImageRefreshCmd,
 	internalRAFTSnapshotCmd,
+	internalRebalanceLoadCmd,
 	internalReadyCmd,
 	internalShutdownCmd,
 	internalSQLCmd,
 	internalWarningCreateCmd,
+}
+
+// Daemon management internal commands.
+var internalReadyCmd = APIEndpoint{
+	Path: "ready",
+
+	Get: APIEndpointAction{Handler: internalWaitReady, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
 }
 
 var internalShutdownCmd = APIEndpoint{
@@ -74,12 +83,58 @@ var internalShutdownCmd = APIEndpoint{
 	Put: APIEndpointAction{Handler: internalShutdown, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
 }
 
-var internalReadyCmd = APIEndpoint{
-	Path: "ready",
+// Internal managemnt traffic.
+var internalImageOptimizeCmd = APIEndpoint{
+	Path: "image-optimize",
 
-	Get: APIEndpointAction{Handler: internalWaitReady, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+	Post: APIEndpointAction{Handler: internalOptimizeImage, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
 }
 
+var internalRebalanceLoadCmd = APIEndpoint{
+	Path: "rebalance",
+
+	Get: APIEndpointAction{Handler: internalRebalanceLoad, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+}
+
+var internalSQLCmd = APIEndpoint{
+	Path: "sql",
+
+	Get:  APIEndpointAction{Handler: internalSQLGet, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+	Post: APIEndpointAction{Handler: internalSQLPost, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+}
+
+// Internal cluster traffic.
+var internalClusterAcceptCmd = APIEndpoint{
+	Path: "cluster/accept",
+
+	Post: APIEndpointAction{Handler: internalClusterPostAccept, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+}
+
+var internalClusterAssignCmd = APIEndpoint{
+	Path: "cluster/assign",
+
+	Post: APIEndpointAction{Handler: internalClusterPostAssign, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+}
+
+var internalClusterHandoverCmd = APIEndpoint{
+	Path: "cluster/handover",
+
+	Post: APIEndpointAction{Handler: internalClusterPostHandover, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+}
+
+var internalClusterRaftNodeCmd = APIEndpoint{
+	Path: "cluster/raft-node/{address}",
+
+	Delete: APIEndpointAction{Handler: internalClusterRaftNodeDelete, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+}
+
+var internalClusterRebalanceCmd = APIEndpoint{
+	Path: "cluster/rebalance",
+
+	Post: APIEndpointAction{Handler: internalClusterPostRebalance, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+}
+
+// Container hooks.
 var internalContainerOnStartCmd = APIEndpoint{
 	Path: "containers/{instanceRef}/onstart",
 
@@ -98,53 +153,42 @@ var internalContainerOnStopCmd = APIEndpoint{
 	Get: APIEndpointAction{Handler: internalContainerOnStop, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
 }
 
+// Virtual machine hooks.
 var internalVirtualMachineOnResizeCmd = APIEndpoint{
 	Path: "virtual-machines/{instanceRef}/onresize",
 
 	Get: APIEndpointAction{Handler: internalVirtualMachineOnResize, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
 }
 
-var internalSQLCmd = APIEndpoint{
-	Path: "sql",
+// Debugging.
+var internalBGPStateCmd = APIEndpoint{
+	Path: "debug/bgp",
 
-	Get:  APIEndpointAction{Handler: internalSQLGet, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
-	Post: APIEndpointAction{Handler: internalSQLPost, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+	Get: APIEndpointAction{Handler: internalBGPState, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
 }
 
 var internalGarbageCollectorCmd = APIEndpoint{
-	Path: "gc",
+	Path: "debug/gc",
 
 	Get: APIEndpointAction{Handler: internalGC, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
 }
 
-var internalRAFTSnapshotCmd = APIEndpoint{
-	Path: "raft-snapshot",
-
-	Get: APIEndpointAction{Handler: internalRAFTSnapshot, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
-}
-
 var internalImageRefreshCmd = APIEndpoint{
-	Path: "testing/image-refresh",
+	Path: "debug/image-refresh",
 
 	Get: APIEndpointAction{Handler: internalRefreshImage, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
 }
 
-var internalImageOptimizeCmd = APIEndpoint{
-	Path: "image-optimize",
+var internalRAFTSnapshotCmd = APIEndpoint{
+	Path: "debug/raft-snapshot",
 
-	Post: APIEndpointAction{Handler: internalOptimizeImage, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
+	Get: APIEndpointAction{Handler: internalRAFTSnapshot, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
 }
 
 var internalWarningCreateCmd = APIEndpoint{
-	Path: "testing/warnings",
+	Path: "debug/warnings",
 
 	Post: APIEndpointAction{Handler: internalCreateWarning, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
-}
-
-var internalBGPStateCmd = APIEndpoint{
-	Path: "testing/bgp",
-
-	Get: APIEndpointAction{Handler: internalBGPState, AccessHandler: allowPermission(auth.ObjectTypeServer, auth.EntitlementCanEdit)},
 }
 
 type internalImageOptimizePost struct {
@@ -189,7 +233,7 @@ func internalCreateWarning(d *Daemon, r *http.Request) response.Response {
 	// Check if the entity exists, and fail if it doesn't.
 	_, ok := cluster.EntityNames[req.EntityTypeCode]
 	if req.EntityTypeCode != -1 && !ok {
-		return response.SmartError(fmt.Errorf("Invalid entity type"))
+		return response.SmartError(errors.New("Invalid entity type"))
 	}
 
 	err = d.State().DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -221,7 +265,7 @@ func internalOptimizeImage(d *Daemon, r *http.Request) response.Response {
 	return response.EmptySyncResponse
 }
 
-func internalRefreshImage(d *Daemon, r *http.Request) response.Response {
+func internalRefreshImage(d *Daemon, _ *http.Request) response.Response {
 	s := d.State()
 
 	err := autoUpdateImages(s.ShutdownCtx, s)
@@ -232,15 +276,15 @@ func internalRefreshImage(d *Daemon, r *http.Request) response.Response {
 	return response.EmptySyncResponse
 }
 
-func internalWaitReady(d *Daemon, r *http.Request) response.Response {
+func internalWaitReady(d *Daemon, _ *http.Request) response.Response {
 	// Check that we're not shutting down.
 	isClosing := d.State().ShutdownCtx.Err() != nil
 	if isClosing {
-		return response.Unavailable(fmt.Errorf("Daemon is shutting down"))
+		return response.Unavailable(errors.New("Daemon is shutting down"))
 	}
 
 	if d.waitReady.Err() == nil {
-		return response.Unavailable(fmt.Errorf("Daemon not ready yet"))
+		return response.Unavailable(errors.New("Daemon not ready yet"))
 	}
 
 	return response.EmptySyncResponse
@@ -277,7 +321,7 @@ func internalShutdown(d *Daemon, r *http.Request) response.Response {
 		if ok {
 			f.Flush()
 		} else {
-			return fmt.Errorf("http.ResponseWriter is not type http.Flusher")
+			return errors.New("http.ResponseWriter is not type http.Flusher")
 		}
 
 		// Send result of d.Stop() to cmdDaemon so that process stops with correct exit code from Stop().
@@ -326,7 +370,7 @@ func internalContainerHookLoadFromReference(s *state.State, r *http.Request) (in
 	}
 
 	if inst.Type() != instancetype.Container {
-		return nil, fmt.Errorf("Instance is not container type")
+		return nil, errors.New("Instance is not container type")
 	}
 
 	return inst, nil
@@ -419,7 +463,7 @@ func internalVirtualMachineOnResize(d *Daemon, r *http.Request) response.Respons
 	// Get the devices list.
 	devices := request.QueryParam(r, "devices")
 	if devices == "" {
-		return response.BadRequest(fmt.Errorf("Resize hook requires a list of devices"))
+		return response.BadRequest(errors.New("Resize hook requires a list of devices"))
 	}
 
 	// Load by ID.
@@ -464,7 +508,7 @@ func internalSQLGet(d *Daemon, r *http.Request) response.Response {
 	database := r.FormValue("database")
 
 	if !slices.Contains([]string{"local", "global"}, database) {
-		return response.BadRequest(fmt.Errorf("Invalid database"))
+		return response.BadRequest(errors.New("Invalid database"))
 	}
 
 	schemaFormValue := r.FormValue("schema")
@@ -507,11 +551,11 @@ func internalSQLPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !slices.Contains([]string{"local", "global"}, req.Database) {
-		return response.BadRequest(fmt.Errorf("Invalid database"))
+		return response.BadRequest(errors.New("Invalid database"))
 	}
 
 	if req.Query == "" {
-		return response.BadRequest(fmt.Errorf("No query provided"))
+		return response.BadRequest(errors.New("No query provided"))
 	}
 
 	var db *sql.DB
@@ -629,7 +673,7 @@ func internalSQLExec(tx *sql.Tx, query string, result *internalSQL.SQLResult) er
 // It expects the instance volume to be mounted so that the backup.yaml file is readable.
 func internalImportFromBackup(ctx context.Context, s *state.State, projectName string, instName string, allowNameOverride bool) error {
 	if instName == "" {
-		return fmt.Errorf("The name of the instance is required")
+		return errors.New("The name of the instance is required")
 	}
 
 	storagePoolsPath := internalUtil.VarPath("storage-pools")
@@ -700,7 +744,7 @@ func internalImportFromBackup(ctx context.Context, s *state.State, projectName s
 		return err
 	}
 
-	if allowNameOverride && instName != "" {
+	if allowNameOverride {
 		backupConf.Container.Name = instName
 	}
 
@@ -710,7 +754,7 @@ func internalImportFromBackup(ctx context.Context, s *state.State, projectName s
 
 	if backupConf.Pool == nil {
 		// We don't know what kind of storage type the pool is.
-		return fmt.Errorf("No storage pool struct in the backup file found. The storage pool needs to be recovered manually")
+		return errors.New("No storage pool struct in the backup file found. The storage pool needs to be recovered manually")
 	}
 
 	// Try to retrieve the storage pool the instance supposedly lives on.
@@ -777,7 +821,7 @@ func internalImportFromBackup(ctx context.Context, s *state.State, projectName s
 	}
 
 	if backupConf.Volume == nil {
-		return fmt.Errorf(`No storage volume struct in the backup file found. The storage volume needs to be recovered manually`)
+		return errors.New(`No storage volume struct in the backup file found. The storage volume needs to be recovered manually`)
 	}
 
 	var profiles []api.Profile
@@ -793,20 +837,20 @@ func internalImportFromBackup(ctx context.Context, s *state.State, projectName s
 
 	// Add root device if needed.
 	if backupConf.Container.Devices == nil {
-		backupConf.Container.Devices = make(map[string]map[string]string, 0)
+		backupConf.Container.Devices = make(map[string]map[string]string)
 	}
 
 	if backupConf.Container.ExpandedDevices == nil {
-		backupConf.Container.ExpandedDevices = make(map[string]map[string]string, 0)
+		backupConf.Container.ExpandedDevices = make(map[string]map[string]string)
 	}
 
 	internalImportRootDevicePopulate(instancePoolName, backupConf.Container.Devices, backupConf.Container.ExpandedDevices, profiles)
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	if backupConf.Container == nil {
-		return fmt.Errorf("No instance config in backup config")
+		return errors.New("No instance config in backup config")
 	}
 
 	instDBArgs, err := backup.ConfigToInstanceDBArgs(s, backupConf, projectName, true)
@@ -819,7 +863,7 @@ func internalImportFromBackup(ctx context.Context, s *state.State, projectName s
 		return fmt.Errorf("Failed creating instance record: %w", err)
 	}
 
-	revert.Add(cleanup)
+	reverter.Add(cleanup)
 	defer instOp.Done(err)
 
 	instancePath := storagePools.InstancePath(instanceType, projectName, backupConf.Container.Name, false)
@@ -864,32 +908,14 @@ func internalImportFromBackup(ctx context.Context, s *state.State, projectName s
 			return err
 		}
 
-		// If a storage volume entry exists only proceed if force was specified.
+		// If the storage volume entry does already exist we error here
 		if dbVolume != nil {
 			return fmt.Errorf(`Storage volume for snapshot %q already exists in the database`, snapInstName)
 		}
 
-		if snapErr == nil {
-			err := s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
-				return tx.DeleteInstance(ctx, projectName, snapInstName)
-			})
-			if err != nil {
-				return err
-			}
-		}
-
-		if dbVolume != nil {
-			err := s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
-				return tx.RemoveStoragePoolVolume(ctx, projectName, snapInstName, instanceDBVolType, pool.ID())
-			})
-			if err != nil {
-				return err
-			}
-		}
-
 		baseImage := snap.Config["volatile.base_image"]
 
-		arch, err := osarch.ArchitectureId(snap.Architecture)
+		arch, err := osarch.ArchitectureID(snap.Architecture)
 		if err != nil {
 			return err
 		}
@@ -905,11 +931,11 @@ func internalImportFromBackup(ctx context.Context, s *state.State, projectName s
 
 		// Add root device if needed.
 		if snap.Devices == nil {
-			snap.Devices = make(map[string]map[string]string, 0)
+			snap.Devices = make(map[string]map[string]string)
 		}
 
 		if snap.ExpandedDevices == nil {
-			snap.ExpandedDevices = make(map[string]map[string]string, 0)
+			snap.ExpandedDevices = make(map[string]map[string]string)
 		}
 
 		internalImportRootDevicePopulate(instancePoolName, snap.Devices, snap.ExpandedDevices, profiles)
@@ -933,7 +959,7 @@ func internalImportFromBackup(ctx context.Context, s *state.State, projectName s
 			return fmt.Errorf("Failed creating instance snapshot record %q: %w", snap.Name, err)
 		}
 
-		revert.Add(cleanup)
+		reverter.Add(cleanup)
 		defer snapInstOp.Done(err)
 
 		// Recreate missing mountpoints and symlinks.
@@ -948,7 +974,7 @@ func internalImportFromBackup(ctx context.Context, s *state.State, projectName s
 		}
 	}
 
-	revert.Success()
+	reverter.Success()
 	return nil
 }
 
@@ -1033,7 +1059,7 @@ func internalImportRootDevicePopulate(instancePoolName string, localDevices map[
 		// If there is already a device called "root" in the instance's config, but it does not qualify as
 		// a root disk, then try to find a free name for the new root disk device.
 		rootDevName := "root"
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			if localDevices[rootDevName] == nil {
 				break
 			}
@@ -1046,7 +1072,7 @@ func internalImportRootDevicePopulate(instancePoolName string, localDevices map[
 	}
 }
 
-func internalGC(d *Daemon, r *http.Request) response.Response {
+func internalGC(_ *Daemon, _ *http.Request) response.Response {
 	logger.Infof("Started forced garbage collection run")
 	runtime.GC()
 	runtimeDebug.FreeOSMemory()
@@ -1063,14 +1089,23 @@ func internalGC(d *Daemon, r *http.Request) response.Response {
 	return response.EmptySyncResponse
 }
 
-func internalRAFTSnapshot(d *Daemon, r *http.Request) response.Response {
+func internalRAFTSnapshot(_ *Daemon, _ *http.Request) response.Response {
 	logger.Warn("Forced RAFT snapshot not supported")
 
-	return response.InternalError(fmt.Errorf("Not supported"))
+	return response.InternalError(errors.New("Not supported"))
 }
 
-func internalBGPState(d *Daemon, r *http.Request) response.Response {
+func internalBGPState(d *Daemon, _ *http.Request) response.Response {
 	s := d.State()
 
 	return response.SyncResponse(true, s.BGP.Debug())
+}
+
+func internalRebalanceLoad(d *Daemon, _ *http.Request) response.Response {
+	err := autoRebalanceCluster(context.TODO(), d)
+	if err != nil {
+		return response.SmartError(err)
+	}
+
+	return response.EmptySyncResponse
 }

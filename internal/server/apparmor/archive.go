@@ -6,41 +6,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"text/template"
 
 	"github.com/google/uuid"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/sys"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
+	"github.com/lxc/incus/v6/shared/revert"
 )
-
-var archiveProfileTpl = template.Must(template.New("archiveProfile").Parse(`#include <tunables/global>
-profile "{{.name}}" {
-  #include <abstractions/base>
-  #include <abstractions/nameservice>
-
-{{range $index, $element := .allowedCommandPaths}}
-  {{$element}} mixr,
-{{- end }}
-
-  {{ .outputPath }}/ rw,
-  {{ .outputPath }}/** rwl,
-  {{ .backupsPath }}/** rw,
-  {{ .imagesPath }}/** r,
-
-  signal (receive) set=("term"),
-
-  # Capabilities
-  capability chown,
-  capability dac_override,
-  capability dac_read_search,
-  capability fowner,
-  capability fsetid,
-  capability mknod,
-  capability setfcap,
-}
-`))
 
 // ArchiveWrapper is used as a RunWrapper in the rsync package.
 func ArchiveWrapper(sysOS *sys.OS, cmd *exec.Cmd, output string, allowedCmds []string) (func(), error) {
@@ -48,8 +20,8 @@ func ArchiveWrapper(sysOS *sys.OS, cmd *exec.Cmd, output string, allowedCmds []s
 		return func() {}, nil
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Load the profile.
 	profileName, err := archiveProfileLoad(sysOS, output, allowedCmds)
@@ -57,7 +29,7 @@ func ArchiveWrapper(sysOS *sys.OS, cmd *exec.Cmd, output string, allowedCmds []s
 		return nil, fmt.Errorf("Failed to load apparmor profile: %w", err)
 	}
 
-	revert.Add(func() { _ = deleteProfile(sysOS, profileName, profileName) })
+	reverter.Add(func() { _ = deleteProfile(sysOS, profileName, profileName) })
 
 	// Resolve aa-exec.
 	execPath, err := exec.LookPath("aa-exec")
@@ -76,14 +48,14 @@ func ArchiveWrapper(sysOS *sys.OS, cmd *exec.Cmd, output string, allowedCmds []s
 		_ = deleteProfile(sysOS, profileName, profileName)
 	}
 
-	revert.Success()
+	reverter.Success()
 
 	return cleanup, nil
 }
 
 func archiveProfileLoad(sysOS *sys.OS, output string, allowedCommandPaths []string) (string, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Generate a temporary profile name.
 	name := profileName("archive", uuid.New().String())
@@ -96,12 +68,12 @@ func archiveProfileLoad(sysOS *sys.OS, output string, allowedCommandPaths []stri
 	}
 
 	// Write it to disk.
-	err = os.WriteFile(profilePath, []byte(content), 0600)
+	err = os.WriteFile(profilePath, []byte(content), 0o600)
 	if err != nil {
 		return "", err
 	}
 
-	revert.Add(func() { os.Remove(profilePath) })
+	reverter.Add(func() { os.Remove(profilePath) })
 
 	// Load it.
 	err = loadProfile(sysOS, name)
@@ -109,7 +81,7 @@ func archiveProfileLoad(sysOS *sys.OS, output string, allowedCommandPaths []stri
 		return "", err
 	}
 
-	revert.Success()
+	reverter.Success()
 	return name, nil
 }
 

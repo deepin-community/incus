@@ -25,6 +25,41 @@ definitions:
         title: AccessEntry represents an entity having access to the resource.
         type: object
         x-go-package: github.com/lxc/incus/v6/shared/api
+    BackupTarget:
+        properties:
+            access_key:
+                description: AccessKey is the S3 API access key
+                example: GOOG1234
+                type: string
+                x-go-name: AccessKey
+            bucket_name:
+                description: BucketName is the name of the S3 bucket.
+                example: my_bucket
+                type: string
+                x-go-name: BucketName
+            path:
+                description: Path is the target path.
+                example: foo/test.tar
+                type: string
+                x-go-name: Path
+            protocol:
+                description: Protocol is the upload protocol.
+                example: S3
+                type: string
+                x-go-name: Protocol
+            secret_key:
+                description: SecretKey is the S3 API access key
+                example: secret123
+                type: string
+                x-go-name: SecretKey
+            url:
+                description: URL is the HTTPS URL for the backup
+                example: https://storage.googleapis.com
+                type: string
+                x-go-name: URL
+        title: BackupTarget represents the target storage server for an instance or volume backup.
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
     Certificate:
         description: Certificate represents a certificate
         properties:
@@ -1070,6 +1105,11 @@ definitions:
                 example: image.tar.xz
                 type: string
                 x-go-name: Filename
+            format:
+                description: Type of image format
+                example: split
+                type: string
+                x-go-name: Format
             profiles:
                 description: List of profiles to use when creating from this image (if none provided by user)
                 example:
@@ -1211,6 +1251,13 @@ definitions:
         x-go-package: github.com/lxc/incus/v6/shared/api
     InitLocalPreseed:
         properties:
+            certificates:
+                description: Certificates to add
+                example: PEM encoded certificate
+                items:
+                    $ref: '#/definitions/CertificatesPost'
+                type: array
+                x-go-name: Certificates
             config:
                 additionalProperties:
                     type: string
@@ -1230,7 +1277,7 @@ definitions:
                 description: Profiles to add
                 example: '"default" profile with a root disk device'
                 items:
-                    $ref: '#/definitions/ProfilesPost'
+                    $ref: '#/definitions/InitProfileProjectPost'
                 type: array
                 x-go-name: Profiles
             projects:
@@ -1247,6 +1294,13 @@ definitions:
                     $ref: '#/definitions/StoragePoolsPost'
                 type: array
                 x-go-name: StoragePools
+            storage_volumes:
+                description: Storage Volumes to add
+                example: local dir storage volume
+                items:
+                    $ref: '#/definitions/InitStorageVolumesProjectPost'
+                type: array
+                x-go-name: StorageVolumes
         title: InitLocalPreseed represents initialization configuration.
         type: object
         x-go-package: github.com/lxc/incus/v6/shared/api
@@ -1291,6 +1345,100 @@ definitions:
             cluster:
                 $ref: '#/definitions/InitClusterPreseed'
         title: InitPreseed represents initialization configuration that can be supplied to `init`.
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
+    InitProfileProjectPost:
+        properties:
+            Project:
+                description: Project in which the profile will reside
+                example: '"default"'
+                type: string
+            config:
+                additionalProperties:
+                    type: string
+                description: Instance configuration map (refer to doc/instances.md)
+                example:
+                    limits.cpu: "4"
+                    limits.memory: 4GiB
+                type: object
+                x-go-name: Config
+            description:
+                description: Description of the profile
+                example: Medium size instances
+                type: string
+                x-go-name: Description
+            devices:
+                additionalProperties:
+                    additionalProperties:
+                        type: string
+                    type: object
+                description: List of devices
+                example:
+                    eth0:
+                        name: eth0
+                        network: mybr0
+                        type: nic
+                    root:
+                        path: /
+                        pool: default
+                        type: disk
+                type: object
+                x-go-name: Devices
+            name:
+                description: The name of the new profile
+                example: foo
+                type: string
+                x-go-name: Name
+        title: InitProfileProjectPost represents the fields of a new profile along with its associated project.
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
+    InitStorageVolumesProjectPost:
+        properties:
+            Pool:
+                description: Storage pool in which the volume will reside
+                example: '"default"'
+                type: string
+            Project:
+                description: Project in which the volume will reside
+                example: '"default"'
+                type: string
+            config:
+                additionalProperties:
+                    type: string
+                description: Storage volume configuration map (refer to doc/storage.md)
+                example:
+                    size: 50GiB
+                    zfs.remove_snapshots: "true"
+                type: object
+                x-go-name: Config
+            content_type:
+                description: Volume content type (filesystem or block)
+                example: filesystem
+                type: string
+                x-go-name: ContentType
+            description:
+                description: Description of the storage volume
+                example: My custom volume
+                type: string
+                x-go-name: Description
+            name:
+                description: Volume name
+                example: foo
+                type: string
+                x-go-name: Name
+            restore:
+                description: Name of a snapshot to restore
+                example: snap0
+                type: string
+                x-go-name: Restore
+            source:
+                $ref: '#/definitions/StorageVolumeSource'
+            type:
+                description: Volume type (container, custom, image or virtual-machine)
+                example: custom
+                type: string
+                x-go-name: Type
+        title: InitStorageVolumesProjectPost represents the fields of a new storage volume along with its associated pool.
         type: object
         x-go-package: github.com/lxc/incus/v6/shared/api
     Instance:
@@ -1482,11 +1630,18 @@ definitions:
                 example: true
                 type: boolean
                 x-go-name: OptimizedStorage
+            target:
+                $ref: '#/definitions/BackupTarget'
         title: InstanceBackupsPost represents the fields available for a new instance backup.
         type: object
         x-go-package: github.com/lxc/incus/v6/shared/api
     InstanceConsolePost:
         properties:
+            force:
+                description: Forces a connection to the console
+                example: true
+                type: boolean
+                x-go-name: Force
             height:
                 description: Console height in rows (console type only)
                 example: 24
@@ -2087,6 +2242,11 @@ definitions:
                 example: false
                 type: boolean
                 x-go-name: Refresh
+            refresh_exclude_older:
+                description: Whether to exclude source snapshots earlier than latest target snapshot
+                example: false
+                type: boolean
+                x-go-name: RefreshExcludeOlder
             secret:
                 description: Remote server secret (for remote private images)
                 example: RANDOM-STRING
@@ -2137,6 +2297,8 @@ definitions:
                 description: Network usage key/value pairs
                 type: object
                 x-go-name: Network
+            os_info:
+                $ref: '#/definitions/InstanceStateOSInfo'
             pid:
                 description: PID of the runtime
                 example: 7281
@@ -2169,6 +2331,12 @@ definitions:
         x-go-package: github.com/lxc/incus/v6/shared/api
     InstanceStateCPU:
         properties:
+            allocated_time:
+                description: CPU time available per second, in nanoseconds
+                example: 4000000000
+                format: int64
+                type: integer
+                x-go-name: AllocatedTime
             usage:
                 description: CPU usage in nanoseconds
                 example: 3637691016
@@ -2247,7 +2415,7 @@ definitions:
                 x-go-name: HostName
             hwaddr:
                 description: MAC address
-                example: 00:16:3e:0c:ee:dd
+                example: 10:66:6a:0c:ee:dd
                 type: string
                 x-go-name: Hwaddr
             mtu:
@@ -2276,7 +2444,7 @@ definitions:
         properties:
             address:
                 description: IP address
-                example: fd42:4c81:5770:1eaf:216:3eff:fe0c:eedd
+                example: fd42:4c81:5770:1eaf:1266:6aff:fe0c:eedd
                 type: string
                 x-go-name: Address
             family:
@@ -2349,6 +2517,36 @@ definitions:
                 format: int64
                 type: integer
                 x-go-name: PacketsSent
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
+    InstanceStateOSInfo:
+        properties:
+            fqdn:
+                description: FQDN of the instance.
+                example: myhost.mydomain.local
+                type: string
+                x-go-name: FQDN
+            hostname:
+                description: Hostname of the instance.
+                example: myhost
+                type: string
+                x-go-name: Hostname
+            kernel_version:
+                description: Version of the kernel running in the instance.
+                example: 6.1.0-25-amd64
+                type: string
+                x-go-name: KernelVersion
+            os:
+                description: Operating system running in the instance.
+                example: Debian GNU/Linux
+                type: string
+                x-go-name: OS
+            os_version:
+                description: Version of the operating system.
+                example: 12 (bookworm)
+                type: string
+                x-go-name: OSVersion
+        title: InstanceStateOSInfo represents the operating system information section of an instance's state.
         type: object
         x-go-package: github.com/lxc/incus/v6/shared/api
     InstanceStatePut:
@@ -2797,6 +2995,124 @@ definitions:
         title: NetworkACLsPost used for creating an ACL.
         type: object
         x-go-package: github.com/lxc/incus/v6/shared/api
+    NetworkAddressSet:
+        description: Refer to doc/howto/network_address_sets.md for details.
+        properties:
+            addresses:
+                description: List of addresses in the set
+                example:
+                    - 192.0.0.1
+                    - 2001:0db8:1234::1
+                items:
+                    type: string
+                type: array
+                x-go-name: Addresses
+            config:
+                additionalProperties:
+                    type: string
+                description: Address set configuration map (refer to doc/network-address-sets.md)
+                example:
+                    user.mykey: foo
+                type: object
+                x-go-name: Config
+            description:
+                description: Description of the address set
+                example: Web servers
+                type: string
+                x-go-name: Description
+            name:
+                description: The new name of the address set
+                example: '"bar"'
+                type: string
+                x-go-name: Name
+            project:
+                description: Project name
+                example: project1
+                type: string
+                x-go-name: Project
+            used_by:
+                description: List of URLs of objects using this profile
+                example:
+                    - /1.0/network-acls/foo
+                    - /1.0/network-acls/bar
+                    - /1.0/network-acls/baz
+                items:
+                    type: string
+                readOnly: true
+                type: array
+                x-go-name: UsedBy
+        title: NetworkAddressSet represents an address set.
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
+    NetworkAddressSetPost:
+        properties:
+            name:
+                description: The new name of the address set
+                example: '"bar"'
+                type: string
+                x-go-name: Name
+        title: NetworkAddressSetPost used for renaming an address set.
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
+    NetworkAddressSetPut:
+        properties:
+            addresses:
+                description: List of addresses in the set
+                example:
+                    - 192.0.0.1
+                    - 2001:0db8:1234::1
+                items:
+                    type: string
+                type: array
+                x-go-name: Addresses
+            config:
+                additionalProperties:
+                    type: string
+                description: Address set configuration map (refer to doc/network-address-sets.md)
+                example:
+                    user.mykey: foo
+                type: object
+                x-go-name: Config
+            description:
+                description: Description of the address set
+                example: Web servers
+                type: string
+                x-go-name: Description
+        title: NetworkAddressSetPut used for updating an address set.
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
+    NetworkAddressSetsPost:
+        properties:
+            addresses:
+                description: List of addresses in the set
+                example:
+                    - 192.0.0.1
+                    - 2001:0db8:1234::1
+                items:
+                    type: string
+                type: array
+                x-go-name: Addresses
+            config:
+                additionalProperties:
+                    type: string
+                description: Address set configuration map (refer to doc/network-address-sets.md)
+                example:
+                    user.mykey: foo
+                type: object
+                x-go-name: Config
+            description:
+                description: Description of the address set
+                example: Web servers
+                type: string
+                x-go-name: Description
+            name:
+                description: The new name of the address set
+                example: '"bar"'
+                type: string
+                x-go-name: Name
+        title: NetworkAddressSetsPost used for creating a new address set.
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
     NetworkAllocations:
         description: |-
             NetworkAllocations used for displaying network addresses used by a consuming entity
@@ -2877,6 +3193,11 @@ definitions:
                 example: tcp
                 type: string
                 x-go-name: Protocol
+            snat:
+                description: SNAT controls whether to apply a matching SNAT rule to new outgoing traffic from the target
+                example: false
+                type: boolean
+                x-go-name: SNAT
             target_address:
                 description: TargetAddress to forward ListenPorts to
                 example: 198.51.100.2
@@ -3051,7 +3372,7 @@ definitions:
                 x-go-name: Hostname
             hwaddr:
                 description: The MAC address
-                example: 00:16:3e:2c:89:d9
+                example: 10:66:6a:2c:89:d9
                 type: string
                 x-go-name: Hwaddr
             location:
@@ -3188,6 +3509,44 @@ definitions:
                     $ref: '#/definitions/NetworkLoadBalancerPort'
                 type: array
                 x-go-name: Ports
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
+    NetworkLoadBalancerState:
+        description: NetworkLoadBalancerState is used for showing current state of a load balancer
+        properties:
+            backend_health:
+                additionalProperties:
+                    $ref: '#/definitions/NetworkLoadBalancerStateBackendHealth'
+                type: object
+                x-go-name: BackendHealth
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
+    NetworkLoadBalancerStateBackendHealth:
+        description: NetworkLoadBalancerStateBackendHealth represents the health of a particular load-balancer backend
+        properties:
+            address:
+                type: string
+                x-go-name: Address
+            ports:
+                items:
+                    $ref: '#/definitions/NetworkLoadBalancerStateBackendHealthPort'
+                type: array
+                x-go-name: Ports
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
+    NetworkLoadBalancerStateBackendHealthPort:
+        properties:
+            port:
+                format: int64
+                type: integer
+                x-go-name: Port
+            protocol:
+                type: string
+                x-go-name: Protocol
+            status:
+                type: string
+                x-go-name: Status
+        title: NetworkLoadBalancerStateBackendHealthPort represents the health status of a particular load-balancer backend port.
         type: object
         x-go-package: github.com/lxc/incus/v6/shared/api
     NetworkLoadBalancersPost:
@@ -3395,7 +3754,7 @@ definitions:
                 $ref: '#/definitions/NetworkStateCounters'
             hwaddr:
                 description: MAC address
-                example: 00:16:3e:5a:83:57
+                example: 10:66:6a:5a:83:57
                 type: string
                 x-go-name: Hwaddr
             mtu:
@@ -3575,6 +3934,21 @@ definitions:
                 example: incus-net1-lr
                 type: string
                 x-go-name: LogicalRouter
+            logical_switch:
+                description: OVN logical switch name
+                example: incus-net1-ls-int
+                type: string
+                x-go-name: LogicalSwitch
+            uplink_ipv4:
+                description: OVN network uplink ipv4 address
+                example: 10.0.0.1
+                type: string
+                x-go-name: UplinkIPv4
+            uplink_ipv6:
+                description: OVN network uplink ipv6 address
+                example: 2001:0000:130F:0000:0000:09C0:876A:130B.
+                type: string
+                x-go-name: UplinkIPv6
         type: object
         x-go-package: github.com/lxc/incus/v6/shared/api
     NetworkStateVLAN:
@@ -3825,7 +4199,7 @@ definitions:
                 type: string
                 x-go-name: Description
             err:
-                description: Operation error mesage
+                description: Operation error message
                 example: Some error message
                 type: string
                 x-go-name: Err
@@ -3867,7 +4241,7 @@ definitions:
                     items:
                         type: string
                     type: array
-                description: Affected resourcs
+                description: Affected resources
                 example:
                     instances:
                         - /1.0/instances/foo
@@ -4202,6 +4576,19 @@ definitions:
                 x-go-name: Total
         type: object
         x-go-package: github.com/lxc/incus/v6/shared/api
+    ResourcesCPUAddressSizes:
+        properties:
+            physical_bits:
+                format: uint64
+                type: integer
+                x-go-name: PhysicalBits
+            virtual_bits:
+                format: uint64
+                type: integer
+                x-go-name: VirtualBits
+        title: ResourcesCPUAddressSizes resprents address size information for a CPU socket.
+        type: object
+        x-go-package: github.com/lxc/incus/v6/shared/api
     ResourcesCPUCache:
         description: ResourcesCPUCache represents a CPU cache
         properties:
@@ -4263,6 +4650,8 @@ definitions:
     ResourcesCPUSocket:
         description: ResourcesCPUSocket represents a CPU socket on the system
         properties:
+            address_sizes:
+                $ref: '#/definitions/ResourcesCPUAddressSizes'
             cache:
                 description: List of CPU caches
                 items:
@@ -4894,7 +5283,7 @@ definitions:
         type: object
         x-go-package: github.com/lxc/incus/v6/shared/api
     ResourcesNetworkCardVDPA:
-        description: ResourceNetworkCardVDPA represents the VDPA configuration of the network card
+        description: ResourcesNetworkCardVDPA represents the VDPA configuration of the network card
         properties:
             device:
                 description: Device identifier of the VDPA device
@@ -6189,6 +6578,8 @@ definitions:
                 example: true
                 type: boolean
                 x-go-name: OptimizedStorage
+            target:
+                $ref: '#/definitions/BackupTarget'
             volume_only:
                 description: Whether to ignore snapshots
                 example: false
@@ -6410,6 +6801,11 @@ definitions:
                 example: false
                 type: boolean
                 x-go-name: Refresh
+            refresh_exclude_older:
+                description: Whether to exclude source snapshots earlier than latest target snapshot
+                example: false
+                type: boolean
+                x-go-name: RefreshExcludeOlder
             secrets:
                 additionalProperties:
                     type: string
@@ -6739,6 +7135,12 @@ paths:
         get:
             description: Returns a list of trusted certificates (URLs).
             operationId: certificates_get
+            parameters:
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -6952,6 +7354,12 @@ paths:
         get:
             description: Returns a list of trusted certificates (structs).
             operationId: certificates_get_recursion1
+            parameters:
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -7316,6 +7724,12 @@ paths:
         get:
             description: Returns a list of cluster members (URLs).
             operationId: cluster_members_get
+            parameters:
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -7577,6 +7991,12 @@ paths:
         get:
             description: Returns a list of cluster members (structs).
             operationId: cluster_members_get_recursion1
+            parameters:
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -7730,6 +8150,13 @@ paths:
                   name: X-Incus-fingerprint
                   schema:
                     type: string
+                - description: List of aliases to assign
+                  in: header
+                  name: X-Incus-aliases
+                  schema:
+                    items:
+                        type: string
+                    type: array
                 - description: Descriptive properties
                   in: header
                   name: X-Incus-properties
@@ -8925,7 +9352,7 @@ paths:
                     $ref: '#/responses/Forbidden'
                 "500":
                     $ref: '#/responses/InternalServerError'
-            summary: Get who has access to an instnace
+            summary: Get who has access to an instance
             tags:
                 - instances
     /1.0/instances/{name}/backups:
@@ -9193,7 +9620,9 @@ paths:
             tags:
                 - instances
         get:
-            description: Gets the console log for the instance.
+            description: |-
+                Gets the console output for the instance either as text log or as vga
+                screendump.
             operationId: instance_console_get
             parameters:
                 - description: Project name
@@ -9201,11 +9630,22 @@ paths:
                   in: query
                   name: project
                   type: string
+                - default: log
+                  description: Console type
+                  enum:
+                    - log
+                    - vga
+                  example: vga
+                  in: query
+                  name: type
+                  type: string
             produces:
                 - application/json
             responses:
                 "200":
-                    description: Raw console log
+                    description: |
+                        Console output either as raw console log or as vga screendump in PNG
+                        format depending on the `type` parameter provided with the request.
                 "400":
                     $ref: '#/responses/BadRequest'
                 "403":
@@ -9214,7 +9654,7 @@ paths:
                     $ref: '#/responses/NotFound'
                 "500":
                     $ref: '#/responses/InternalServerError'
-            summary: Get console log
+            summary: Get console output
             tags:
                 - instances
         post:
@@ -9248,6 +9688,37 @@ paths:
                 "500":
                     $ref: '#/responses/InternalServerError'
             summary: Connect to console
+            tags:
+                - instances
+    /1.0/instances/{name}/debug/memory:
+        get:
+            description: |-
+                Returns memory debug information of a running instance.
+                Only supported for VMs.
+            operationId: instance_debug_memory_get
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+                - description: Memory dump format
+                  example: elf
+                  in: query
+                  name: format
+                  type: string
+            responses:
+                "200":
+                    description: Success
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "404":
+                    $ref: '#/responses/NotFound'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get memory debug information of an instance
             tags:
                 - instances
     /1.0/instances/{name}/exec:
@@ -10520,6 +10991,11 @@ paths:
                   in: query
                   name: all-projects
                   type: boolean
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -10786,6 +11262,11 @@ paths:
                   in: query
                   name: all-projects
                   type: boolean
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -10869,6 +11350,12 @@ paths:
         get:
             description: Returns a list of network integrations (URLs).
             operationId: network_integrations_get
+            parameters:
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -11068,6 +11555,12 @@ paths:
         get:
             description: Returns a list of network integrations (structs).
             operationId: network_integrations_get_recursion1
+            parameters:
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -11116,6 +11609,11 @@ paths:
                   in: query
                   name: all-projects
                   type: boolean
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -11323,6 +11821,11 @@ paths:
                   example: default
                   in: query
                   name: project
+                  type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
                   type: string
             produces:
                 - application/json
@@ -11532,6 +12035,11 @@ paths:
                   in: query
                   name: project
                   type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -11580,6 +12088,11 @@ paths:
                   in: query
                   name: all-projects
                   type: boolean
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -11628,6 +12141,11 @@ paths:
                   in: query
                   name: all-projects
                   type: boolean
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -11982,6 +12500,11 @@ paths:
                   in: query
                   name: project
                   type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -12190,6 +12713,11 @@ paths:
                   in: query
                   name: project
                   type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -12232,6 +12760,11 @@ paths:
                   example: default
                   in: query
                   name: project
+                  type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
                   type: string
             produces:
                 - application/json
@@ -12431,6 +12964,46 @@ paths:
             summary: Update the network address load balancer
             tags:
                 - network-load-balancers
+    /1.0/networks/{networkName}/load-balancers/{listenAddress}/state:
+        get:
+            description: Get the current state of a specific network address load balancer.
+            operationId: network_load_balancer_state_get
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: Load Balancer state
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                $ref: '#/definitions/NetworkLoadBalancerState'
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the network address load balancer state
+            tags:
+                - network-load-balancers
     /1.0/networks/{networkName}/load-balancers?recursion=1:
         get:
             description: Returns a list of network address load balancers (structs).
@@ -12440,6 +13013,11 @@ paths:
                   example: default
                   in: query
                   name: project
+                  type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
                   type: string
             produces:
                 - application/json
@@ -12483,6 +13061,11 @@ paths:
                   example: default
                   in: query
                   name: project
+                  type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
                   type: string
             produces:
                 - application/json
@@ -12694,6 +13277,11 @@ paths:
                   in: query
                   name: project
                   type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -12742,6 +13330,11 @@ paths:
                   in: query
                   name: all-projects
                   type: boolean
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -13086,6 +13679,11 @@ paths:
                   in: query
                   name: all-projects
                   type: boolean
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -13330,6 +13928,11 @@ paths:
                   in: query
                   name: all-projects
                   type: boolean
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -13367,6 +13970,12 @@ paths:
         get:
             description: Returns a list of projects (URLs).
             operationId: projects_get
+            parameters:
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -13643,6 +14252,12 @@ paths:
         get:
             description: Returns a list of projects (structs).
             operationId: projects_get_recursion1
+            parameters:
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -13725,6 +14340,11 @@ paths:
                   example: default
                   in: query
                   name: project
+                  type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
                   type: string
             produces:
                 - application/json
@@ -14173,6 +14793,11 @@ paths:
                   in: query
                   name: all-projects
                   type: boolean
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -14734,6 +15359,11 @@ paths:
                   in: query
                   name: all-projects
                   type: boolean
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
             produces:
                 - application/json
             responses:
@@ -15426,6 +16056,27 @@ paths:
             summary: Get the storage volume backups
             tags:
                 - storage
+    /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/sftp:
+        get:
+            description: Upgrades the request to an SFTP connection of the storage volume's filesystem.
+            operationId: storage_pool_volume_type_sftp_get
+            produces:
+                - application/json
+                - application/octet-stream
+            responses:
+                "101":
+                    description: Switching protocols to SFTP
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "404":
+                    $ref: '#/responses/NotFound'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the storage volume SFTP connection
+            tags:
+                - storage
     /1.0/storage-pools/{poolName}/volumes/{type}/{volumeName}/snapshots:
         get:
             description: Returns a list of storage volume snapshots (URLs).
@@ -15905,6 +16556,11 @@ paths:
                   example: default
                   in: query
                   name: project
+                  type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
                   type: string
             produces:
                 - application/json

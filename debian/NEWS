@@ -1,0 +1,16 @@
+incus (6.0.3-3) unstable; urgency=medium
+
+    The organization of binary packages for Incus has been adjusted to more
+    closely match the packaging provided by upstream via the Zabbly repos.
+    This makes it easier for Debian users to `apt install incus` and get a full
+    install out of the box that supports both containers and VMs, while also
+    minimizing the delta between Debian and upstream package names.
+
+    The new "incus-base" package provides everything needed to run containers
+    on a host; if you do not wish to run VMs in Incus, you can safely remove
+    the "incus" package and its dependencies from the host system.
+
+    Additionally, the previous packages "incus-tools" and "incus-migrate" have
+    been merged into a single package, "incus-extra".
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sat, 01 Mar 2025 17:16:21 +0000

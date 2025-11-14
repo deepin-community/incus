@@ -1,7 +1,7 @@
 package drivers
 
 import (
-	"fmt"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -42,7 +42,7 @@ func Test_Volume_ConfigSizeFromSource(t *testing.T) {
 		},
 		{
 			// Check the volume's default block disk size is used when volume is a block type and
-			// neighter volume or pool volume size is specified and empty image source volume used.
+			// neither volume or pool volume size is specified and empty image source volume used.
 			vol:    Volume{driver: &nonBlockBackedDriver, volType: VolumeTypeVM, contentType: ContentTypeBlock},
 			srcVol: Volume{volType: VolumeTypeImage},
 			err:    nil,
@@ -52,7 +52,7 @@ func Test_Volume_ConfigSizeFromSource(t *testing.T) {
 			// Check that the volume's smaller size than source image's rootfs size causes error.
 			vol:    Volume{driver: &nonBlockBackedDriver, volType: VolumeTypeContainer, config: map[string]string{"size": "1GiB"}},
 			srcVol: Volume{volType: VolumeTypeImage, config: map[string]string{"volatile.rootfs.size": "15GiB"}},
-			err:    fmt.Errorf("Source image size (16106127360) exceeds specified volume size (1073741824)"),
+			err:    errors.New("Source image size (16106127360) exceeds specified volume size (1073741824)"),
 			size:   "",
 		},
 		{

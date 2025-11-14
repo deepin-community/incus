@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -17,7 +17,7 @@ import (
 func (c *Config) handleKeepAlive(remote Remote, name string, args *incus.ConnectionArgs) (incus.InstanceServer, error) {
 	// Create the socker directory if missing.
 	socketDir := filepath.Join(c.ConfigDir, "keepalive")
-	err := os.Mkdir(socketDir, 0700)
+	err := os.Mkdir(socketDir, 0o700)
 	if err != nil && !os.IsExist(err) {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func (c *Config) handleKeepAlive(remote Remote, name string, args *incus.Connect
 		}
 
 		// Try up to 10 times over 5s.
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			if util.PathExists(socketPath) {
 				break
 			}

@@ -1,17 +1,18 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/gorilla/mux"
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/lifecycle"
@@ -21,6 +22,7 @@ import (
 	"github.com/lxc/incus/v6/internal/server/storage"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/internal/version"
+	"github.com/lxc/incus/v6/shared/revert"
 )
 
 var instanceLogCmd = APIEndpoint{
@@ -111,11 +113,6 @@ func instanceLogsGet(d *Daemon, r *http.Request) response.Response {
 	 * name just so that people can't list arbitrary directories.
 	 */
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -123,11 +120,11 @@ func instanceLogsGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(d.State(), r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(d.State(), r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -195,11 +192,6 @@ func instanceLogsGet(d *Daemon, r *http.Request) response.Response {
 func instanceLogGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -207,7 +199,7 @@ func instanceLogGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Ensure instance exists.
@@ -217,7 +209,7 @@ func instanceLogGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -279,11 +271,6 @@ func instanceLogGet(d *Daemon, r *http.Request) response.Response {
 func instanceLogDelete(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -291,7 +278,7 @@ func instanceLogDelete(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Ensure instance exists.
@@ -301,7 +288,7 @@ func instanceLogDelete(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -325,7 +312,7 @@ func instanceLogDelete(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !strings.HasSuffix(file, ".log") || file == "lxc.log" || file == "qemu.log" {
-		return response.BadRequest(fmt.Errorf("Only log files excluding qemu.log and lxc.log may be deleted"))
+		return response.BadRequest(errors.New("Only log files excluding qemu.log and lxc.log may be deleted"))
 	}
 
 	err = os.Remove(internalUtil.LogPath(project.Instance(projectName, name), file))
@@ -391,11 +378,6 @@ func instanceLogDelete(d *Daemon, r *http.Request) response.Response {
 func instanceExecOutputsGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -403,7 +385,7 @@ func instanceExecOutputsGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Ensure instance exists.
@@ -413,7 +395,7 @@ func instanceExecOutputsGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(d.State(), r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(d.State(), r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -491,15 +473,10 @@ func instanceExecOutputsGet(d *Daemon, r *http.Request) response.Response {
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
 func instanceExecOutputGet(d *Daemon, r *http.Request) response.Response {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	s := d.State()
-
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
 
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
@@ -508,7 +485,7 @@ func instanceExecOutputGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Ensure instance exists.
@@ -518,7 +495,7 @@ func instanceExecOutputGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -552,9 +529,9 @@ func instanceExecOutputGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	revert.Add(func() { _ = pool.UnmountInstance(inst, nil) })
-	cleanup := revert.Clone()
-	revert.Success()
+	reverter.Add(func() { _ = pool.UnmountInstance(inst, nil) })
+	cleanup := reverter.Clone()
+	reverter.Success()
 
 	ent := response.FileResponseEntry{
 		Path:     filepath.Join(inst.ExecOutputPath(), file),
@@ -596,11 +573,6 @@ func instanceExecOutputGet(d *Daemon, r *http.Request) response.Response {
 func instanceExecOutputDelete(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 	name, err := url.PathUnescape(mux.Vars(r)["name"])
 	if err != nil {
@@ -608,7 +580,7 @@ func instanceExecOutputDelete(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Ensure instance exists.
@@ -618,7 +590,7 @@ func instanceExecOutputDelete(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -665,11 +637,15 @@ func instanceExecOutputDelete(d *Daemon, r *http.Request) response.Response {
 }
 
 func validLogFileName(fname string) bool {
+	// Make sure that there's nothing fishy about the provided file name.
+	if filepath.Base(fname) != fname {
+		return false
+	}
+
 	/* Let's just require that the paths be relative, so that we don't have
 	 * to deal with any escaping or whatever.
 	 */
-	return fname == "lxc.log" ||
-		fname == "qemu.log" ||
+	return slices.Contains([]string{"lxc.log", "qemu.log", "qemu.early.log", "qemu.qmp.log"}, fname) ||
 		strings.HasPrefix(fname, "migration_") ||
 		strings.HasPrefix(fname, "snapshot_")
 }

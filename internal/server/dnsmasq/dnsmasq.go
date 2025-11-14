@@ -2,7 +2,9 @@ package dnsmasq
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"strings"
@@ -44,7 +46,7 @@ func UpdateStaticEntry(network string, projectName string, instanceName string, 
 	}
 
 	if netConfig["dns.mode"] == "" || netConfig["dns.mode"] == "managed" {
-		line += fmt.Sprintf(",%s", project.DNS(projectName, instanceName))
+		line += fmt.Sprintf(",%s", instanceName)
 	}
 
 	if line == hwaddr {
@@ -52,7 +54,7 @@ func UpdateStaticEntry(network string, projectName string, instanceName string, 
 	}
 
 	deviceStaticFileName := StaticAllocationFileName(projectName, instanceName, deviceName)
-	err := os.WriteFile(internalUtil.VarPath("networks", network, "dnsmasq.hosts", deviceStaticFileName), []byte(line+"\n"), 0644)
+	err := os.WriteFile(internalUtil.VarPath("networks", network, "dnsmasq.hosts", deviceStaticFileName), []byte(line+"\n"), 0o644)
 	if err != nil {
 		return err
 	}
@@ -64,7 +66,7 @@ func UpdateStaticEntry(network string, projectName string, instanceName string, 
 func RemoveStaticEntry(network string, projectName string, instanceName string, deviceName string) error {
 	deviceStaticFileName := StaticAllocationFileName(projectName, instanceName, deviceName)
 	err := os.Remove(internalUtil.VarPath("networks", network, "dnsmasq.hosts", deviceStaticFileName))
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 
@@ -88,7 +90,7 @@ func Kill(name string, reload bool) error {
 
 	if reload {
 		err = p.Reload()
-		if err != nil && err != subprocess.ErrNotRunning {
+		if err != nil && !errors.Is(err, subprocess.ErrNotRunning) {
 			return fmt.Errorf("Could not reload dnsmasq: %s", err)
 		}
 
@@ -96,7 +98,7 @@ func Kill(name string, reload bool) error {
 	}
 
 	err = p.Stop()
-	if err != nil && err != subprocess.ErrNotRunning {
+	if err != nil && !errors.Is(err, subprocess.ErrNotRunning) {
 		return fmt.Errorf("Unable to kill dnsmasq: %s", err)
 	}
 
@@ -189,7 +191,7 @@ func DHCPAllAllocations(network string) (map[[4]byte]DHCPAllocation, map[[16]byt
 
 	// First read all statically allocated IPs.
 	files, err := os.ReadDir(internalUtil.VarPath("networks", network, "dnsmasq.hosts"))
-	if err != nil && os.IsNotExist(err) {
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
 		return nil, nil, err
 	}
 

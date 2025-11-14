@@ -42,6 +42,16 @@ func DetectFilesystem(path string) (string, error) {
 	return FSTypeToName(int32(fs.Type))
 }
 
+// IsNFS returns true if the path exists and is on a NFS mount.
+func IsNFS(path string) bool {
+	backingFs, err := DetectFilesystem(path)
+	if err != nil {
+		return false
+	}
+
+	return backingFs == "nfs"
+}
+
 // FSTypeToName returns the name of the given fs type.
 // The fsType is from the Type field of unix.Statfs_t. We use int32 so that this function behaves the same on both
 // 32bit and 64bit platforms by requiring any 64bit FS types to be overflowed before being passed in. They will
@@ -131,11 +141,8 @@ func IsMountPoint(path string) bool {
 	// Btrfs annoyingly uses a different Dev id for different subvolumes on the same mount.
 	// So for btrfs, we require a matching mount entry in mountinfo.
 	fs, _ := DetectFilesystem(path)
-	if err == nil && fs == "btrfs" {
-		return false
-	}
 
-	return true
+	return fs != "btrfs"
 }
 
 // SyncFS will force a filesystem sync for the filesystem backing the provided path.
@@ -155,7 +162,7 @@ func SyncFS(path string) error {
 // PathNameEncode encodes a path string to be used as part of a file name.
 // The encoding scheme replaces "-" with "--" and then "/" with "-".
 func PathNameEncode(text string) string {
-	return strings.Replace(strings.Replace(text, "-", "--", -1), "/", "-", -1)
+	return strings.ReplaceAll(strings.ReplaceAll(text, "-", "--"), "/", "-")
 }
 
 // PathNameDecode decodes a string containing an encoded path back to its original form.
@@ -163,7 +170,7 @@ func PathNameEncode(text string) string {
 func PathNameDecode(text string) string {
 	// This converts "--" to the null character "\0" first, to allow remaining "-" chars to be
 	// converted back to "/" before making a final pass to convert "\0" back to original "-".
-	return strings.Replace(strings.Replace(strings.Replace(text, "--", "\000", -1), "-", "/", -1), "\000", "-", -1)
+	return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(text, "--", "\000"), "-", "/"), "\000", "-")
 }
 
 // mountOption represents an individual mount option.
@@ -237,7 +244,7 @@ func GetAllXattr(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("Failed getting extended attributes from %q: %w", path, err)
 	}
 
-	var xattrs = make(map[string]string, len(xattrNames))
+	xattrs := make(map[string]string, len(xattrNames))
 	for _, xattrName := range xattrNames {
 		value, err := xattr.LGet(path, xattrName)
 		if err != nil {
@@ -295,5 +302,5 @@ func GetMountinfo(path string) ([]string, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("No mountinfo entry found")
+	return nil, errors.New("No mountinfo entry found")
 }

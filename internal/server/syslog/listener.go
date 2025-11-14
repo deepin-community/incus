@@ -10,10 +10,10 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/events"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -35,10 +35,10 @@ func Listen(ctx context.Context, eventServer *events.Server) error {
 		return fmt.Errorf("Failed listening on syslog socket: %w", err)
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
-	revert.Add(func() {
+	reverter.Add(func() {
 		_ = conn.Close()
 		_ = os.Remove(sockFile)
 	})
@@ -140,7 +140,7 @@ func Listen(ctx context.Context, eventServer *events.Server) error {
 		}
 	}()
 
-	revert.Success()
+	reverter.Success()
 
 	return nil
 }

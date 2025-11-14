@@ -25,6 +25,15 @@
 			"disk": {
 				"keys": [
 					{
+						"attached": {
+							"default": "`true`",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "Only for VMs: Whether the disk is attached or ejected",
+							"type": "bool"
+						}
+					},
+					{
 						"boot.priority": {
 							"longdesc": "",
 							"required": "no",
@@ -61,7 +70,7 @@
 					{
 						"io.bus": {
 							"default": "`virtio-scsi` for block, `auto` for file system",
-							"longdesc": "This controls what bus a disk device should be attached to.\n\nFor block devices (disks), this is one of:\n- `nvme`\n- `virtio-blk`\n- `virtio-scsi` (default)\n\nFor file systems (shared directories or custom volumes), this is one of:\n- `9p`\n- `auto` (default) (`virtiofs` + `9p`, just `9p` if `virtiofsd` is missing)\n- `virtiofs`",
+							"longdesc": "This controls what bus a disk device should be attached to.\n\nFor block devices (disks), this is one of:\n- `nvme`\n- `virtio-blk`\n- `virtio-scsi` (default)\n- `usb`\n\nFor file systems (shared directories or custom volumes), this is one of:\n- `9p`\n- `auto` (default) (`virtiofs` if possible, else `9p`)\n- `virtiofs`\n\n`9p` doesn't support hotplugging and `virtiofs` doesn't support live migration. `auto` tries\nto use `virtiofs` if possible (`migration.stateful` not set to `true` and host support for\n`virtiofsd`) and falls back to `9p` otherwise.",
 							"required": "no",
 							"shortdesc": "Only for VMs: Override the bus for the device",
 							"type": "string"
@@ -102,9 +111,9 @@
 					},
 					{
 						"path": {
-							"longdesc": "",
+							"longdesc": "This controls which path inside the instance the disk should be mounted on.\n\nWith containers, this option supports mounting file system disk devices, and paths and single files within them.\n\nWith VMs, this option supports mounting file system disk devices and paths within them. Mounting single files is not supported.",
 							"required": "yes",
-							"shortdesc": "Path inside the instance where the disk will be mounted (only for containers)",
+							"shortdesc": "Path inside the instance where the disk will be mounted (only for file system disk devices)",
 							"type": "string"
 						}
 					},
@@ -189,6 +198,1489 @@
 							"longdesc": "",
 							"required": "yes",
 							"shortdesc": "Source of a file system or block device (see {ref}`devices-disk-types` for details)",
+							"type": "string"
+						}
+					},
+					{
+						"wwn": {
+							"default": "``",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "Only for VMs: Set the disk World Wide Name (only supported on `virtio-scsi` bus)",
+							"type": "bool"
+						}
+					}
+				]
+			},
+			"gpu_mdev": {
+				"keys": [
+					{
+						"id": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The DRM card ID of the GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"mdev": {
+							"longdesc": "",
+							"required": "yes",
+							"shortdesc": "The mediated device profile to use (required - for example, `i915-GVTg_V5_4`)",
+							"type": "string"
+						}
+					},
+					{
+						"productid": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The product ID of the GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"vendorid": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The vendor ID of the GPU device",
+							"type": "string"
+						}
+					}
+				]
+			},
+			"gpu_mig": {
+				"keys": [
+					{
+						"id": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The DRM card ID of the GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"mig.ci": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "Existing MIG compute instance ID",
+							"type": "int"
+						}
+					},
+					{
+						"mig.gi": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "Existing MIG GPU instance ID",
+							"type": "int"
+						}
+					},
+					{
+						"mig.uuid": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "Existing MIG device UUID (MIG- prefix can be omitted)",
+							"type": "string"
+						}
+					},
+					{
+						"pci": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The PCI address of the GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"productid": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The product ID of the GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"vendorid": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The vendor ID of the GPU device",
+							"type": "string"
+						}
+					}
+				]
+			},
+			"gpu_physical": {
+				"keys": [
+					{
+						"gid": {
+							"default": "0",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "GID of the device owner in the instance (container only)",
+							"type": "int"
+						}
+					},
+					{
+						"id": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The DRM card ID of the GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"mode": {
+							"default": "0660",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "Mode of the device in the instance (container only)",
+							"type": "int"
+						}
+					},
+					{
+						"pci": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The PCI address of the GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"productid": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The product ID of the GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"uid": {
+							"default": "0",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "UID of the device owner in the instance (container only)",
+							"type": "int"
+						}
+					},
+					{
+						"vendorid": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The vendor ID of the GPU device",
+							"type": "string"
+						}
+					}
+				]
+			},
+			"gpu_sriov": {
+				"keys": [
+					{
+						"id": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The DRM card ID of the parent GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"pci": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The PCI address of the parent GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"productid": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The product ID of the parent GPU device",
+							"type": "string"
+						}
+					},
+					{
+						"vendorid": {
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The vendor ID of the parent GPU device",
+							"type": "string"
+						}
+					}
+				]
+			},
+			"infiniband": {
+				"keys": [
+					{
+						"hwaddr": {
+							"defaultdesc": "randomly assigned",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The MAC address of the new interface (can be either the full 20-byte variant or the short 8-byte variant, which will only modify the last 8 bytes of the parent device)",
+							"type": "string"
+						}
+					},
+					{
+						"mtu": {
+							"defaultdesc": "parent MTU",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The MTU of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"name": {
+							"defaultdesc": "kernel assigned",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The name of the interface inside the instance",
+							"type": "string"
+						}
+					},
+					{
+						"nictype": {
+							"longdesc": "",
+							"required": "yes",
+							"shortdesc": "The device type (one of `physical` or `sriov`)",
+							"type": "string"
+						}
+					},
+					{
+						"parent": {
+							"defaultdesc": "kernel assigned",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "The name of the interface inside the instance",
+							"type": "string"
+						}
+					}
+				]
+			},
+			"nic_bridged": {
+				"keys": [
+					{
+						"boot.priority": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Boot priority for VMs (higher value boots first)",
+							"type": "integer"
+						}
+					},
+					{
+						"host_name": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The name of the interface on the host",
+							"type": "string"
+						}
+					},
+					{
+						"hwaddr": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The MAC address of the new interface",
+							"type": "string"
+						}
+					},
+					{
+						"io.bus": {
+							"default": "`virtio`",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Override the bus for the device (can be `virtio` or `usb`) (VM only)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.address": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "An IPv4 address to assign to the instance through DHCP (can be `none` to restrict all IPv4 traffic when `security.ipv4_filtering` is set)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.routes": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-delimited list of IPv4 static routes to add on host to NIC",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.routes.external": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-delimited list of IPv4 static routes to route to the NIC and publish on uplink network (BGP)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.address": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "An IPv6 address to assign to the instance through DHCP (can be `none` to restrict all IPv6 traffic when `security.ipv6_filtering` is set)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.routes": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-delimited list of IPv6 static routes to add on host to NIC",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.routes.external": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-delimited list of IPv6 static routes to route to the NIC and publish on uplink network (BGP)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.egress": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "I/O limit in bit/s for outgoing traffic (various suffixes supported, see {ref}instances-limit-units)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.ingress": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "I/O limit in bit/s for incoming traffic (various suffixes supported, see {ref}instances-limit-units)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.max": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "I/O limit in bit/s for both incoming and outgoing traffic (same as setting both limits.ingress and limits.egress)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.priority": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The priority for outgoing traffic, to be used by the kernel queuing discipline to prioritize network packets",
+							"type": "integer"
+						}
+					},
+					{
+						"mtu": {
+							"default": "MTU of the parent device",
+							"longdesc": "",
+							"managed": "yes",
+							"shortdesc": "The Maximum Transmit Unit (MTU) of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"name": {
+							"default": "kernel assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The name of the interface inside the instance",
+							"type": "string"
+						}
+					},
+					{
+						"network": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The managed network to link the device to (instead of specifying the `nictype` directly)",
+							"type": "string"
+						}
+					},
+					{
+						"parent": {
+							"longdesc": "",
+							"managed": "yes",
+							"shortdesc": "The name of the parent host device (required if specifying the `nictype` directly)",
+							"type": "string"
+						}
+					},
+					{
+						"queue.tx.length": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The transmit queue length for the NIC",
+							"type": "integer"
+						}
+					},
+					{
+						"security.acls": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-separated list of network ACLs to apply",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.egress.action": {
+							"default": "drop",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Action to use for egress traffic that doesn't match any ACL rule",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.egress.logged": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Whether to log egress traffic that doesn't match any ACL rule",
+							"type": "bool"
+						}
+					},
+					{
+						"security.acls.default.ingress.action": {
+							"default": "drop",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Action to use for ingress traffic that doesn't match any ACL rule",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.ingress.logged": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Whether to log ingress traffic that doesn't match any ACL rule",
+							"type": "bool"
+						}
+					},
+					{
+						"security.ipv4_filtering": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Prevent the instance from spoofing another instance's IPv4 address (enables `security.mac_filtering`)",
+							"type": "bool"
+						}
+					},
+					{
+						"security.ipv6_filtering": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Prevent the instance from spoofing another instance's IPv6 address (enables `security.mac_filtering`)",
+							"type": "bool"
+						}
+					},
+					{
+						"security.mac_filtering": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Prevent the instance from spoofing another instance's MAC address",
+							"type": "bool"
+						}
+					},
+					{
+						"security.port_isolation": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Prevent the NIC from communicating with other NICs in the network that have port isolation enabled",
+							"type": "bool"
+						}
+					},
+					{
+						"vlan": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The VLAN ID to use for non-tagged traffic (can be none to remove port from default VLAN)",
+							"type": "integer"
+						}
+					},
+					{
+						"vlan.tagged": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-delimited list of VLAN IDs or VLAN ranges to join for tagged traffic",
+							"type": "integer"
+						}
+					}
+				]
+			},
+			"nic_ipvlan": {
+				"keys": [
+					{
+						"gvrp": {
+							"default": "false",
+							"longdesc": "",
+							"shortdesc": "Register VLAN using GARP VLAN Registration Protocol",
+							"type": "bool"
+						}
+					},
+					{
+						"hwaddr": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"shortdesc": "The MAC address of the new interface",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.address": {
+							"longdesc": "",
+							"shortdesc": "Comma-delimited list of IPv4 static addresses to add to the instance (in l2 mode, these can be specified as CIDR values or singular addresses using a subnet of /24)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.gateway": {
+							"default": "`auto` (in `l3s` mode), `-` (in `l2` mode)",
+							"longdesc": "",
+							"shortdesc": "In `l3s` mode, whether to add an automatic default IPv4 gateway (can be `auto` or `none`). In `l2` mode, the IPv4 address of the gateway",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.host_table": {
+							"longdesc": "",
+							"shortdesc": "The custom policy routing table ID to add IPv4 static routes to (in addition to the main routing table)",
+							"type": "integer"
+						}
+					},
+					{
+						"ipv6.address": {
+							"longdesc": "",
+							"shortdesc": "Comma-delimited list of IPv6 static addresses to add to the instance (in `l2` mode, these can be specified as CIDR values or singular addresses using a subnet of /64)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.gateway": {
+							"default": "`auto` (in `l3s` mode), `-` (in `l2` mode)",
+							"longdesc": "",
+							"shortdesc": "In `l3s` mode, whether to add an automatic default IPv6 gateway (can be `auto` or `none`). In `l2` mode, the IPv6 address of the gateway",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.host_table": {
+							"longdesc": "",
+							"shortdesc": "The custom policy routing table ID to add IPv6 static routes to (in addition to the main routing table)",
+							"type": "integer"
+						}
+					},
+					{
+						"mode": {
+							"default": "`l3s`",
+							"longdesc": "",
+							"shortdesc": "The IPVLAN mode (either `l2` or `l3s`)",
+							"type": "string"
+						}
+					},
+					{
+						"mtu": {
+							"default": "MTU of the parent device",
+							"longdesc": "",
+							"shortdesc": "The Maximum Transmit Unit (MTU) of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"name": {
+							"default": "kernel assigned",
+							"longdesc": "",
+							"shortdesc": "The name of the interface inside the instance",
+							"type": "string"
+						}
+					},
+					{
+						"parent": {
+							"longdesc": "",
+							"shortdesc": "The name of the host device (required)",
+							"type": "string"
+						}
+					},
+					{
+						"vlan": {
+							"longdesc": "",
+							"shortdesc": "The VLAN ID to attach to",
+							"type": "integer"
+						}
+					}
+				]
+			},
+			"nic_macvlan": {
+				"keys": [
+					{
+						"boot.priority": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Boot priority for VMs (higher value boots first)",
+							"type": "integer"
+						}
+					},
+					{
+						"gvrp": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Register VLAN using GARP VLAN Registration Protocol",
+							"type": "bool"
+						}
+					},
+					{
+						"hwaddr": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The MAC address of the new interface",
+							"type": "string"
+						}
+					},
+					{
+						"io.bus": {
+							"default": "`virtio`",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Override the bus for the device (can be `virtio` or `usb`) (VM only)",
+							"type": "string"
+						}
+					},
+					{
+						"mode": {
+							"default": "bridge",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Macvlan mode (one of `bridge`, `vepa`, `passthru` or `private`)",
+							"type": "string"
+						}
+					},
+					{
+						"mtu": {
+							"default": "MTU of the parent device",
+							"longdesc": "",
+							"managed": "yes",
+							"shortdesc": "The Maximum Transmit Unit (MTU) of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"name": {
+							"default": "kernel assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The name of the interface inside the instance",
+							"type": "string"
+						}
+					},
+					{
+						"network": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The managed network to link the device to (instead of specifying the `nictype` directly)",
+							"type": "string"
+						}
+					},
+					{
+						"parent": {
+							"longdesc": "",
+							"managed": "yes",
+							"shortdesc": "The name of the parent host device (required if specifying the `nictype` directly)",
+							"type": "string"
+						}
+					},
+					{
+						"vlan": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The VLAN ID to attach to",
+							"type": "integer"
+						}
+					}
+				]
+			},
+			"nic_ovn": {
+				"keys": [
+					{
+						"acceleration": {
+							"default": "none",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Enable hardware offloading (either `none`, `sriov` or `vdpa`)",
+							"type": "string"
+						}
+					},
+					{
+						"boot.priority": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Boot priority for VMs (higher value boots first)",
+							"type": "integer"
+						}
+					},
+					{
+						"host_name": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The name of the interface inside the host",
+							"type": "string"
+						}
+					},
+					{
+						"hwaddr": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The MAC address of the new interface",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.address": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "An IPv4 address to assign to the instance through DHCP, `none` can be used to disable IP allocation",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.address.external": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Select a specific external address (typically from a network forward)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.routes": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-delimited list of IPv4 static routes to route to the NIC",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.routes.external": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-delimited list of IPv4 static routes to route to the NIC and publish on uplink network",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.address": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "An IPv6 address to assign to the instance through DHCP, `none` can be used to disable IP allocation",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.address.external": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Select a specific external address (typically from a network forward)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.routes": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-delimited list of IPv6 static routes to route to the NIC",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.routes.external": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-delimited list of IPv6 static routes to route to the NIC and publish on uplink network",
+							"type": "string"
+						}
+					},
+					{
+						"mtu": {
+							"default": "MTU of the parent network",
+							"longdesc": "",
+							"managed": "yes",
+							"shortdesc": "The Maximum Transmit Unit (MTU) of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"name": {
+							"default": "kernel assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The name of the interface inside the instance",
+							"type": "string"
+						}
+					},
+					{
+						"nested": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The parent NIC name to nest this NIC under (see also `vlan`)",
+							"type": "string"
+						}
+					},
+					{
+						"network": {
+							"longdesc": "",
+							"managed": "yes",
+							"shortdesc": "The managed network to link the device to (required)",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Comma-separated list of network ACLs to apply",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.egress.action": {
+							"default": "reject",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Action to use for egress traffic that doesn't match any ACL rule",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.egress.logged": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Whether to log egress traffic that doesn't match any ACL rule",
+							"type": "bool"
+						}
+					},
+					{
+						"security.acls.default.ingress.action": {
+							"default": "reject",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Action to use for ingress traffic that doesn't match any ACL rule",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.ingress.logged": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Whether to log ingress traffic that doesn't match any ACL rule",
+							"type": "bool"
+						}
+					},
+					{
+						"security.promiscuous": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Have OVN send unknown network traffic to this network interface (required for some nesting cases)",
+							"type": "bool"
+						}
+					},
+					{
+						"vlan": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The VLAN ID to use when nesting (see also `nested`)",
+							"type": "integer"
+						}
+					}
+				]
+			},
+			"nic_p2p": {
+				"keys": [
+					{
+						"boot.priotiry": {
+							"longdesc": "",
+							"shortdesc": "Boot priority for VMs (higher value boots first)",
+							"type": "integer"
+						}
+					},
+					{
+						"host_name": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"shortdesc": "The name of the interface on the host",
+							"type": "string"
+						}
+					},
+					{
+						"hwaddr": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"shortdesc": "The MAC address of the new interface",
+							"type": "string"
+						}
+					},
+					{
+						"io.bus": {
+							"default": "`virtio`",
+							"longdesc": "",
+							"shortdesc": "Override the bus for the device (can be `virtio` or `usb`) (VM only)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.routes": {
+							"longdesc": "",
+							"shortdesc": "Comma-delimited list of IPv4 static routes to add on host to NIC",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.routes": {
+							"longdesc": "",
+							"shortdesc": "Comma-delimited list of IPv6 static routes to add on host to NIC",
+							"type": "string"
+						}
+					},
+					{
+						"limits.egress": {
+							"longdesc": "",
+							"shortdesc": "I/O limit in bit/s for outgoing traffic (various suffixes supported, see {ref}instances-limit-units)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.ingress": {
+							"longdesc": "",
+							"shortdesc": "I/O limit in bit/s for incoming traffic (various suffixes supported, see {ref}instances-limit-units)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.max": {
+							"longdesc": "",
+							"shortdesc": "I/O limit in bit/s for both incoming and outgoing traffic (same as setting both limits.ingress and limits.egress)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.priority": {
+							"longdesc": "",
+							"shortdesc": "The priority for outgoing traffic, to be used by the kernel queuing discipline to prioritize network packets",
+							"type": "integer"
+						}
+					},
+					{
+						"mtu": {
+							"default": "kernel assigned",
+							"longdesc": "",
+							"shortdesc": "The Maximum Transmit Unit (MTU) of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"name": {
+							"default": "kernel assigned",
+							"longdesc": "",
+							"shortdesc": "The name of the interface inside the instance",
+							"type": "string"
+						}
+					},
+					{
+						"queue.tx.length": {
+							"longdesc": "",
+							"shortdesc": "The transmit queue length for the NIC",
+							"type": "integer"
+						}
+					}
+				]
+			},
+			"nic_physical": {
+				"keys": [
+					{
+						"boot.priority": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Boot priority for VMs (higher value boots first)",
+							"type": "integer"
+						}
+					},
+					{
+						"gvrp": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Register VLAN using GARP VLAN Registration Protocol",
+							"type": "bool"
+						}
+					},
+					{
+						"hwaddr": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The MAC address of the new interface",
+							"type": "string"
+						}
+					},
+					{
+						"mtu": {
+							"default": "MTU of the parent device",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The Maximum Transmit Unit (MTU) of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"name": {
+							"default": "kernel assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The name of the interface inside the instance",
+							"type": "string"
+						}
+					},
+					{
+						"network": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The managed network to link the device to (instead of specifying the `nictype` directly)",
+							"type": "string"
+						}
+					},
+					{
+						"parent": {
+							"longdesc": "",
+							"managed": "yes",
+							"shortdesc": "The name of the parent host device (required if specifying the `nictype` directly)",
+							"type": "string"
+						}
+					},
+					{
+						"vlan": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The VLAN ID to attach to",
+							"type": "integer"
+						}
+					}
+				]
+			},
+			"nic_routed": {
+				"keys": [
+					{
+						"gvrp": {
+							"default": "false",
+							"longdesc": "",
+							"shortdesc": "Register VLAN using GARP VLAN Registration Protocol",
+							"type": "bool"
+						}
+					},
+					{
+						"host_name": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"shortdesc": "The name of the interface on the host",
+							"type": "string"
+						}
+					},
+					{
+						"hwaddr": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"shortdesc": "The MAC address of the new interface",
+							"type": "string"
+						}
+					},
+					{
+						"io.bus": {
+							"default": "`virtio`",
+							"longdesc": "",
+							"shortdesc": "Override the bus for the device (can be `virtio` or `usb`) (VM only)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.address": {
+							"longdesc": "",
+							"shortdesc": "Comma-delimited list of IPv4 static addresses to add to the instance",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.gateway": {
+							"default": "auto",
+							"longdesc": "",
+							"shortdesc": "Whether to add an automatic default IPv4 gateway (can be `auto` or `none`)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.host_address": {
+							"default": "`169.254.0.1`",
+							"longdesc": "",
+							"shortdesc": "The IPv4 address to add to the host-side `veth` interface",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.host_table": {
+							"longdesc": "The custom policy routing table ID to add IPv4 static routes to (in addition to the main routing table)\n",
+							"shortdesc": "Deprecated: Use `ipv4.host_tables` instead",
+							"type": "integer"
+						}
+					},
+					{
+						"ipv4.host_tables": {
+							"default": "254",
+							"longdesc": "",
+							"shortdesc": "Comma-delimited list of routing tables IDs to add IPv4 static routes to",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.neighbor_probe": {
+							"default": "true",
+							"longdesc": "",
+							"shortdesc": "Whether to probe the parent network for IP address availability",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv4.routes": {
+							"longdesc": "",
+							"shortdesc": "Comma-delimited list of IPv4 static routes to add on host to NIC (without L2 ARP/NDP proxy)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.address": {
+							"longdesc": "",
+							"shortdesc": "Comma-delimited list of IPv6 static addresses to add to the instance",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.gateway": {
+							"default": "auto",
+							"longdesc": "",
+							"shortdesc": "Whether to add an automatic default IPv6 gateway (can be `auto` or `none`)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.host_address": {
+							"default": "`fe80::1`",
+							"longdesc": "",
+							"shortdesc": "The IPv6 address to add to the host-side `veth` interface",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.host_table": {
+							"longdesc": "The custom policy routing table ID to add IPv6 static routes to (in addition to the main routing table)\n",
+							"shortdesc": "Deprecated: Use `ipv6.host_tables` instead",
+							"type": "integer"
+						}
+					},
+					{
+						"ipv6.host_tables": {
+							"default": "254",
+							"longdesc": "",
+							"shortdesc": "Comma-delimited list of routing tables IDs to add IPv6 static routes to",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.neighbor_probe": {
+							"default": "true",
+							"longdesc": "",
+							"shortdesc": "Whether to probe the parent network for IP address availability",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv6.routes": {
+							"longdesc": "",
+							"shortdesc": "Comma-delimited list of IPv6 static routes to add on host to NIC (without L2 ARP/NDP proxy)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.egress": {
+							"longdesc": "",
+							"shortdesc": "I/O limit in bit/s for outgoing traffic (various suffixes supported, see {ref}instances-limit-units)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.ingress": {
+							"longdesc": "",
+							"shortdesc": "I/O limit in bit/s for incoming traffic (various suffixes supported, see {ref}instances-limit-units)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.max": {
+							"longdesc": "",
+							"shortdesc": "I/O limit in bit/s for both incoming and outgoing traffic (same as setting both limits.ingress and limits.egress)",
+							"type": "string"
+						}
+					},
+					{
+						"limits.priority": {
+							"longdesc": "",
+							"shortdesc": "The priority for outgoing traffic, to be used by the kernel queuing discipline to prioritize network packets",
+							"type": "integer"
+						}
+					},
+					{
+						"mtu": {
+							"default": "parent MTU",
+							"longdesc": "",
+							"shortdesc": "The Maximum Transmit Unit (MTU) of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"name": {
+							"default": "kernel assigned",
+							"longdesc": "",
+							"shortdesc": "The name of the interface inside the instance",
+							"type": "string"
+						}
+					},
+					{
+						"parent": {
+							"longdesc": "",
+							"shortdesc": "The name of the parent host device to join the instance to",
+							"type": "string"
+						}
+					},
+					{
+						"queue.tx.length": {
+							"longdesc": "",
+							"shortdesc": "The transmit queue length for the NIC",
+							"type": "integer"
+						}
+					},
+					{
+						"vlan": {
+							"longdesc": "",
+							"shortdesc": "The VLAN ID to attach to",
+							"type": "integer"
+						}
+					},
+					{
+						"vrf": {
+							"longdesc": "",
+							"shortdesc": "The VRF on the host in which the host-side interface and routes are created",
+							"type": "string"
+						}
+					}
+				]
+			},
+			"nic_sriov": {
+				"keys": [
+					{
+						"boot.priority": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Boot priority for VMs (higher value boots first)",
+							"type": "integer"
+						}
+					},
+					{
+						"hwaddr": {
+							"default": "randomly assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The MAC address of the new interface",
+							"type": "string"
+						}
+					},
+					{
+						"mtu": {
+							"default": "kernel assigned",
+							"longdesc": "",
+							"managed": "yes",
+							"shortdesc": "The Maximum Transmit Unit (MTU) of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"name": {
+							"default": "kernel assigned",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The name of the interface inside the instance",
+							"type": "string"
+						}
+					},
+					{
+						"network": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The managed network to link the device to (instead of specifying the `nictype` directly)",
+							"type": "string"
+						}
+					},
+					{
+						"parent": {
+							"longdesc": "",
+							"managed": "yes",
+							"shortdesc": "The name of the parent host device (required if specifying the `nictype` directly)",
+							"type": "string"
+						}
+					},
+					{
+						"security.mac_filtering": {
+							"default": "false",
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "Prevent the instance from spoofing another instance's MAC address",
+							"type": "bool"
+						}
+					},
+					{
+						"vlan": {
+							"longdesc": "",
+							"managed": "no",
+							"shortdesc": "The VLAN ID to attach to",
+							"type": "integer"
+						}
+					}
+				]
+			},
+			"pci": {
+				"keys": [
+					{
+						"address": {
+							"longdesc": "",
+							"required": "yes",
+							"shortdesc": "PCI address of the device",
+							"type": "string"
+						}
+					}
+				]
+			},
+			"proxy": {
+				"keys": [
+					{
+						"bind": {
+							"default": "`host`",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "Which side to bind on (`host`/`instance`)",
+							"type": "string"
+						}
+					},
+					{
+						"connect": {
+							"longdesc": "",
+							"required": "yes",
+							"shortdesc": "The address and port to connect to (`\u003ctype\u003e:\u003caddr\u003e:\u003cport\u003e[-\u003cport\u003e][,\u003cport\u003e]`)",
+							"type": "string"
+						}
+					},
+					{
+						"gid": {
+							"default": "`0`",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "GID of the owner of the listening Unix socket",
+							"type": "int"
+						}
+					},
+					{
+						"listen": {
+							"longdesc": "",
+							"required": "yes",
+							"shortdesc": "The address and port to bind and listen (`\u003ctype\u003e:\u003caddr\u003e:\u003cport\u003e[-\u003cport\u003e][,\u003cport\u003e]`)",
+							"type": "string"
+						}
+					},
+					{
+						"mode": {
+							"default": "`0644`",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "Mode for the listening Unix socket",
+							"type": "int"
+						}
+					},
+					{
+						"nat": {
+							"default": "`false`",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "Whether to optimize proxying via NAT (requires that the instance NIC has a static IP address)",
+							"type": "bool"
+						}
+					},
+					{
+						"proxy_protocol": {
+							"default": "`false`",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "Whether to use the HAProxy PROXY protocol to transmit sender information",
+							"type": "bool"
+						}
+					},
+					{
+						"security.gid": {
+							"default": "`0`",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "What GID to drop privilege to",
+							"type": "int"
+						}
+					},
+					{
+						"security.uid": {
+							"default": "`0`",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "What UID to drop privilege to",
+							"type": "int"
+						}
+					},
+					{
+						"uid": {
+							"default": "`0`",
+							"longdesc": "",
+							"required": "no",
+							"shortdesc": "UID of the owner of the listening Unix socket",
+							"type": "int"
+						}
+					}
+				]
+			},
+			"tpm": {
+				"keys": [
+					{
+						"path": {
+							"default": "-",
+							"longdesc": "",
+							"required": "for containers",
+							"shortdesc": "Only for containers: path inside the instance (for example, `/dev/tpm0`)",
+							"type": "string"
+						}
+					},
+					{
+						"pathrm": {
+							"default": "-",
+							"longdesc": "",
+							"required": "for containers",
+							"shortdesc": "Only for containers: resource manager path inside the instance (for example, `/dev/tpmrm0`)",
 							"type": "string"
 						}
 					}
@@ -464,9 +1956,9 @@
 						"boot.host_shutdown_action": {
 							"defaultdesc": "stop",
 							"liveupdate": "yes",
-							"longdesc": "Action to take on host shut down",
+							"longdesc": "Action to take on host shut down\n\nValid values are: `stop`, `force-stop` or `stateful-stop`",
 							"shortdesc": "What action to take on the instance when the host is shut down",
-							"type": "integer"
+							"type": "string"
 						}
 					},
 					{
@@ -618,6 +2110,14 @@
 						}
 					},
 					{
+						"environment.*": {
+							"liveupdate": "yes",
+							"longdesc": "Extra environment variables to set on boot and during exec.",
+							"shortdesc": "Free-form environment key/value",
+							"type": "string"
+						}
+					},
+					{
 						"linux.kernel_modules": {
 							"condition": "container",
 							"liveupdate": "yes",
@@ -636,8 +2136,16 @@
 						}
 					},
 					{
+						"smbios11.*": {
+							"liveupdate": "yes",
+							"longdesc": "`SMBIOS Type 11` configuration keys.",
+							"shortdesc": "Free-form `SMBIOS Type 11` key/value",
+							"type": "string"
+						}
+					},
+					{
 						"user.*": {
-							"liveupdate": "no",
+							"liveupdate": "yes",
 							"longdesc": "User keys can be used in search.",
 							"shortdesc": "Free-form user key/value storage",
 							"type": "string"
@@ -884,6 +2392,16 @@
 						}
 					},
 					{
+						"limits.memory.hotplug": {
+							"condition": "virtual machine",
+							"defaultdesc": "`true`",
+							"liveupdate": "yes",
+							"longdesc": "If this option is set to `false`, disable memory hotplug entirely.\nAlternatively, it can be set to a bytes value which will define an upper limit for hotplugged memory.\nThe value must be greater than or equal to limits.memory.",
+							"shortdesc": "Control upper limit for hotplugged memory or disable memory hotplug.",
+							"type": "string"
+						}
+					},
+					{
 						"limits.memory.hugepages": {
 							"condition": "virtual machine",
 							"defaultdesc": "`false`",
@@ -995,6 +2513,16 @@
 						}
 					},
 					{
+						"security.iommu": {
+							"condition": "virtual machine",
+							"defaultdesc": "`false`",
+							"liveupdate": "no",
+							"longdesc": "",
+							"shortdesc": "Whether to enable virtual IOMMU, useful for device passthrough and nesting",
+							"type": "bool"
+						}
+					},
+					{
 						"security.nesting": {
 							"condition": "container",
 							"defaultdesc": "`false`",
@@ -1039,7 +2567,7 @@
 							"defaultdesc": "`true`",
 							"liveupdate": "no",
 							"longdesc": "When disabling this option, consider enabling {config:option}`instance-security:security.csm`.",
-							"shortdesc": "Whether UEFI secure boot is enabled with the default Microsoft keys",
+							"shortdesc": "Whether UEFI secure boot is enforced with the default Microsoft keys",
 							"type": "bool"
 						}
 					},
@@ -1190,7 +2718,7 @@
 						}
 					},
 					{
-						"security.syscalls.intercept.sched_setcheduler": {
+						"security.syscalls.intercept.sched_setscheduler": {
 							"condition": "container",
 							"defaultdesc": "`false`",
 							"liveupdate": "no",
@@ -1232,6 +2760,14 @@
 						}
 					},
 					{
+						"snapshots.expiry.manual": {
+							"liveupdate": "no",
+							"longdesc": "Specify an expression like `1M 2H 3d 4w 5m 6y`.",
+							"shortdesc": "When snapshots are to be deleted (for those not created through scheduling)",
+							"type": "string"
+						}
+					},
+					{
 						"snapshots.pattern": {
 							"defaultdesc": "`snap%d`",
 							"liveupdate": "no",
@@ -1244,7 +2780,7 @@
 						"snapshots.schedule": {
 							"defaultdesc": "empty",
 							"liveupdate": "no",
-							"longdesc": "Specify either a cron expression (`\u003cminute\u003e \u003chour\u003e \u003cdom\u003e \u003cmonth\u003e \u003cdow\u003e`), a comma-separated list of schedule aliases (`@hourly`, `@daily`, `@midnight`, `@weekly`, `@monthly`, `@annually`, `@yearly`), or leave empty to disable automatic snapshots.\n",
+							"longdesc": "Specify either a cron expression (`\u003cminute\u003e \u003chour\u003e \u003cdom\u003e \u003cmonth\u003e \u003cdow\u003e`), a comma-and-space-separated list of schedule aliases (`@startup`, `@hourly`, `@daily`, `@midnight`, `@weekly`, `@monthly`, `@annually`, `@yearly`), or leave empty to disable automatic snapshots.\n\nNote that unlike most other configuration keys, this one must be comma-and-space-separated and not just comma-separated as cron expression can themselves contain commas.\n",
 							"shortdesc": "Schedule for automatic instance snapshots",
 							"type": "string"
 						}
@@ -1287,6 +2823,13 @@
 						"volatile.\u003cname\u003e.hwaddr": {
 							"longdesc": "The network device MAC address is used when no `hwaddr` property is set on the device itself.",
 							"shortdesc": "Network device MAC address",
+							"type": "string"
+						}
+					},
+					{
+						"volatile.\u003cname\u003e.io.bus": {
+							"longdesc": "The IO bus stores the actual IO bus being used, checked in case `io.bus=auto`.",
+							"shortdesc": "IO bus in use",
 							"type": "string"
 						}
 					},
@@ -1508,6 +3051,13 @@
 						}
 					},
 					{
+						"volatile.rebalance.last_move": {
+							"longdesc": "",
+							"shortdesc": "Timestamp of last move by automatic live-migration",
+							"type": "integer"
+						}
+					},
+					{
 						"volatile.uuid": {
 							"longdesc": "The instance UUID is globally unique across all servers and projects.",
 							"shortdesc": "Instance UUID",
@@ -1519,6 +3069,27 @@
 							"longdesc": "The instance generation UUID changes whenever the instance's place in time moves backwards.\nIt is globally unique across all servers and projects.",
 							"shortdesc": "Instance generation UUID",
 							"type": "string"
+						}
+					},
+					{
+						"volatile.vm.definition": {
+							"longdesc": "",
+							"shortdesc": "QEMU VM definition name (used for migration between versions)",
+							"type": "string"
+						}
+					},
+					{
+						"volatile.vm.rtc_adjustment": {
+							"longdesc": "Real Time Clock adjustment time to allow virtual machines to run on a different base than the host.",
+							"shortdesc": "Real Time Clock change adjustment",
+							"type": "int64"
+						}
+					},
+					{
+						"volatile.vm.rtc_offset": {
+							"longdesc": "Real Time Clock offset to allow virtual machines to run on a different base than the host.",
+							"shortdesc": "Real Time Clock change offset",
+							"type": "int64"
 						}
 					},
 					{
@@ -1627,6 +3198,549 @@
 							"longdesc": "",
 							"resource": "`RLIMIT_SIGPENDING`",
 							"shortdesc": "Limit on the number of bytes of memory that the process may lock in RAM",
+							"type": "string"
+						}
+					}
+				]
+			}
+		},
+		"network_bridge": {
+			"bgp": {
+				"keys": [
+					{
+						"bgp.peers.NAME.address": {
+							"condition": "BGP server",
+							"defaultdesc": "-",
+							"longdesc": "",
+							"shortdesc": "Peer address (IPv4 or IPv6) for use by `ovn` downstream networks",
+							"type": "string"
+						}
+					},
+					{
+						"bgp.peers.NAME.asn": {
+							"condition": "BGP server",
+							"defaultdesc": "-",
+							"longdesc": "",
+							"shortdesc": "Peer AS number for use by `ovn` downstream networks",
+							"type": "integer"
+						}
+					},
+					{
+						"bgp.peers.NAME.holdtime": {
+							"condition": "BGP server",
+							"defaultdesc": "`180`",
+							"longdesc": "",
+							"shortdesc": "Peer session hold time (in seconds; optional)",
+							"type": "integer"
+						}
+					},
+					{
+						"bgp.peers.NAME.password": {
+							"condition": "BGP server",
+							"defaultdesc": "- (no password)",
+							"longdesc": "",
+							"shortdesc": "Peer session password (optional) for use by `ovn` downstream networks",
+							"type": "string"
+						}
+					}
+				]
+			},
+			"common": {
+				"keys": [
+					{
+						"bgp.ipv4.nexthop": {
+							"condition": "BGP server",
+							"default": "local address",
+							"longdesc": "",
+							"shortdesc": "Override the next-hop for advertised prefixes",
+							"type": "string"
+						}
+					},
+					{
+						"bgp.ipv6.nexthop": {
+							"condition": "BGP server",
+							"default": "local address",
+							"longdesc": "",
+							"shortdesc": "Override the next-hop for advertised prefixes",
+							"type": "string"
+						}
+					},
+					{
+						"bridge.driver": {
+							"condition": "-",
+							"default": "`native`",
+							"longdesc": "",
+							"shortdesc": "Bridge driver: `native` or `openvswitch`",
+							"type": "string"
+						}
+					},
+					{
+						"bridge.external_interfaces": {
+							"condition": "-",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of unconfigured network interfaces to include in the bridge",
+							"type": "string"
+						}
+					},
+					{
+						"bridge.hwaddr": {
+							"condition": "-",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "MAC address for the bridge",
+							"type": "string"
+						}
+					},
+					{
+						"bridge.mtu": {
+							"condition": "-",
+							"default": "`1500`",
+							"longdesc": "",
+							"shortdesc": "Bridge MTU (default varies if tunnel in use)",
+							"type": "integer"
+						}
+					},
+					{
+						"dns.domain": {
+							"condition": "-",
+							"default": "`incus`",
+							"longdesc": "",
+							"shortdesc": "Domain to advertise to DHCP clients and use for DNS resolution",
+							"type": "string"
+						}
+					},
+					{
+						"dns.mode": {
+							"condition": "-",
+							"default": "`managed`",
+							"longdesc": "",
+							"shortdesc": "DNS registration mode: none for no DNS record, managed for Incus-generated static records or dynamic for client-generated records",
+							"type": "string"
+						}
+					},
+					{
+						"dns.nameservers": {
+							"condition": "-",
+							"default": "IPv4 and IPv6 address",
+							"longdesc": "",
+							"shortdesc": "DNS server IPs to advertise to DHCP clients and via Router Advertisements. Both IPv4 and IPv6 addresses get pushed via DHCP, and IPv6 addresses are also advertised as RDNSS via RA.",
+							"type": "string"
+						}
+					},
+					{
+						"dns.search": {
+							"condition": "-",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Full comma-separated domain search list, defaulting to `dns.domain` value",
+							"type": "string"
+						}
+					},
+					{
+						"dns.zone.forward": {
+							"condition": "-",
+							"default": "`managed`",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of DNS zone names for forward DNS records",
+							"type": "string"
+						}
+					},
+					{
+						"dns.zone.reverse.ipv4": {
+							"condition": "-",
+							"default": "`managed`",
+							"longdesc": "",
+							"shortdesc": "DNS zone name for IPv4 reverse DNS records",
+							"type": "string"
+						}
+					},
+					{
+						"dns.zone.reverse.ipv6": {
+							"condition": "-",
+							"default": "`managed`",
+							"longdesc": "",
+							"shortdesc": "DNS zone name for IPv6 reverse DNS records",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.address": {
+							"condition": "standard mode",
+							"default": "- (initial value on creation: `auto`)",
+							"longdesc": "",
+							"shortdesc": "IPv4 address for the bridge (use `none` to turn off IPv4 or `auto` to generate a new random unused subnet) (CIDR)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.dhcp": {
+							"condition": "IPv4 address",
+							"default": "`true`",
+							"longdesc": "",
+							"shortdesc": "Whether to allocate addresses using DHCP",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv4.dhcp.expiry": {
+							"condition": "IPv4 DHCP",
+							"default": "`1h`",
+							"longdesc": "",
+							"shortdesc": "When to expire DHCP leases",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.dhcp.gateway": {
+							"condition": "IPv4 DHCP",
+							"default": "IPv4 address",
+							"longdesc": "",
+							"shortdesc": "Address of the gateway for the subnet",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.dhcp.ranges": {
+							"condition": "IPv4 DHCP",
+							"default": "all addresses",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of IP ranges to use for DHCP (FIRST-LAST format)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.dhcp.routes": {
+							"condition": "IPv4 DHCP",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Static routes to provide via DHCP option 121, as a comma-separated list of alternating subnets (CIDR) and gateway addresses (same syntax as dnsmasq)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.firewall": {
+							"condition": "IPv4 address",
+							"default": "`true`",
+							"longdesc": "",
+							"shortdesc": "Whether to generate filtering firewall rules for this network",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv4.nat": {
+							"condition": "IPv4 address",
+							"default": "`false`(initial value on creation if `ipv4.address` is set to `auto`: `true`)",
+							"longdesc": "",
+							"shortdesc": "Whether to NAT",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv4.nat.address": {
+							"condition": "IPv4 address",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "The source address used for outbound traffic from the bridge",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.nat.order": {
+							"condition": "IPv4 address",
+							"default": "`before`",
+							"longdesc": "",
+							"shortdesc": "Whether to add the required NAT rules before or after any pre-existing rules",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.ovn.ranges": {
+							"condition": "-",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of IPv4 ranges to use for child OVN network routers (FIRST-LAST format)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.routes": {
+							"condition": "IPv4 address",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of additional IPv4 CIDR subnets to route to the bridge",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.routing": {
+							"condition": "IPv4 DHCP",
+							"default": "`true`",
+							"longdesc": "",
+							"shortdesc": "Whether to route traffic in and out of the bridge",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv6.address": {
+							"condition": "standard mode",
+							"default": "- (initial value on creation: `auto`)",
+							"longdesc": "",
+							"shortdesc": "IPv6 address for the bridge (use `none` to turn off IPv6 or `auto` to generate a new random unused subnet) (CIDR)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.dhcp": {
+							"condition": "IPv6 DHCP",
+							"default": "`true`",
+							"longdesc": "",
+							"shortdesc": "Whether to provide additional network configuration over DHCP",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv6.dhcp.expiry": {
+							"condition": "IPv6 DHCP",
+							"default": "`1h`",
+							"longdesc": "",
+							"shortdesc": "When to expire DHCP leases",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.dhcp.ranges": {
+							"condition": "IPv6 stateful DHCP",
+							"default": "all addresses",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of IPv6 ranges to use for DHCP (FIRST-LAST format)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.dhcp.stateful": {
+							"condition": "IPv6 DHCP",
+							"default": "`false`",
+							"longdesc": "",
+							"shortdesc": "Whether to allocate addresses using DHCP",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv6.firewall": {
+							"condition": "IPv6 address",
+							"default": "`true`",
+							"longdesc": "",
+							"shortdesc": "Whether to generate filtering firewall rules for this network",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv6.nat": {
+							"condition": "IPv6 address",
+							"default": "`false` (initial value on creation if `ipv6.address` is set to `auto`: `true`)",
+							"longdesc": "",
+							"shortdesc": "Whether to NAT",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv6.nat.address": {
+							"condition": "IPv6 address",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "The source address used for outbound traffic from the bridge",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.nat.order": {
+							"condition": "IPv6 address",
+							"default": "`before`",
+							"longdesc": "",
+							"shortdesc": "Whether to add the required NAT rules before or after any pre-existing rules",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.ovn.ranges": {
+							"condition": "-",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of IPv6 ranges to use for child OVN network routers (FIRST-LAST format)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.routes": {
+							"condition": "IPv6 address",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of additional IPv6 CIDR subnets to route to the bridge",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.routing": {
+							"condition": "IPv6 address",
+							"default": "`true`",
+							"longdesc": "",
+							"shortdesc": "Whether to route traffic in and out of the bridge",
+							"type": "bool"
+						}
+					},
+					{
+						"raw.dnsmasq": {
+							"condition": "-",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Additional dnsmasq configuration to append to the configuration file",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls": {
+							"condition": "-",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of Network ACLs to apply to NICs connected to this network (see {ref}`network-acls-bridge-limitations`)",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.egress.action": {
+							"condition": "`security.acls`",
+							"default": "`reject`",
+							"longdesc": "",
+							"shortdesc": "Action to use for egress traffic that doesn't match any ACL rule",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.egress.logged": {
+							"condition": "`security.acls`",
+							"default": "`false`",
+							"longdesc": "",
+							"shortdesc": "Whether to log egress traffic that doesn't match any ACL rule",
+							"type": "bool"
+						}
+					},
+					{
+						"security.acls.default.ingress.action": {
+							"condition": "`security.acls`",
+							"default": "`reject`",
+							"longdesc": "",
+							"shortdesc": "Action to use for ingress traffic that doesn't match any ACL rule",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.ingress.logged": {
+							"condition": "`security.acls`",
+							"default": "`false`",
+							"longdesc": "",
+							"shortdesc": "Whether to log ingress traffic that doesn't match any ACL rule",
+							"type": "bool"
+						}
+					},
+					{
+						"tunnel.NAME.group": {
+							"condition": "`vxlan`",
+							"default": "`239.0.0.1`",
+							"longdesc": "",
+							"shortdesc": "Multicast address for `vxlan` (used if local and remote aren't set)",
+							"type": "string"
+						}
+					},
+					{
+						"tunnel.NAME.id": {
+							"condition": "`vxlan`",
+							"default": "`0`",
+							"longdesc": "",
+							"shortdesc": "Specific tunnel ID to use for the `vxlan` tunnel",
+							"type": "integer"
+						}
+					},
+					{
+						"tunnel.NAME.interface": {
+							"condition": "`vxlan`",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Specific host interface to use for the tunnel",
+							"type": "string"
+						}
+					},
+					{
+						"tunnel.NAME.local": {
+							"condition": "`gre` or `vxlan`",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Local address for the tunnel (not necessary for multicast `vxlan`)",
+							"type": "string"
+						}
+					},
+					{
+						"tunnel.NAME.port": {
+							"condition": "`vxlan`",
+							"default": "`0`",
+							"longdesc": "",
+							"shortdesc": "Specific port to use for the `vxlan` tunnel",
+							"type": "integer"
+						}
+					},
+					{
+						"tunnel.NAME.protocol": {
+							"condition": "standard mode",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Tunneling protocol: `vxlan` or `gre`",
+							"type": "string"
+						}
+					},
+					{
+						"tunnel.NAME.remote": {
+							"condition": "`gre` or `vxlan`",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "Remote address for the tunnel (not necessary for multicast `vxlan`)",
+							"type": "string"
+						}
+					},
+					{
+						"tunnel.NAME.ttl": {
+							"condition": "`vxlan`",
+							"default": "`1`",
+							"longdesc": "",
+							"shortdesc": "Specific TTL to use for multicast routing topologies",
+							"type": "integer"
+						}
+					},
+					{
+						"user.*": {
+							"condition": "-",
+							"default": "-",
+							"longdesc": "",
+							"shortdesc": "User-provided free-form key/value pairs",
+							"type": "string"
+						}
+					}
+				]
+			}
+		},
+		"network_forward": {
+			"common": {
+				"keys": [
+					{
+						"target_address": {
+							"longdesc": "",
+							"shortdesc": "Default target address for anything not covered through a port definition",
+							"type": "string"
+						}
+					},
+					{
+						"user.*": {
+							"longdesc": "",
+							"shortdesc": "User defined key/value configuration",
 							"type": "string"
 						}
 					}
@@ -1746,6 +3860,534 @@
 							"longdesc": "User keys can be used in search.",
 							"shortdesc": "Free form user key/value storage",
 							"type": "string"
+						}
+					}
+				]
+			}
+		},
+		"network_macvlan": {
+			"common": {
+				"keys": [
+					{
+						"gvrp": {
+							"condition": "-",
+							"default": "`false`",
+							"longdesc": "",
+							"shortdesc": "Register VLAN using GARP VLAN Registration Protocol",
+							"type": "bool"
+						}
+					},
+					{
+						"mtu": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "The MTU of the new interface",
+							"type": "int"
+						}
+					},
+					{
+						"parent": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "Parent interface to create macvlan NICs on",
+							"type": "string"
+						}
+					},
+					{
+						"user.*": {
+							"longdesc": "",
+							"shortdesc": "User-provided free-form key/value pairs",
+							"type": "string"
+						}
+					},
+					{
+						"vlan": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "The VLAN ID to attach to",
+							"type": "int"
+						}
+					}
+				]
+			}
+		},
+		"network_ovn": {
+			"common": {
+				"keys": [
+					{
+						"bridge.external_interfaces": {
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of unconfigured network interfaces to include in the bridge",
+							"type": "string"
+						}
+					},
+					{
+						"bridge.hwaddr": {
+							"longdesc": "",
+							"shortdesc": "MAC address for the virtual bridge interface",
+							"type": "string"
+						}
+					},
+					{
+						"bridge.mtu": {
+							"default": "`1442`",
+							"longdesc": "",
+							"shortdesc": "Bridge MTU (default allows host to host Geneve tunnels)",
+							"type": "integer"
+						}
+					},
+					{
+						"dns.domain": {
+							"default": "`incus`",
+							"longdesc": "",
+							"shortdesc": "Domain to advertise to DHCP clients and use for DNS resolution",
+							"type": "string"
+						}
+					},
+					{
+						"dns.nameservers": {
+							"default": "Uplink DNS servers (IPv4 and IPv6 address if no uplink is configured)",
+							"longdesc": "",
+							"shortdesc": "DNS server IPs to advertise to DHCP clients and via Router Advertisements. Both IPv4 and IPv6 addresses get pushed via DHCP, and the first IPv6 address is also advertised as RDNSS via RA.",
+							"type": "string"
+						}
+					},
+					{
+						"dns.search": {
+							"longdesc": "",
+							"shortdesc": "Full comma-separated domain search list, defaulting to `dns.domain` value",
+							"type": "string"
+						}
+					},
+					{
+						"dns.zone.forward": {
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of DNS zone names for forward DNS records",
+							"type": "string"
+						}
+					},
+					{
+						"dns.zone.reverse.ipv4": {
+							"longdesc": "",
+							"shortdesc": "DNS zone name for IPv4 reverse DNS records",
+							"type": "string"
+						}
+					},
+					{
+						"dns.zone.reverse.ipv6": {
+							"longdesc": "",
+							"shortdesc": "DNS zone name for IPv6 reverse DNS records",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.address": {
+							"condition": "standard mode",
+							"default": "(initial value on creation: `auto`)",
+							"longdesc": "",
+							"shortdesc": "IPv4 address for the bridge (use `none` to turn off IPv4 or `auto` to generate a new random unused subnet) (CIDR)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.dhcp": {
+							"condition": "IPv4 address",
+							"default": "`true`",
+							"longdesc": "",
+							"shortdesc": "Whether to allocate addresses using DHCP",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv4.dhcp.expiry": {
+							"condition": "IPv4 DHCP",
+							"default": "`1h`",
+							"longdesc": "",
+							"shortdesc": "When to expire DHCP leases",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.dhcp.ranges": {
+							"condition": "IPv4 DHCP",
+							"default": "all addresses",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of IP ranges to use for DHCP (FIRST-LAST format)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.dhcp.routes": {
+							"condition": "IPv4 DHCP",
+							"longdesc": "",
+							"shortdesc": "Static routes to provide via DHCP option 121, as a comma-separated list of alternating subnets (CIDR) and gateway addresses (same syntax as dnsmasq and OVN)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.l3only": {
+							"condition": "IPv4 address",
+							"default": "`false`",
+							"longdesc": "",
+							"shortdesc": "Whether to enable layer 3 only mode.",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv4.nat": {
+							"condition": "IPv4 address",
+							"default": "`false` initial value on creation if `ipv4.address` is set to `auto: true`)",
+							"longdesc": "",
+							"shortdesc": "Whether to NAT",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv4.nat.address": {
+							"condition": "IPv4 address",
+							"longdesc": "",
+							"shortdesc": "The source address used for outbound traffic from the network (requires uplink `ovn.ingress_mode=routed`)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.address": {
+							"condition": "standard mode",
+							"default": "(initial value on creation: `auto`)",
+							"longdesc": "",
+							"shortdesc": "IPv6 address for the bridge (use `none` to turn off IPv6 or `auto` to generate a new random unused subnet) (CIDR)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.dhcp": {
+							"condition": "IPv6 address",
+							"default": "`true`",
+							"longdesc": "",
+							"shortdesc": "Whether to provide additional network configuration over DHCP",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv6.dhcp.stateful": {
+							"condition": "IPv6 DHCP",
+							"default": "`false`",
+							"longdesc": "",
+							"shortdesc": "Whether to allocate addresses using DHCP",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv6.l3only": {
+							"condition": "IPv6 DHCP stateful",
+							"default": "`false`",
+							"longdesc": "",
+							"shortdesc": "Whether to enable layer 3 only mode.",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv6.nat": {
+							"condition": "IPv6 address",
+							"default": "`false` (initial value on creation if `ipv6.address` is set to `auto: true`)",
+							"longdesc": "",
+							"shortdesc": "Whether to NAT",
+							"type": "bool"
+						}
+					},
+					{
+						"ipv6.nat.address": {
+							"condition": "IPv6 address",
+							"longdesc": "",
+							"shortdesc": "The source address used for outbound traffic from the network (requires uplink `ovn.ingress_mode=routed`)",
+							"type": "string"
+						}
+					},
+					{
+						"network": {
+							"longdesc": "",
+							"shortdesc": "Uplink network to use for external network access or `none` to keep isolated",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls": {
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of Network ACLs to apply to NICs connected to this network",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.egress.action": {
+							"condition": "`security.acls`",
+							"default": "`reject`",
+							"longdesc": "",
+							"shortdesc": "Action to use for egress traffic that doesn't match any ACL rule",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.egress.logged": {
+							"condition": "`security.acls`",
+							"default": "`false`",
+							"longdesc": "",
+							"shortdesc": "Whether to log egress traffic that doesn't match any ACL rule",
+							"type": "bool"
+						}
+					},
+					{
+						"security.acls.default.ingress.action": {
+							"condition": "`security.acls`",
+							"default": "`reject`",
+							"longdesc": "",
+							"shortdesc": "Action to use for ingress traffic that doesn't match any ACL rule",
+							"type": "string"
+						}
+					},
+					{
+						"security.acls.default.ingress.logged": {
+							"condition": "`security.acls`",
+							"default": "`false`",
+							"longdesc": "",
+							"shortdesc": "Whether to log ingress traffic that doesn't match any ACL rule",
+							"type": "bool"
+						}
+					},
+					{
+						"user.*": {
+							"longdesc": "",
+							"shortdesc": "User-provided free-form key/value pairs",
+							"type": "string"
+						}
+					}
+				]
+			}
+		},
+		"network_physical": {
+			"bgp": {
+				"keys": [
+					{
+						"bgp.peers.NAME.address": {
+							"condition": "BGP server",
+							"defaultdesc": "-",
+							"longdesc": "",
+							"shortdesc": "Peer address (IPv4 or IPv6) for use by `ovn` downstream networks",
+							"type": "string"
+						}
+					},
+					{
+						"bgp.peers.NAME.asn": {
+							"condition": "BGP server",
+							"defaultdesc": "-",
+							"longdesc": "",
+							"shortdesc": "Peer AS number for use by `ovn` downstream networks",
+							"type": "integer"
+						}
+					},
+					{
+						"bgp.peers.NAME.holdtime": {
+							"condition": "BGP server",
+							"defaultdesc": "`180`",
+							"longdesc": "",
+							"shortdesc": "Peer session hold time (in seconds; optional)",
+							"type": "integer"
+						}
+					},
+					{
+						"bgp.peers.NAME.password": {
+							"condition": "BGP server",
+							"defaultdesc": "- (no password)",
+							"longdesc": "",
+							"shortdesc": "Peer session password (optional) for use by `ovn` downstream networks",
+							"type": "string"
+						}
+					}
+				]
+			},
+			"common": {
+				"keys": [
+					{
+						"gvrp": {
+							"condition": "-",
+							"defaultdesc": "'false'",
+							"longdesc": "",
+							"shortdesc": "Register VLAN using GARP VLAN Registration Protocol",
+							"type": "bool"
+						}
+					},
+					{
+						"mtu": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "The MTU of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"parent": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "Existing interface to use for network",
+							"type": "string"
+						}
+					},
+					{
+						"vlan": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "The VLAN ID to attach to",
+							"type": "integer"
+						}
+					}
+				]
+			},
+			"dns": {
+				"keys": [
+					{
+						"dns.nameservers": {
+							"condition": "standard mode",
+							"longdesc": "",
+							"shortdesc": "List of DNS server IPs on `physical` network",
+							"type": "string"
+						}
+					}
+				]
+			},
+			"ipv4": {
+				"keys": [
+					{
+						"ipv4.gateway": {
+							"condition": "standard mode",
+							"longdesc": "",
+							"shortdesc": "IPv4 address for the gateway and network (CIDR)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.gateway.hwaddr": {
+							"longdesc": "",
+							"shortdesc": "MAC address of the gateway (to avoid discovery)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.ovn.ranges": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of IPv4 ranges to use for child OVN network routers (FIRST-LAST format)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.routes": {
+							"condition": "IPv4 address",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of additional IPv4 CIDR subnets that can be used with child OVN networks `ipv4.routes.external` setting",
+							"type": "string"
+						}
+					},
+					{
+						"ipv4.routes.anycast": {
+							"condition": "IPv4 address",
+							"defaultdesc": "'false'",
+							"longdesc": "",
+							"shortdesc": "Allow the overlapping routes to be used on multiple networks/NIC at the same time",
+							"type": "bool"
+						}
+					}
+				]
+			},
+			"ipv6": {
+				"keys": [
+					{
+						"ipv6.gateway": {
+							"condition": "standard mode",
+							"longdesc": "",
+							"shortdesc": "IPv6 address for the gateway and network (CIDR)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.gateway.hwaddr": {
+							"longdesc": "",
+							"shortdesc": "MAC address of the gateway (to avoid discovery)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.ovn.ranges": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of IPv6 ranges to use for child OVN network routers (FIRST-LAST format)",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.routes": {
+							"condition": "IPv6 address",
+							"longdesc": "",
+							"shortdesc": "Comma-separated list of additional IPv6 CIDR subnets that can be used with child OVN networks `ipv6.routes.external` setting",
+							"type": "string"
+						}
+					},
+					{
+						"ipv6.routes.anycast": {
+							"condition": "IPv6 address",
+							"defaultdesc": "'false'",
+							"longdesc": "",
+							"shortdesc": "Allow the overlapping routes to be used on multiple networks/NIC at the same time",
+							"type": "bool"
+						}
+					}
+				]
+			},
+			"ovn": {
+				"keys": [
+					{
+						"ovn.ingress_mode": {
+							"condition": "standard mode",
+							"defaultdesc": "`l2proxy`",
+							"longdesc": "",
+							"shortdesc": "Sets the method how OVN NIC external IPs will be advertised on uplink network: `l2proxy` (proxy ARP/NDP) or `routed`",
+							"type": "string"
+						}
+					}
+				]
+			}
+		},
+		"network_sriov": {
+			"common": {
+				"keys": [
+					{
+						"mtu": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "The MTU of the new interface",
+							"type": "integer"
+						}
+					},
+					{
+						"parent": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "Parent interface to create `sriov` NICs on",
+							"type": "string"
+						}
+					},
+					{
+						"user.*": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "User-provided free-form key/value pairs",
+							"type": "string"
+						}
+					},
+					{
+						"vlan": {
+							"condition": "-",
+							"longdesc": "",
+							"shortdesc": "The VLAN ID to attach to",
+							"type": "integer"
 						}
 					}
 				]
@@ -1984,7 +4626,7 @@
 					{
 						"restricted.containers.privilege": {
 							"defaultdesc": "`unprivileged`",
-							"longdesc": "Possible values are `unprivileged`, `isolated`, and `allow`.\n\n- When set to `unpriviliged`, this option prevents setting {config:option}`instance-security:security.privileged` to `true`.\n- When set to `isolated`, this option prevents setting {config:option}`instance-security:security.privileged` and {config:option}`instance-security:security.idmap.isolated` to `true`.\n- When set to `allow`, there is no restriction.",
+							"longdesc": "Possible values are `unprivileged`, `isolated`, and `allow`.\n\n- When set to `unprivileged`, this option prevents setting {config:option}`instance-security:security.privileged` to `true`.\n- When set to `isolated`, this option prevents setting {config:option}`instance-security:security.privileged` and {config:option}`instance-security:security.idmap.isolated` to `true`.\n- When set to `allow`, there is no restriction.",
 							"shortdesc": "Which settings for privileged containers to prevent",
 							"type": "string"
 						}
@@ -2149,7 +4791,7 @@
 				"keys": [
 					{
 						"backups.compression_algorithm": {
-							"longdesc": "Specify which compression algorithm to use for backups in this project.\nPossible values are `bzip2`, `gzip`, `lzma`, `xz`, or `none`.",
+							"longdesc": "Specify which compression algorithm to use for backups in this project.\nPossible values are `bzip2`, `gzip`, `lz4`, `lzma`, `xz`, `zstd` or `none`.",
 							"shortdesc": "Compression algorithm to use for backups",
 							"type": "string"
 						}
@@ -2170,7 +4812,7 @@
 					},
 					{
 						"images.compression_algorithm": {
-							"longdesc": "Possible values are `bzip2`, `gzip`, `lzma`, `xz`, or `none`.",
+							"longdesc": "Possible values are `bzip2`, `gzip`, `lz4`, `lzma`, `xz`, `zstd` or `none`.",
 							"shortdesc": "Compression algorithm to use for new images in the project",
 							"type": "string"
 						}
@@ -2221,6 +4863,15 @@
 						}
 					},
 					{
+						"acme.challenge": {
+							"defaultdesc": "`HTTP-01`",
+							"longdesc": "Possible values are `DNS-01` and `HTTP-01`.",
+							"scope": "global",
+							"shortdesc": "ACME challenge type to use",
+							"type": "string"
+						}
+					},
+					{
 						"acme.domain": {
 							"longdesc": "",
 							"scope": "global",
@@ -2233,6 +4884,42 @@
 							"longdesc": "",
 							"scope": "global",
 							"shortdesc": "Email address used for the account registration",
+							"type": "string"
+						}
+					},
+					{
+						"acme.http.port": {
+							"defaultdesc": "`:80`",
+							"longdesc": "Set the port and interface to use for HTTP-01 based challenges to listen on",
+							"scope": "global",
+							"shortdesc": "Port and interface for HTTP server (used by HTTP-01)",
+							"type": "string"
+						}
+					},
+					{
+						"acme.provider": {
+							"defaultdesc": "``",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Backend provider for the challenge (used by DNS-01)",
+							"type": "string"
+						}
+					},
+					{
+						"acme.provider.environment": {
+							"defaultdesc": "``",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Environment variables to set during the challenge (used by DNS-01)",
+							"type": "string"
+						}
+					},
+					{
+						"acme.provider.resolvers": {
+							"defaultdesc": "``",
+							"longdesc": "DNS resolvers to use for performing (recursive) `CNAME` resolving and apex domain determination during DNS-01 challenge.",
+							"scope": "global",
+							"shortdesc": "Comma-separated list of DNS resolvers (used by DNS-01)",
 							"type": "string"
 						}
 					}
@@ -2299,6 +4986,42 @@
 							"longdesc": "Specify the number of seconds after which an unresponsive member is considered offline.",
 							"scope": "global",
 							"shortdesc": "Threshold when an unresponsive member is considered offline",
+							"type": "integer"
+						}
+					},
+					{
+						"cluster.rebalance.batch": {
+							"defaultdesc": "`1`",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Maximum number of instances to move during one re-balancing run",
+							"type": "integer"
+						}
+					},
+					{
+						"cluster.rebalance.cooldown": {
+							"defaultdesc": "`6H`",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Amount of time during which an instance will not be moved again",
+							"type": "string"
+						}
+					},
+					{
+						"cluster.rebalance.interval": {
+							"defaultdesc": "`0`",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "How often (in minutes) to consider re-balancing things. 0 to disable (default)",
+							"type": "integer"
+						}
+					},
+					{
+						"cluster.rebalance.threshold": {
+							"defaultdesc": "`20`",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Percentage load difference between most and least busy server needed to trigger a migration",
 							"type": "integer"
 						}
 					}
@@ -2505,7 +5228,7 @@
 					{
 						"images.compression_algorithm": {
 							"defaultdesc": "`gzip`",
-							"longdesc": "Possible values are `bzip2`, `gzip`, `lzma`, `xz`, or `none`.",
+							"longdesc": "Possible values are `bzip2`, `gzip`, `lz4`, `lzma`, `xz`, `zstd` or `none`.",
 							"scope": "global",
 							"shortdesc": "Compression algorithm to use for new images",
 							"type": "string"
@@ -2525,6 +5248,117 @@
 							"scope": "global",
 							"shortdesc": "When an unused cached remote image is flushed",
 							"type": "integer"
+						}
+					}
+				]
+			},
+			"logging": {
+				"keys": [
+					{
+						"logging.NAME.lifecycle.projects": {
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Comma separate list of projects, empty means all",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.lifecycle.types": {
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "E.g., `instance`, comma separate, empty means all",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.logging.level": {
+							"defaultdesc": "`info`",
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Minimum log level to send to the logger",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.target.address": {
+							"longdesc": "Specify the protocol, name or IP and port. For example `tcp://syslog01.int.example.net:514`.",
+							"scope": "global",
+							"shortdesc": "Address of the logger",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.target.ca_cert": {
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "CA certificate for the server",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.target.facility": {
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "The syslog facility defines the category of the log message",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.target.instance": {
+							"defaultdesc": "Local server host name or cluster member name",
+							"longdesc": "This allows replacing the default instance value (server host name) by a more relevant value like a cluster identifier.",
+							"scope": "global",
+							"shortdesc": "Name to use as the instance field in Loki events.",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.target.labels": {
+							"longdesc": "Specify a comma-separated list of values that should be used as labels for a Loki log entry.",
+							"scope": "global",
+							"shortdesc": "Labels for a Loki log entry",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.target.password": {
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "Password used for authentication",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.target.retry": {
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "number of delivery retries, default 3",
+							"type": "integer"
+						}
+					},
+					{
+						"logging.NAME.target.type": {
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "The type of the logger. One of `loki`, `syslog` or `webhook`.",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.target.username": {
+							"longdesc": "",
+							"scope": "global",
+							"shortdesc": "User name used for authentication",
+							"type": "string"
+						}
+					},
+					{
+						"logging.NAME.types": {
+							"defaultdesc": "`lifecycle,logging`",
+							"longdesc": "Specify a comma-separated list of events to send to the logger.\nThe events can be any combination of `lifecycle`, `logging`, and `network-acl`.",
+							"scope": "global",
+							"shortdesc": "Events to send to the logger",
+							"type": "string"
 						}
 					}
 				]
@@ -2603,9 +5437,17 @@
 			"miscellaneous": {
 				"keys": [
 					{
+						"authorization.scriptlet": {
+							"longdesc": "When using scriptlet-based authorization, this option stores the scriptlet.",
+							"scope": "global",
+							"shortdesc": "Authorization scriptlet",
+							"type": "string"
+						}
+					},
+					{
 						"backups.compression_algorithm": {
 							"defaultdesc": "`gzip`",
-							"longdesc": "Possible values are `bzip2`, `gzip`, `lzma`, `xz`, or `none`.",
+							"longdesc": "Possible values are `bzip2`, `gzip`, `lz4`, `lzma`, `xz`, `zstd` or `none`.",
 							"scope": "global",
 							"shortdesc": "Compression algorithm to use for backups",
 							"type": "string"

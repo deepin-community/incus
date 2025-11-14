@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -27,6 +28,7 @@ import (
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/validate"
 )
 
 var storagePoolBucketBackupsCmd = APIEndpoint{
@@ -176,7 +178,7 @@ func storagePoolBucketBackupsGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !pool.Driver().Info().Buckets {
-		return response.BadRequest(fmt.Errorf("Storage pool does not support buckets"))
+		return response.BadRequest(errors.New("Storage pool does not support buckets"))
 	}
 
 	bucketName, err := url.PathUnescape(mux.Vars(r)["bucketName"])
@@ -265,7 +267,7 @@ func storagePoolBucketBackupsPost(d *Daemon, r *http.Request) response.Response 
 	}
 
 	if !pool.Driver().Info().Buckets {
-		return response.BadRequest(fmt.Errorf("Storage pool does not support buckets"))
+		return response.BadRequest(errors.New("Storage pool does not support buckets"))
 	}
 
 	bucketName, err := url.PathUnescape(mux.Vars(r)["bucketName"])
@@ -275,6 +277,12 @@ func storagePoolBucketBackupsPost(d *Daemon, r *http.Request) response.Response 
 
 	targetMember := request.QueryParam(r, "target")
 	memberSpecific := targetMember != ""
+
+	// Quick checks.
+	err = validate.IsAPIName(bucketName, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid storage bucket backup name: %w", err))
+	}
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
 		err := project.AllowBackupCreation(tx, projectName)
@@ -356,7 +364,7 @@ func storagePoolBucketBackupsPost(d *Daemon, r *http.Request) response.Response 
 
 	// Validate the name.
 	if strings.Contains(req.Name, "/") {
-		return response.BadRequest(fmt.Errorf("Backup names may not contain slashes"))
+		return response.BadRequest(errors.New("Backup names may not contain slashes"))
 	}
 
 	fullName := bucketName + internalInstance.SnapshotDelimiter + req.Name
@@ -460,7 +468,7 @@ func storagePoolBucketBackupGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !pool.Driver().Info().Buckets {
-		return response.BadRequest(fmt.Errorf("Storage pool does not support buckets"))
+		return response.BadRequest(errors.New("Storage pool does not support buckets"))
 	}
 
 	bucketName, err := url.PathUnescape(mux.Vars(r)["bucketName"])
@@ -544,7 +552,7 @@ func storagePoolBucketBackupPost(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if !pool.Driver().Info().Buckets {
-		return response.BadRequest(fmt.Errorf("Storage pool does not support buckets"))
+		return response.BadRequest(errors.New("Storage pool does not support buckets"))
 	}
 
 	bucketName, err := url.PathUnescape(mux.Vars(r)["bucketName"])
@@ -563,9 +571,10 @@ func storagePoolBucketBackupPost(d *Daemon, r *http.Request) response.Response {
 		return response.BadRequest(err)
 	}
 
-	// Validate the name
-	if strings.Contains(req.Name, "/") {
-		return response.BadRequest(fmt.Errorf("Backup names may not contain slashes"))
+	// Quick checks.
+	err = validate.IsAPIName(req.Name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid storage bucket backup name: %w", err))
 	}
 
 	oldName := bucketName + internalInstance.SnapshotDelimiter + backupName
@@ -655,7 +664,7 @@ func storagePoolBucketBackupDelete(d *Daemon, r *http.Request) response.Response
 	}
 
 	if !pool.Driver().Info().Buckets {
-		return response.BadRequest(fmt.Errorf("Storage pool does not support buckets"))
+		return response.BadRequest(errors.New("Storage pool does not support buckets"))
 	}
 
 	bucketName, err := url.PathUnescape(mux.Vars(r)["bucketName"])
@@ -749,7 +758,7 @@ func storagePoolBucketBackupExportGet(d *Daemon, r *http.Request) response.Respo
 	}
 
 	if !pool.Driver().Info().Buckets {
-		return response.BadRequest(fmt.Errorf("Storage pool does not support buckets"))
+		return response.BadRequest(errors.New("Storage pool does not support buckets"))
 	}
 
 	bucketName, err := url.PathUnescape(mux.Vars(r)["bucketName"])

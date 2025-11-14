@@ -3,6 +3,7 @@ package qmp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -10,9 +11,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 )
+
+// ChardevChangeInfo contains information required to change the backend of a chardev.
+type ChardevChangeInfo struct {
+	Type   string   `json:"type"`
+	File   *os.File `json:"file,omitempty"`
+	FDName string   `json:"fdname,omitempty"`
+}
 
 // FdsetFdInfo contains information about a file descriptor that belongs to an FD set.
 type FdsetFdInfo struct {
@@ -67,6 +75,68 @@ type CPUModel struct {
 	Flags map[string]any `json:"props"`
 }
 
+// MemoryDevice contains information about a memory device.
+type MemoryDevice struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
+// PCDimmDevice contains information about a memory device of type pc-dimm.
+type PCDimmDevice struct {
+	ID           string `json:"id"`
+	Addr         uint64 `json:"addr"`
+	Slot         int    `json:"slot"`
+	Node         int    `json:"node"`
+	Memdev       string `json:"memdev"`
+	Hotpluggable bool   `json:"hotpluggable"`
+	Hotplugged   bool   `json:"hotplugged"`
+}
+
+// MemDev contains information about a memory device.
+type MemDev struct {
+	ID        string `json:"id"`
+	Size      int    `json:"size"`
+	Merge     bool   `json:"merge"`
+	Dump      bool   `json:"dump"`
+	Prealloc  bool   `json:"prealloc"`
+	Share     bool   `json:"share"`
+	Reserve   bool   `json:"reserve"`
+	HostNodes []int  `json:"host-nodes"`
+}
+
+// MigrationStatus contains information about the ongoing migration.
+type MigrationStatus struct {
+	Status string `json:"status"`
+	RAM    struct {
+		Transferred             int64   `json:"transferred"`
+		Remaining               int64   `json:"remaining"`
+		Total                   int64   `json:"total"`
+		Duplicate               int64   `json:"duplicate"`
+		Normal                  int64   `json:"normal"`
+		NormalBytes             int64   `json:"normal-bytes"`
+		DirtyPagesRate          int64   `json:"diry-pages-rate"`
+		MBps                    float64 `json:"mbps"`
+		DirtySyncCount          int64   `json:"diry-sync-count"`
+		PostcopyRequests        int64   `json:"postcopy-requests"`
+		PageSize                int64   `json:"page-size"`
+		MultiFDBytes            int64   `json:"multifd-bytes"`
+		PagesPerSecond          int64   `json:"pages-per-second"`
+		PrecopyBytes            int64   `json:"precopy-bytes"`
+		DowntimeBytes           int64   `json:"downtime-bytes"`
+		PostcopyBytes           int64   `json:"postcopy-bytes"`
+		DirtySyncMissedZeroCopy int64   `json:"diry-sync-missed-zero-copy"`
+	} `json:"ram"`
+	TotalTime                      int64   `json:"total-time"`
+	DownTime                       int64   `json:"down-time"`
+	ExpectedDowntime               int64   `json:"expected-downtime"`
+	SetupTime                      int64   `json:"setup-time"`
+	CPUThrottlePercentage          int64   `json:"cpu-throttle-percentage"`
+	PostcopyBlocktime              int64   `json:"postcopy-blocktime"`
+	PostcopyVCPUBlocktime          []int64 `json:"postcopy-vcpu-blocktime"`
+	DirtyLimitThrottleTimePerRound int64   `json:"dirty-limit-throttle-time-per-round"`
+	DirtyLimitRingFullTime         int64   `json:"dirty-limit-ring-full-time"`
+}
+
 // QueryCPUs returns a list of CPUs.
 func (m *Monitor) QueryCPUs() ([]CPU, error) {
 	// Prepare the response.
@@ -74,7 +144,7 @@ func (m *Monitor) QueryCPUs() ([]CPU, error) {
 		Return []CPU `json:"return"`
 	}
 
-	err := m.run("query-cpus-fast", nil, &resp)
+	err := m.Run("query-cpus-fast", nil, &resp)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to query CPUs: %w", err)
 	}
@@ -89,7 +159,7 @@ func (m *Monitor) QueryHotpluggableCPUs() ([]HotpluggableCPU, error) {
 		Return []HotpluggableCPU `json:"return"`
 	}
 
-	err := m.run("query-hotpluggable-cpus", nil, &resp)
+	err := m.Run("query-hotpluggable-cpus", nil, &resp)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to query hotpluggable CPUs: %w", err)
 	}
@@ -111,7 +181,7 @@ func (m *Monitor) QueryCPUModel(model string) (*CPUModel, error) {
 		"type":  "full",
 	}
 
-	err := m.run("query-cpu-model-expansion", args, &resp)
+	err := m.Run("query-cpu-model-expansion", args, &resp)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to query CPU model: %w", err)
 	}
@@ -129,12 +199,37 @@ func (m *Monitor) Status() (string, error) {
 	}
 
 	// Query the status.
-	err := m.run("query-status", nil, &resp)
+	err := m.Run("query-status", nil, &resp)
 	if err != nil {
 		return "", err
 	}
 
 	return resp.Return.Status, nil
+}
+
+// MachineDefinition returns the current QEMU machine definition name.
+func (m *Monitor) MachineDefinition() (string, error) {
+	// Prepare the request.
+	var req struct {
+		Path     string `json:"path"`
+		Property string `json:"property"`
+	}
+
+	req.Path = "/machine"
+	req.Property = "type"
+
+	// Prepare the response.
+	var resp struct {
+		Return string `json:"return"`
+	}
+
+	// Query the machine.
+	err := m.Run("qom-get", req, &resp)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSuffix(resp.Return, "-machine"), nil
 }
 
 // SendFile adds a new file descriptor to the QMP fd table associated to name.
@@ -144,15 +239,12 @@ func (m *Monitor) SendFile(name string, file *os.File) error {
 		return ErrMonitorDisconnect
 	}
 
-	var req struct {
-		Execute   string `json:"execute"`
-		Arguments struct {
-			FDName string `json:"fdname"`
-		} `json:"arguments"`
+	id := m.qmp.qmpIncreaseID()
+	req := &qmpCommand{
+		ID:        id,
+		Execute:   "getfd",
+		Arguments: map[string]any{"fdname": name},
 	}
-
-	req.Execute = "getfd"
-	req.Arguments.FDName = name
 
 	reqJSON, err := json.Marshal(req)
 	if err != nil {
@@ -160,7 +252,7 @@ func (m *Monitor) SendFile(name string, file *os.File) error {
 	}
 
 	// Query the status.
-	_, err = m.qmp.RunWithFile(reqJSON, file)
+	_, err = m.qmp.runWithFile(reqJSON, file, id)
 	if err != nil {
 		// Confirm the daemon didn't die.
 		errPing := m.ping()
@@ -182,7 +274,7 @@ func (m *Monitor) CloseFile(name string) error {
 
 	req.FDName = name
 
-	err := m.run("closefd", req, nil)
+	err := m.Run("closefd", req, nil)
 	if err != nil {
 		return err
 	}
@@ -197,27 +289,26 @@ func (m *Monitor) SendFileWithFDSet(name string, file *os.File, readonly bool) (
 		return nil, ErrMonitorDisconnect
 	}
 
-	var req struct {
-		Execute   string `json:"execute"`
-		Arguments struct {
-			Opaque string `json:"opaque"`
-		} `json:"arguments"`
-	}
-
 	permissions := "rdwr"
 	if readonly {
 		permissions = "rdonly"
 	}
 
-	req.Execute = "add-fd"
-	req.Arguments.Opaque = fmt.Sprintf("%s:%s", permissions, name)
+	id := m.qmp.qmpIncreaseID()
+	req := &qmpCommand{
+		ID:      id,
+		Execute: "add-fd",
+		Arguments: map[string]any{
+			"opaque": fmt.Sprintf("%s:%s", permissions, name),
+		},
+	}
 
 	reqJSON, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
 
-	ret, err := m.qmp.RunWithFile(reqJSON, file)
+	ret, err := m.qmp.runWithFile(reqJSON, file, id)
 	if err != nil {
 		// Confirm the daemon didn't die.
 		errPing := m.ping()
@@ -248,7 +339,7 @@ func (m *Monitor) RemoveFDFromFDSet(name string) error {
 		Return []FdsetInfo `json:"return"`
 	}
 
-	err := m.run("query-fdsets", nil, &resp)
+	err := m.Run("query-fdsets", nil, &resp)
 	if err != nil {
 		return fmt.Errorf("Failed to query fd sets: %w", err)
 	}
@@ -269,7 +360,7 @@ func (m *Monitor) RemoveFDFromFDSet(name string) error {
 					"fdset-id": fdSet.ID,
 				}
 
-				err = m.run("remove-fd", args, nil)
+				err = m.Run("remove-fd", args, nil)
 				if err != nil {
 					return fmt.Errorf("Failed to remove fd from fd set: %w", err)
 				}
@@ -299,7 +390,17 @@ func (m *Monitor) MigrateSetCapabilities(caps map[string]bool) error {
 		})
 	}
 
-	err := m.run("migrate-set-capabilities", args, nil)
+	err := m.Run("migrate-set-capabilities", args, nil)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// MigrateSetParameters sets the parameters used during migration.
+func (m *Monitor) MigrateSetParameters(parameters map[string]any) error {
+	err := m.Run("migrate-set-parameters", parameters, nil)
 	if err != nil {
 		return err
 	}
@@ -330,12 +431,26 @@ func (m *Monitor) Migrate(name string) error {
 		},
 	}}
 
-	err := m.run("migrate", args, nil)
+	err := m.Run("migrate", args, nil)
 	if err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// QueryMigrate gets the current migration status.
+func (m *Monitor) QueryMigrate() (*MigrationStatus, error) {
+	var resp struct {
+		Return MigrationStatus `json:"return"`
+	}
+
+	err := m.Run("query-migrate", nil, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &resp.Return, nil
 }
 
 // MigrateWait waits until migration job reaches the specified status.
@@ -351,13 +466,13 @@ func (m *Monitor) MigrateWait(state string) error {
 			} `json:"return"`
 		}
 
-		err := m.run("query-migrate", nil, &resp)
+		err := m.Run("query-migrate", nil, &resp)
 		if err != nil {
 			return err
 		}
 
 		if resp.Return.Status == "failed" {
-			return fmt.Errorf("Migrate call failed")
+			return errors.New("Migrate call failed")
 		}
 
 		if resp.Return.Status == state {
@@ -376,7 +491,7 @@ func (m *Monitor) MigrateContinue(fromState string) error {
 
 	args.State = fromState
 
-	err := m.run("migrate-continue", args, nil)
+	err := m.Run("migrate-continue", args, nil)
 	if err != nil {
 		return err
 	}
@@ -406,7 +521,7 @@ func (m *Monitor) MigrateIncoming(ctx context.Context, name string) error {
 	}}
 
 	// Query the status.
-	err := m.run("migrate-incoming", args, nil)
+	err := m.Run("migrate-incoming", args, nil)
 	if err != nil {
 		return err
 	}
@@ -420,13 +535,13 @@ func (m *Monitor) MigrateIncoming(ctx context.Context, name string) error {
 			} `json:"return"`
 		}
 
-		err := m.run("query-migrate", nil, &resp)
+		err := m.Run("query-migrate", nil, &resp)
 		if err != nil {
 			return err
 		}
 
 		if resp.Return.Status == "failed" {
-			return fmt.Errorf("Migrate incoming call failed")
+			return errors.New("Migrate incoming call failed")
 		}
 
 		if resp.Return.Status == "completed" {
@@ -447,22 +562,22 @@ func (m *Monitor) MigrateIncoming(ctx context.Context, name string) error {
 
 // Powerdown tells the VM to gracefully shutdown.
 func (m *Monitor) Powerdown() error {
-	return m.run("system_powerdown", nil, nil)
+	return m.Run("system_powerdown", nil, nil)
 }
 
 // Start tells QEMU to start the emulation.
 func (m *Monitor) Start() error {
-	return m.run("cont", nil, nil)
+	return m.Run("cont", nil, nil)
 }
 
 // Pause tells QEMU to temporarily stop the emulation.
 func (m *Monitor) Pause() error {
-	return m.run("stop", nil, nil)
+	return m.Run("stop", nil, nil)
 }
 
 // Quit tells QEMU to exit immediately.
 func (m *Monitor) Quit() error {
-	return m.run("quit", nil, nil)
+	return m.Run("quit", nil, nil)
 }
 
 // GetCPUs fetches the vCPU information for pinning.
@@ -476,7 +591,7 @@ func (m *Monitor) GetCPUs() ([]int, error) {
 	}
 
 	// Query the consoles.
-	err := m.run("query-cpus-fast", nil, &resp)
+	err := m.Run("query-cpus-fast", nil, &resp)
 	if err != nil {
 		return nil, err
 	}
@@ -499,7 +614,7 @@ func (m *Monitor) GetMemorySizeBytes() (int64, error) {
 		} `json:"return"`
 	}
 
-	err := m.run("query-memory-size-summary", nil, &resp)
+	err := m.Run("query-memory-size-summary", nil, &resp)
 	if err != nil {
 		return -1, err
 	}
@@ -516,7 +631,7 @@ func (m *Monitor) GetMemoryBalloonSizeBytes() (int64, error) {
 		} `json:"return"`
 	}
 
-	err := m.run("query-balloon", nil, &resp)
+	err := m.Run("query-balloon", nil, &resp)
 	if err != nil {
 		return -1, err
 	}
@@ -527,26 +642,95 @@ func (m *Monitor) GetMemoryBalloonSizeBytes() (int64, error) {
 // SetMemoryBalloonSizeBytes sets the size of the memory in bytes (which will resize the balloon as needed).
 func (m *Monitor) SetMemoryBalloonSizeBytes(sizeBytes int64) error {
 	args := map[string]int64{"value": sizeBytes}
-	return m.run("balloon", args, nil)
+	return m.Run("balloon", args, nil)
+}
+
+// GetMemdev retrieves memory devices by executing the query-memdev QMP command.
+func (m *Monitor) GetMemdev() ([]MemDev, error) {
+	// Prepare the response.
+	var resp struct {
+		Return []MemDev `json:"return"`
+	}
+
+	err := m.Run("query-memdev", nil, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Return, nil
+}
+
+// GetMemoryDevices retrieves memory devices by executing the query-memory-devices QMP command.
+func (m *Monitor) GetMemoryDevices() ([]MemoryDevice, error) {
+	// Prepare the response.
+	var resp struct {
+		Return []MemoryDevice `json:"return"`
+	}
+
+	err := m.Run("query-memory-devices", nil, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Return, nil
+}
+
+// GetDimmDevices returns a list of memory devices of type pc-dimm.
+func (m *Monitor) GetDimmDevices() ([]PCDimmDevice, error) {
+	devices, err := m.GetMemoryDevices()
+	if err != nil {
+		return nil, err
+	}
+
+	result := []PCDimmDevice{}
+	for _, dev := range devices {
+		if dev.Type != "dimm" {
+			continue
+		}
+
+		var dimmData PCDimmDevice
+		err := json.Unmarshal(dev.Data, &dimmData)
+		if err != nil {
+			continue
+		}
+
+		result = append(result, dimmData)
+	}
+
+	return result, nil
+}
+
+// AddObject adds a new object.
+func (m *Monitor) AddObject(args map[string]any) error {
+	err := m.Run("object-add", &args, nil)
+	if err != nil {
+		return fmt.Errorf("Failed adding object: %w", err)
+	}
+
+	return nil
 }
 
 // AddBlockDevice adds a block device.
-func (m *Monitor) AddBlockDevice(blockDev map[string]any, device map[string]string) error {
-	revert := revert.New()
-	defer revert.Fail()
+func (m *Monitor) AddBlockDevice(blockDev map[string]any, device map[string]any, attached bool) error {
+	if !attached {
+		return nil
+	}
+
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	nodeName, ok := blockDev["node-name"].(string)
 	if !ok {
-		return fmt.Errorf("Device node name must be a string")
+		return errors.New("Device node name must be a string")
 	}
 
 	if blockDev != nil {
-		err := m.run("blockdev-add", blockDev, nil)
+		err := m.Run("blockdev-add", blockDev, nil)
 		if err != nil {
 			return fmt.Errorf("Failed adding block device: %w", err)
 		}
 
-		revert.Add(func() {
+		reverter.Add(func() {
 			_ = m.RemoveBlockDevice(nodeName)
 		})
 	}
@@ -556,7 +740,8 @@ func (m *Monitor) AddBlockDevice(blockDev map[string]any, device map[string]stri
 		return fmt.Errorf("Failed adding device: %w", err)
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return nil
 }
 
@@ -567,10 +752,10 @@ func (m *Monitor) RemoveBlockDevice(blockDevName string) error {
 			"node-name": blockDevName,
 		}
 
-		err := m.run("blockdev-del", blockDevName, nil)
+		err := m.Run("blockdev-del", blockDevName, nil)
 		if err != nil {
 			if strings.Contains(err.Error(), "is in use") {
-				return api.StatusErrorf(http.StatusLocked, err.Error())
+				return api.StatusErrorf(http.StatusLocked, "%s", err.Error())
 			}
 
 			if strings.Contains(err.Error(), "Failed to find") {
@@ -587,7 +772,7 @@ func (m *Monitor) RemoveBlockDevice(blockDevName string) error {
 // AddCharDevice adds a new character device.
 func (m *Monitor) AddCharDevice(device map[string]any) error {
 	if device != nil {
-		err := m.run("chardev-add", device, nil)
+		err := m.Run("chardev-add", device, nil)
 		if err != nil {
 			return err
 		}
@@ -603,7 +788,7 @@ func (m *Monitor) RemoveCharDevice(deviceID string) error {
 			"id": deviceID,
 		}
 
-		err := m.run("chardev-remove", deviceID, nil)
+		err := m.Run("chardev-remove", deviceID, nil)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				return nil
@@ -617,9 +802,9 @@ func (m *Monitor) RemoveCharDevice(deviceID string) error {
 }
 
 // AddDevice adds a new device.
-func (m *Monitor) AddDevice(device map[string]string) error {
+func (m *Monitor) AddDevice(device map[string]any) error {
 	if device != nil {
-		err := m.run("device_add", device, nil)
+		err := m.Run("device_add", device, nil)
 		if err != nil {
 			return err
 		}
@@ -635,7 +820,7 @@ func (m *Monitor) RemoveDevice(deviceID string) error {
 			"id": deviceID,
 		}
 
-		err := m.run("device_del", deviceID, nil)
+		err := m.Run("device_del", deviceID, nil)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				return nil
@@ -649,22 +834,22 @@ func (m *Monitor) RemoveDevice(deviceID string) error {
 }
 
 // AddNIC adds a NIC device.
-func (m *Monitor) AddNIC(netDev map[string]any, device map[string]string) error {
-	revert := revert.New()
-	defer revert.Fail()
+func (m *Monitor) AddNIC(netDev map[string]any, device map[string]any) error {
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	if netDev != nil {
-		err := m.run("netdev_add", netDev, nil)
+		err := m.Run("netdev_add", netDev, nil)
 		if err != nil {
 			return fmt.Errorf("Failed adding NIC netdev: %w", err)
 		}
 
-		revert.Add(func() {
+		reverter.Add(func() {
 			netDevDel := map[string]any{
 				"id": netDev["id"],
 			}
 
-			err = m.run("netdev_del", netDevDel, nil)
+			err = m.Run("netdev_del", netDevDel, nil)
 			if err != nil {
 				return
 			}
@@ -676,7 +861,8 @@ func (m *Monitor) AddNIC(netDev map[string]any, device map[string]string) error 
 		return fmt.Errorf("Failed adding NIC device: %w", err)
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return nil
 }
 
@@ -687,7 +873,7 @@ func (m *Monitor) RemoveNIC(netDevID string) error {
 			"id": netDevID,
 		}
 
-		err := m.run("netdev_del", netDevID, nil)
+		err := m.Run("netdev_del", netDevID, nil)
 
 		// Not all NICs need a netdev, so if its missing, its not a problem.
 		if err != nil && !strings.Contains(err.Error(), "not found") {
@@ -700,7 +886,7 @@ func (m *Monitor) RemoveNIC(netDevID string) error {
 
 // SetAction sets the actions the VM will take for certain scenarios.
 func (m *Monitor) SetAction(actions map[string]string) error {
-	err := m.run("set-action", actions, nil)
+	err := m.Run("set-action", actions, nil)
 	if err != nil {
 		return fmt.Errorf("Failed setting actions: %w", err)
 	}
@@ -710,7 +896,7 @@ func (m *Monitor) SetAction(actions map[string]string) error {
 
 // Reset VM.
 func (m *Monitor) Reset() error {
-	err := m.run("system_reset", nil, nil)
+	err := m.Run("system_reset", nil, nil)
 	if err != nil {
 		return fmt.Errorf("Failed resetting: %w", err)
 	}
@@ -749,7 +935,7 @@ func (m *Monitor) QueryPCI() ([]PCIDevice, error) {
 		} `json:"return"`
 	}
 
-	err := m.run("query-pci", nil, &resp)
+	err := m.Run("query-pci", nil, &resp)
 	if err != nil {
 		return nil, fmt.Errorf("Failed querying PCI devices: %w", err)
 	}
@@ -779,7 +965,7 @@ func (m *Monitor) GetBlockStats() (map[string]BlockStats, error) {
 		} `json:"return"`
 	}
 
-	err := m.run("query-blockstats", nil, &resp)
+	err := m.Run("query-blockstats", nil, &resp)
 	if err != nil {
 		return nil, fmt.Errorf("Failed querying block stats: %w", err)
 	}
@@ -803,7 +989,7 @@ func (m *Monitor) AddSecret(id string, secret string) error {
 		"format":   "base64",
 	}
 
-	err := m.run("object-add", &args, nil)
+	err := m.Run("object-add", &args, nil)
 	if err != nil && !strings.Contains(err.Error(), "attempt to add duplicate property") {
 		return fmt.Errorf("Failed adding object: %w", err)
 	}
@@ -827,7 +1013,7 @@ func (m *Monitor) SEVCapabilities() (AMDSEVCapabilities, error) {
 		Return AMDSEVCapabilities `json:"return"`
 	}
 
-	err := m.run("query-sev-capabilities", nil, &resp)
+	err := m.Run("query-sev-capabilities", nil, &resp)
 	if err != nil {
 		return AMDSEVCapabilities{}, fmt.Errorf("Failed querying SEV capability for QEMU: %w", err)
 	}
@@ -863,7 +1049,7 @@ func (m *Monitor) NBDServerStart() (net.Conn, error) {
 	args.Addr.Data.Abstract = true
 	args.MaxConnections = 1
 
-	err = m.run("nbd-server-start", args, nil)
+	err = m.Run("nbd-server-start", args, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -879,7 +1065,7 @@ func (m *Monitor) NBDServerStart() (net.Conn, error) {
 
 // NBDServerStop stops the internal NBD server.
 func (m *Monitor) NBDServerStop() error {
-	err := m.run("nbd-server-stop", nil, nil)
+	err := m.Run("nbd-server-stop", nil, nil)
 	if err != nil {
 		return err
 	}
@@ -901,7 +1087,7 @@ func (m *Monitor) NBDBlockExportAdd(deviceNodeName string) error {
 	args.NodeName = deviceNodeName
 	args.Writable = true
 
-	err := m.run("block-export-add", args, nil)
+	err := m.Run("block-export-add", args, nil)
 	if err != nil {
 		return err
 	}
@@ -919,7 +1105,7 @@ func (m *Monitor) BlockDevSnapshot(deviceNodeName string, snapshotNodeName strin
 	args.Node = deviceNodeName
 	args.Overlay = snapshotNodeName
 
-	err := m.run("blockdev-snapshot", args, nil)
+	err := m.Run("blockdev-snapshot", args, nil)
 	if err != nil {
 		return err
 	}
@@ -939,7 +1125,7 @@ func (m *Monitor) blockJobWaitReady(jobID string) error {
 			} `json:"return"`
 		}
 
-		err := m.run("query-block-jobs", nil, &resp)
+		err := m.Run("query-block-jobs", nil, &resp)
 		if err != nil {
 			return err
 		}
@@ -962,7 +1148,7 @@ func (m *Monitor) blockJobWaitReady(jobID string) error {
 		}
 
 		if !found {
-			return fmt.Errorf("Specified block job not found")
+			return errors.New("Specified block job not found")
 		}
 
 		time.Sleep(1 * time.Second)
@@ -979,7 +1165,7 @@ func (m *Monitor) BlockCommit(deviceNodeName string) error {
 	args.Device = deviceNodeName
 	args.JobID = args.Device
 
-	err := m.run("block-commit", args, nil)
+	err := m.Run("block-commit", args, nil)
 	if err != nil {
 		return err
 	}
@@ -1019,7 +1205,7 @@ func (m *Monitor) BlockDevMirror(deviceNodeName string, targetNodeName string) e
 	// This ensures that the source and target converge at the cost of I/O performance during sync.
 	args.CopyMode = "write-blocking"
 
-	err := m.run("blockdev-mirror", args, nil)
+	err := m.Run("blockdev-mirror", args, nil)
 	if err != nil {
 		return err
 	}
@@ -1040,7 +1226,7 @@ func (m *Monitor) BlockJobCancel(deviceNodeName string) error {
 
 	args.Device = deviceNodeName
 
-	err := m.run("block-job-cancel", args, nil)
+	err := m.Run("block-job-cancel", args, nil)
 	if err != nil {
 		return err
 	}
@@ -1056,23 +1242,7 @@ func (m *Monitor) BlockJobComplete(deviceNodeName string) error {
 
 	args.Device = deviceNodeName
 
-	err := m.run("block-job-complete", args, nil)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// Eject ejects a removable drive.
-func (m *Monitor) Eject(id string) error {
-	var args struct {
-		ID string `json:"id"`
-	}
-
-	args.ID = id
-
-	err := m.run("eject", args, nil)
+	err := m.Run("block-job-complete", args, nil)
 	if err != nil {
 		return err
 	}
@@ -1090,7 +1260,7 @@ func (m *Monitor) UpdateBlockSize(id string) error {
 	args.NodeName = id
 	args.Size = 1
 
-	err := m.run("block_resize", args, nil)
+	err := m.Run("block_resize", args, nil)
 	if err != nil {
 		return err
 	}
@@ -1117,7 +1287,7 @@ func (m *Monitor) SetBlockThrottle(id string, bytesRead int, bytesWrite int, iop
 	args.IOPsRead = iopsRead
 	args.IOPsWrite = iopsWrite
 
-	err := m.run("block_set_io_throttle", args, nil)
+	err := m.Run("block_set_io_throttle", args, nil)
 	if err != nil {
 		return err
 	}
@@ -1141,4 +1311,169 @@ func (m *Monitor) CheckPCIDevice(deviceID string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// RingbufRead returns the complete contents of the specified ring buffer.
+func (m *Monitor) RingbufRead(device string) (string, error) {
+	// Begin by ensuring the device specified is actually a ring buffer.
+	var queryResp struct {
+		Return []struct {
+			Label        string `json:"label"`
+			Filename     string `json:"filename"`
+			FrontendOpen bool   `json:"frontend_open"`
+		} `json:"return"`
+	}
+
+	err := m.Run("query-chardev", nil, &queryResp)
+	if err != nil {
+		return "", err
+	}
+
+	deviceFound := false
+	for _, qemuDevice := range queryResp.Return {
+		if qemuDevice.Label == device {
+			deviceFound = true
+			if qemuDevice.Filename != "ringbuf" {
+				// Can't call `ringbuf-read` on a non-ringbuf device.
+				return "", ErrNotARingbuf
+			}
+
+			break
+		}
+	}
+
+	if !deviceFound {
+		return "", fmt.Errorf("Specified qemu device %q doesn't exist", device)
+	}
+
+	// Now actually read from the ring buffer.
+	var args struct {
+		Device string `json:"device"`
+		Size   int    `json:"size"`
+	}
+
+	args.Device = device
+	args.Size = 10000
+
+	var readResp struct {
+		Return string `json:"return"`
+	}
+
+	var sb strings.Builder
+
+	for {
+		err := m.Run("ringbuf-read", args, &readResp)
+		if err != nil {
+			return "", err
+		}
+
+		if len(readResp.Return) == 0 {
+			break
+		}
+
+		sb.WriteString(readResp.Return)
+	}
+
+	return sb.String(), nil
+}
+
+// ChardevChange changes the backend of a specified chardev. Currently supports the socket and ringbuf backends.
+func (m *Monitor) ChardevChange(device string, info ChardevChangeInfo) error {
+	if info.Type == "socket" {
+		// Share the existing file descriptor with qemu.
+		err := m.SendFile(info.FDName, info.File)
+		if err != nil {
+			return err
+		}
+
+		var args struct {
+			ID      string `json:"id"`
+			Backend struct {
+				Type string `json:"type"`
+				Data struct {
+					Addr struct {
+						Type string `json:"type"`
+						Data struct {
+							Str string `json:"str"`
+						} `json:"data"`
+					} `json:"addr"`
+					Server bool `json:"server"`
+					Wait   bool `json:"wait"`
+				} `json:"data"`
+			} `json:"backend"`
+		}
+
+		args.ID = device
+		args.Backend.Type = info.Type
+		args.Backend.Data.Addr.Type = "fd"
+		args.Backend.Data.Addr.Data.Str = info.FDName
+		args.Backend.Data.Server = true
+		args.Backend.Data.Wait = false
+
+		err = m.Run("chardev-change", args, nil)
+		if err != nil {
+			// If the chardev-change command failed for some reason, ensure qemu cleans up its file descriptor.
+			_ = m.CloseFile(info.FDName)
+			return err
+		}
+
+		return nil
+	} else if info.Type == "ringbuf" {
+		var args struct {
+			ID      string `json:"id"`
+			Backend struct {
+				Type string `json:"type"`
+				Data struct {
+					Size int `json:"size"`
+				} `json:"data"`
+			} `json:"backend"`
+		}
+
+		args.ID = device
+		args.Backend.Type = info.Type
+		args.Backend.Data.Size = 1048576
+
+		return m.Run("chardev-change", args, nil)
+	}
+
+	return fmt.Errorf("Unsupported chardev type %q", info.Type)
+}
+
+// Screendump takes a screenshot of the current VGA console.
+// The screendump is stored to the filename provided as argument.
+func (m *Monitor) Screendump(filename string) error {
+	var args struct {
+		Filename string `json:"filename"`
+		Device   string `json:"device,omitempty"`
+		Head     int    `json:"head,omitempty"`
+		Format   string `json:"format,omitempty"`
+	}
+
+	args.Filename = filename
+	args.Format = "png"
+
+	var queryResp struct {
+		Return struct{} `json:"return"`
+	}
+
+	return m.Run("screendump", args, &queryResp)
+}
+
+// DumpGuestMemory dumps guest memory to a file.
+func (m *Monitor) DumpGuestMemory(path string, format string) error {
+	var args struct {
+		Paging   bool   `json:"paging"`
+		Protocol string `json:"protocol"`
+		Format   string `json:"format,omitempty"`
+		Detach   bool   `json:"detach"`
+	}
+
+	args.Protocol = "fd:" + path
+	args.Format = format
+
+	var queryResp struct {
+		Return struct{} `json:"return"`
+	}
+
+	return m.Run("dump-guest-memory", args, &queryResp)
 }

@@ -4,7 +4,7 @@ import (
 	"github.com/lxc/incus/v6/internal/server/auth"
 )
 
-// Type is a numeric code indentifying the type of an Operation.
+// Type is a numeric code identifying the type of an Operation.
 type Type int64
 
 // Possible values for Type
@@ -300,7 +300,8 @@ func (t Type) Permission() (auth.ObjectType, auth.Entitlement) {
 		return auth.ObjectTypeStorageVolume, auth.EntitlementCanManageBackups
 	case BucketBackupRestore:
 		return auth.ObjectTypeStorageVolume, auth.EntitlementCanEdit
-	}
 
-	return "", ""
+	default:
+		return "", ""
+	}
 }

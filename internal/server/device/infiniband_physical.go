@@ -1,6 +1,7 @@
 package device
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
 	"github.com/lxc/incus/v6/internal/server/ip"
-	"github.com/lxc/incus/v6/internal/server/resources"
+	"github.com/lxc/incus/v6/shared/resources"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -20,10 +21,43 @@ type infinibandPhysical struct {
 
 // validateConfig checks the supplied config for correctness.
 func (d *infinibandPhysical) validateConfig(instConf instance.ConfigReader) error {
-	requiredFields := []string{"parent"}
+	requiredFields := []string{
+		// gendoc:generate(entity=devices, group=infiniband, key=parent)
+		//
+		// ---
+		//  type: string
+		//  required: no
+		//  defaultdesc: kernel assigned
+		//  shortdesc: The name of the interface inside the instance
+		"parent",
+	}
+
 	optionalFields := []string{
+		// gendoc:generate(entity=devices, group=infiniband, key=name)
+		//
+		// ---
+		//  type: string
+		//  required: no
+		//  defaultdesc: kernel assigned
+		//  shortdesc: The name of the interface inside the instance
 		"name",
+
+		// gendoc:generate(entity=devices, group=infiniband, key=mtu)
+		//
+		// ---
+		//  type: integer
+		//  required: no
+		//  defaultdesc: parent MTU
+		//  shortdesc: The MTU of the new interface
 		"mtu",
+
+		// gendoc:generate(entity=devices, group=infiniband, key=hwaddr)
+		//
+		// ---
+		//  type: string
+		//  required: no
+		//  defaultdesc: randomly assigned
+		//  shortdesc: The MAC address of the new interface (can be either the full 20-byte variant or the short 8-byte variant, which will only modify the last 8 bytes of the parent device)
 		"hwaddr",
 	}
 
@@ -47,7 +81,7 @@ func (d *infinibandPhysical) validateConfig(instConf instance.ConfigReader) erro
 // validateEnvironment checks the runtime environment for correctness.
 func (d *infinibandPhysical) validateEnvironment() error {
 	if d.inst.Type() == instancetype.Container && d.config["name"] == "" {
-		return fmt.Errorf("Requires name property to start")
+		return errors.New("Requires name property to start")
 	}
 
 	if !util.PathExists(fmt.Sprintf("/sys/class/net/%s", d.config["parent"])) {

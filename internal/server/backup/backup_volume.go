@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/project"
 	"github.com/lxc/incus/v6/internal/server/state"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -66,12 +66,12 @@ func (b *VolumeBackup) Rename(newName string) error {
 	newParentName, _, _ := api.GetParentAndSnapshotName(newName)
 	newParentBackupsPath := internalUtil.VarPath("backups", "custom", b.poolName, project.StorageVolume(b.projectName, newParentName))
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Create the new backup path if doesn't exist.
 	if !util.PathExists(newParentBackupsPath) {
-		err := os.MkdirAll(newParentBackupsPath, 0700)
+		err := os.MkdirAll(newParentBackupsPath, 0o700)
 		if err != nil {
 			return err
 		}
@@ -83,7 +83,7 @@ func (b *VolumeBackup) Rename(newName string) error {
 		return err
 	}
 
-	revert.Add(func() { _ = os.Rename(newBackupPath, oldBackupPath) })
+	reverter.Add(func() { _ = os.Rename(newBackupPath, oldBackupPath) })
 
 	// Check if we can remove the old parent directory.
 	empty, _ := internalUtil.PathIsEmpty(oldParentBackupsPath)
@@ -102,7 +102,7 @@ func (b *VolumeBackup) Rename(newName string) error {
 		return err
 	}
 
-	revert.Success()
+	reverter.Success()
 	return nil
 }
 
@@ -147,4 +147,10 @@ func (b *VolumeBackup) Render() *api.StorageVolumeBackup {
 		VolumeOnly:       b.volumeOnly,
 		OptimizedStorage: b.optimizedStorage,
 	}
+}
+
+// Upload pushes the backup to external storage.
+func (b *VolumeBackup) Upload(req *api.BackupTarget) error {
+	backupPath := internalUtil.VarPath("backups", "custom", b.poolName, project.StorageVolume(b.projectName, b.name))
+	return b.upload(backupPath, req)
 }

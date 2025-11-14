@@ -28,7 +28,7 @@ type Network interface {
 	init(s *state.State, id int64, projectName string, netInfo *api.Network, netNodes map[int64]db.NetworkNode) error
 
 	// Config.
-	Validate(config map[string]string) error
+	Validate(config map[string]string, clientType request.ClientType) error
 	ID() int64
 	Name() string
 	Project() string
@@ -37,7 +37,7 @@ type Network interface {
 	LocalStatus() string
 	Config() map[string]string
 	Locations() []string
-	IsUsed() (bool, error)
+	IsUsed(instanceOnly bool) (bool, error)
 	IsManaged() bool
 	DHCPv4Subnet() *net.IPNet
 	DHCPv6Subnet() *net.IPNet
@@ -66,6 +66,7 @@ type Network interface {
 	// Load Balancers.
 	LoadBalancerCreate(loadBalancer api.NetworkLoadBalancersPost, clientType request.ClientType) error
 	LoadBalancerUpdate(listenAddress string, newLoadBalancer api.NetworkLoadBalancerPut, clientType request.ClientType) error
+	LoadBalancerState(loadbalancer api.NetworkLoadBalancer) (*api.NetworkLoadBalancerState, error)
 	LoadBalancerDelete(listenAddress string, clientType request.ClientType) error
 
 	// Peerings.

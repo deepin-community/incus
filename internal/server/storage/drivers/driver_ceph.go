@@ -4,25 +4,28 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
 
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
 
-var cephVersion string
-var cephLoaded bool
+var (
+	cephVersion string
+	cephLoaded  bool
+)
 
 type ceph struct {
 	common
@@ -122,8 +125,8 @@ func (d *ceph) FillConfig() error {
 // Create is called during pool creation and is effectively using an empty driver struct.
 // WARNING: The Create() function cannot rely on any of the struct attributes being set.
 func (d *ceph) Create() error {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	d.config["volatile.initial_source"] = d.config["source"]
 
@@ -140,7 +143,7 @@ func (d *ceph) Create() error {
 
 	// Quick check.
 	if d.config["source"] != "" && d.config["ceph.osd.pool_name"] != "" && d.config["source"] != d.config["ceph.osd.pool_name"] {
-		return fmt.Errorf(`The "source" and "ceph.osd.pool_name" property must not differ for Ceph OSD storage pools`)
+		return errors.New(`The "source" and "ceph.osd.pool_name" property must not differ for Ceph OSD storage pools`)
 	}
 
 	// Use an existing OSD pool.
@@ -173,7 +176,7 @@ func (d *ceph) Create() error {
 			return err
 		}
 
-		revert.Add(func() { _ = d.osdDeletePool() })
+		reverter.Add(func() { _ = d.osdDeletePool() })
 
 		// Initialize the pool. This is not necessary but allows the pool to be monitored.
 		_, err = subprocess.TryRunCommand("rbd",
@@ -247,7 +250,7 @@ func (d *ceph) Create() error {
 		d.config["ceph.osd.pg_num"] = msg
 	}
 
-	revert.Success()
+	reverter.Success()
 
 	return nil
 }
@@ -321,7 +324,7 @@ func (d *ceph) Mount() (bool, error) {
 	}
 
 	if !volExists {
-		return false, fmt.Errorf("Placeholder volume does not exist")
+		return false, errors.New("Placeholder volume does not exist")
 	}
 
 	return true, nil
@@ -378,7 +381,7 @@ func (d *ceph) GetResources() (*api.ResourcesStoragePool, error) {
 	}
 
 	if pool == nil {
-		return nil, fmt.Errorf("OSD pool missing in df output")
+		return nil, errors.New("OSD pool missing in df output")
 	}
 
 	spaceUsed := uint64(pool.Stats.BytesUsed)
@@ -392,7 +395,7 @@ func (d *ceph) GetResources() (*api.ResourcesStoragePool, error) {
 }
 
 // MigrationType returns the type of transfer methods to be used when doing migrations between pools in preference order.
-func (d *ceph) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool) []localMigration.Type {
+func (d *ceph) MigrationTypes(contentType ContentType, refresh bool, copySnapshots bool, clusterMove bool, storageMove bool) []localMigration.Type {
 	var rsyncFeatures []string
 
 	// Do not pass compression argument to rsync if the associated

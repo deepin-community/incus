@@ -20,6 +20,7 @@ import (
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
 	"github.com/lxc/incus/v6/shared/api"
 	localtls "github.com/lxc/incus/v6/shared/tls"
+	"github.com/lxc/incus/v6/shared/tls/tlstest"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -30,14 +31,14 @@ import (
 func newEndpoints(t *testing.T) (*endpoints.Endpoints, *endpoints.Config, func()) {
 	dir, err := os.MkdirTemp("", "incus-endpoints-test-")
 	require.NoError(t, err)
-	require.NoError(t, os.Mkdir(filepath.Join(dir, "guestapi"), 0755))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "guestapi"), 0o755))
 
 	config := &endpoints.Config{
 		Dir:            dir,
 		UnixSocket:     filepath.Join(dir, "unix.socket"),
 		RestServer:     newServer(),
 		DevIncusServer: newServer(),
-		Cert:           localtls.TestingKeyPair(),
+		Cert:           tlstest.TestingKeyPair(t),
 		VsockServer:    newServer(),
 	}
 

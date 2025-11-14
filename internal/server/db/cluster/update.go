@@ -332,7 +332,7 @@ UPDATE storage_pools_config
 	return nil
 }
 
-// updatefromV64 updates nodes_cluster_groups to include an ID field so that it works well with incus-generate.
+// updatefromV64 updates nodes_cluster_groups to include an ID field so that it works well with generate-database.
 func updateFromV64(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.Exec(`
 CREATE TABLE "nodes_cluster_groups_new" (
@@ -1745,7 +1745,6 @@ CREATE TABLE "nodes_config" (
     UNIQUE (node_id, key)
 );
 	`)
-
 	if err != nil {
 		return fmt.Errorf("Failed creating nodes_config table: %w", err)
 	}
@@ -2084,7 +2083,7 @@ func updateFromV42(ctx context.Context, tx *sql.Tx) error {
 		rowIDs := strings.Split(r.dupeRowIDs, ",")
 
 		// Iterate and delete all but 1 of the rowIDs so we leave just one left.
-		for i := 0; i < len(rowIDs)-1; i++ {
+		for i := range len(rowIDs) - 1 {
 			rowID, err := strconv.Atoi(rowIDs[i])
 			if err != nil {
 				return fmt.Errorf("Failed converting row ID: %w", err)
@@ -2150,7 +2149,7 @@ func updateFromV41(ctx context.Context, tx *sql.Tx) error {
 		rowIDs := strings.Split(r.dupeRowIDs, ",")
 
 		// Iterate and delete all but 1 of the rowIDs so we leave just one left.
-		for i := 0; i < len(rowIDs)-1; i++ {
+		for i := range len(rowIDs) - 1 {
 			rowID, err := strconv.Atoi(rowIDs[i])
 			if err != nil {
 				return fmt.Errorf("Failed converting row ID: %w", err)
@@ -4394,7 +4393,7 @@ FROM storage_volumes
 
 	// Duplicate each volume row across all nodes, and keep track of the
 	// new volume IDs that we've inserted.
-	created := make(map[int][]int64, 0) // Existing volume ID to new volumes IDs.
+	created := make(map[int][]int64) // Existing volume ID to new volumes IDs.
 	columns := []string{"name", "storage_pool_id", "node_id", "type", "description"}
 	for _, volume := range volumes {
 		for _, nodeID := range nodeIDs {

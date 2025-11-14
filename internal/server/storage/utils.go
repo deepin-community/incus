@@ -3,7 +3,9 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -87,7 +89,7 @@ func VolumeTypeNameToDBType(volumeTypeName string) (int, error) {
 		return db.StoragePoolVolumeTypeCustom, nil
 	}
 
-	return -1, fmt.Errorf("Invalid storage volume type name")
+	return -1, errors.New("Invalid storage volume type name")
 }
 
 // VolumeTypeToDBType converts volume type to internal volume type DB code.
@@ -131,7 +133,7 @@ func InstanceTypeToVolumeType(instType instancetype.Type) (drivers.VolumeType, e
 		return drivers.VolumeTypeVM, nil
 	}
 
-	return "", fmt.Errorf("Invalid instance type")
+	return "", errors.New("Invalid instance type")
 }
 
 // VolumeTypeToAPIInstanceType converts storage driver volume type to API instance type type.
@@ -143,7 +145,7 @@ func VolumeTypeToAPIInstanceType(volType drivers.VolumeType) (api.InstanceType, 
 		return api.InstanceTypeVM, nil
 	}
 
-	return api.InstanceTypeAny, fmt.Errorf("Volume type doesn't have equivalent instance type")
+	return api.InstanceTypeAny, errors.New("Volume type doesn't have equivalent instance type")
 }
 
 // VolumeContentTypeToDBContentType converts volume type to internal code.
@@ -157,7 +159,7 @@ func VolumeContentTypeToDBContentType(contentType drivers.ContentType) (int, err
 		return db.StoragePoolVolumeContentTypeISO, nil
 	}
 
-	return -1, fmt.Errorf("Invalid volume content type")
+	return -1, errors.New("Invalid volume content type")
 }
 
 // VolumeDBContentTypeToContentType converts internal content type DB code to driver representation.
@@ -171,7 +173,7 @@ func VolumeDBContentTypeToContentType(volDBType int) (drivers.ContentType, error
 		return drivers.ContentTypeISO, nil
 	}
 
-	return "", fmt.Errorf("Invalid volume content type")
+	return "", errors.New("Invalid volume content type")
 }
 
 // VolumeContentTypeNameToContentType converts volume content type string internal code.
@@ -185,14 +187,14 @@ func VolumeContentTypeNameToContentType(contentTypeName string) (int, error) {
 		return db.StoragePoolVolumeContentTypeISO, nil
 	}
 
-	return -1, fmt.Errorf("Invalid volume content type name")
+	return -1, errors.New("Invalid volume content type name")
 }
 
 // VolumeDBGet loads a volume from the database.
 func VolumeDBGet(pool Pool, projectName string, volumeName string, volumeType drivers.VolumeType) (*db.StorageVolume, error) {
 	p, ok := pool.(*backend)
 	if !ok {
-		return nil, fmt.Errorf("Pool is not a backend")
+		return nil, errors.New("Pool is not a backend")
 	}
 
 	volDBType, err := VolumeTypeToDBType(volumeType)
@@ -227,12 +229,12 @@ func VolumeDBGet(pool Pool, projectName string, volumeName string, volumeType dr
 func VolumeDBCreate(pool Pool, projectName string, volumeName string, volumeDescription string, volumeType drivers.VolumeType, snapshot bool, volumeConfig map[string]string, creationDate time.Time, expiryDate time.Time, contentType drivers.ContentType, removeUnknownKeys bool, hasSource bool) error {
 	p, ok := pool.(*backend)
 	if !ok {
-		return fmt.Errorf("Pool is not a backend")
+		return errors.New("Pool is not a backend")
 	}
 
 	// Prevent using this function to create storage volume bucket records.
 	if volumeType == drivers.VolumeTypeBucket {
-		return fmt.Errorf("Cannot store volume using bucket type")
+		return errors.New("Cannot store volume using bucket type")
 	}
 
 	// If the volumeType represents an instance type then check that the volumeConfig doesn't contain any of
@@ -305,7 +307,7 @@ func VolumeDBCreate(pool Pool, projectName string, volumeName string, volumeDesc
 func VolumeDBDelete(pool Pool, projectName string, volumeName string, volumeType drivers.VolumeType) error {
 	p, ok := pool.(*backend)
 	if !ok {
-		return fmt.Errorf("Pool is not a backend")
+		return errors.New("Pool is not a backend")
 	}
 
 	// Convert the volume type to our internal integer representation.
@@ -328,7 +330,7 @@ func VolumeDBDelete(pool Pool, projectName string, volumeName string, volumeType
 func VolumeDBSnapshotsGet(pool Pool, projectName string, volume string, volumeType drivers.VolumeType) ([]db.StorageVolumeArgs, error) {
 	p, ok := pool.(*backend)
 	if !ok {
-		return nil, fmt.Errorf("Pool is not a backend")
+		return nil, errors.New("Pool is not a backend")
 	}
 
 	volDBType, err := VolumeTypeToDBType(volumeType)
@@ -354,7 +356,7 @@ func VolumeDBSnapshotsGet(pool Pool, projectName string, volume string, volumeTy
 func BucketDBGet(pool Pool, projectName string, bucketName string, memberSpecific bool) (*db.StorageBucket, error) {
 	p, ok := pool.(*backend)
 	if !ok {
-		return nil, fmt.Errorf("Pool is not a backend")
+		return nil, errors.New("Pool is not a backend")
 	}
 
 	var err error
@@ -386,7 +388,7 @@ func BucketDBGet(pool Pool, projectName string, bucketName string, memberSpecifi
 func BucketDBCreate(ctx context.Context, pool Pool, projectName string, memberSpecific bool, bucket *api.StorageBucketsPost) (int64, error) {
 	p, ok := pool.(*backend)
 	if !ok {
-		return -1, fmt.Errorf("Pool is not a backend")
+		return -1, errors.New("Pool is not a backend")
 	}
 
 	// Make sure that we don't pass a nil to the next function.
@@ -434,7 +436,7 @@ func BucketDBCreate(ctx context.Context, pool Pool, projectName string, memberSp
 func BucketDBDelete(ctx context.Context, pool Pool, bucketID int64) error {
 	p, ok := pool.(*backend)
 	if !ok {
-		return fmt.Errorf("Pool is not a backend")
+		return errors.New("Pool is not a backend")
 	}
 
 	err := p.state.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
@@ -451,7 +453,7 @@ func BucketDBDelete(ctx context.Context, pool Pool, bucketID int64) error {
 func BucketKeysDBGet(pool Pool, bucketID int64) ([]*db.StorageBucketKey, error) {
 	p, ok := pool.(*backend)
 	if !ok {
-		return nil, fmt.Errorf("Pool is not a backend")
+		return nil, errors.New("Pool is not a backend")
 	}
 
 	var err error
@@ -485,14 +487,22 @@ func poolAndVolumeCommonRules(vol *drivers.Volume) map[string]func(string) error
 			_, err := internalInstance.GetExpiry(time.Time{}, value)
 			return err
 		},
+		"snapshots.expiry.manual": func(value string) error {
+			// Validate expression
+			_, err := internalInstance.GetExpiry(time.Time{}, value)
+			return err
+		},
 		"snapshots.schedule": validate.Optional(validate.IsCron([]string{"@hourly", "@daily", "@midnight", "@weekly", "@monthly", "@annually", "@yearly"})),
 		"snapshots.pattern":  validate.IsAny,
 	}
 
-	// security.shifted and security.unmapped are only relevant for custom filesystem volumes.
+	// Options relevant for custom filesystem volumes.
 	if (vol == nil) || (vol != nil && vol.Type() == drivers.VolumeTypeCustom && vol.ContentType() == drivers.ContentTypeFS) {
 		rules["security.shifted"] = validate.Optional(validate.IsBool)
 		rules["security.unmapped"] = validate.Optional(validate.IsBool)
+		rules["initial.uid"] = validate.Optional(validate.IsInt64)
+		rules["initial.gid"] = validate.Optional(validate.IsInt64)
+		rules["initial.mode"] = validate.Optional(validate.IsInt64)
 	}
 
 	// security.shared is only relevant for custom block volumes.
@@ -592,9 +602,9 @@ func ImageUnpack(imageFile string, vol drivers.Volume, destBlockFile string, sys
 
 		// Check for separate root file.
 		if util.PathExists(imageRootfsFile) {
-			err = os.MkdirAll(rootfsPath, 0755)
+			err = os.MkdirAll(rootfsPath, 0o755)
 			if err != nil {
-				return -1, fmt.Errorf("Error creating rootfs directory")
+				return -1, errors.New("Error creating rootfs directory")
 			}
 
 			err = archive.Unpack(imageRootfsFile, rootfsPath, vol.IsBlockBacked(), maxMemory, tracker)
@@ -616,7 +626,7 @@ func ImageUnpack(imageFile string, vol drivers.Volume, destBlockFile string, sys
 
 	// Validate the target.
 	fileInfo, err := os.Stat(destBlockFile)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return -1, err
 	}
 
@@ -706,9 +716,13 @@ func ImageUnpack(imageFile string, vol drivers.Volume, destBlockFile string, sys
 			_ = to.Close()
 		}
 
-		// Check if we should do parallel unpacking.
+		// Extra options when dealing with block devices.
 		if linux.IsBlockdevPath(dstPath) {
+			// Parallel unpacking.
 			cmd = append(cmd, "-W")
+
+			// Our block devices are clean, so skip zeroes.
+			cmd = append(cmd, "-n", "--target-is-zero")
 		}
 
 		cmd = append(cmd, imgPath, dstPath)
@@ -776,7 +790,7 @@ func ImageUnpack(imageFile string, vol drivers.Volume, destBlockFile string, sys
 }
 
 // InstanceContentType returns the instance's content type.
-func InstanceContentType(inst instance.Instance) drivers.ContentType {
+func InstanceContentType(inst instance.ConfigReader) drivers.ContentType {
 	contentType := drivers.ContentTypeFS
 	if inst.Type() == instancetype.VM {
 		contentType = drivers.ContentTypeBlock
@@ -810,7 +824,7 @@ func VolumeUsedByProfileDevices(s *state.State, poolName string, projectName str
 		for _, project := range projects {
 			projectMap[project.Name], err = project.ToAPI(ctx, tx.Tx())
 			if err != nil {
-				return fmt.Errorf("Failed loading config for projec %q: %w", project.Name, err)
+				return fmt.Errorf("Failed loading config for project %q: %w", project.Name, err)
 			}
 		}
 
@@ -819,14 +833,20 @@ func VolumeUsedByProfileDevices(s *state.State, poolName string, projectName str
 			return fmt.Errorf("Failed loading profiles: %w", err)
 		}
 
-		// Get all the profile devices.
-		profileDevices, err := cluster.GetDevices(ctx, tx.Tx(), "profile")
+		// Get all the profile configs.
+		profileConfigs, err := cluster.GetAllProfileConfigs(ctx, tx.Tx())
 		if err != nil {
-			return fmt.Errorf("Failed loading profiles: %w", err)
+			return fmt.Errorf("Failed loading profile configs: %w", err)
+		}
+
+		// Get all the profile devices.
+		profileDevices, err := cluster.GetAllProfileDevices(ctx, tx.Tx())
+		if err != nil {
+			return fmt.Errorf("Failed loading profile devices: %w", err)
 		}
 
 		for _, profile := range dbProfiles {
-			apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileDevices)
+			apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileConfigs, profileDevices)
 			if err != nil {
 				return fmt.Errorf("Failed getting API Profile %q: %w", profile.Name, err)
 			}
@@ -987,7 +1007,7 @@ func VolumeUsedByExclusiveRemoteInstancesWithProfiles(s *state.State, poolName s
 
 		return nil
 	})
-	if err != nil && err != db.ErrInstanceListStop {
+	if err != nil && !errors.Is(err, db.ErrInstanceListStop) {
 		return nil, err
 	}
 
@@ -1028,30 +1048,6 @@ func FallbackMigrationType(contentType drivers.ContentType) migration.MigrationF
 	}
 
 	return migration.MigrationFSType_RSYNC
-}
-
-// RenderSnapshotUsage can be used as an optional argument to Instance.Render() to return snapshot usage.
-// As this is a relatively expensive operation it is provided as an optional feature rather than on by default.
-func RenderSnapshotUsage(s *state.State, snapInst instance.Instance) func(response any) error {
-	return func(response any) error {
-		apiRes, ok := response.(*api.InstanceSnapshot)
-		if !ok {
-			return nil
-		}
-
-		pool, err := LoadByInstance(s, snapInst)
-		if err == nil {
-			// It is important that the snapshot not be mounted here as mounting a snapshot can trigger a very
-			// expensive filesystem UUID regeneration, so we rely on the driver implementation to get the info
-			// we are requesting as cheaply as possible.
-			volumeState, err := pool.GetInstanceUsage(snapInst)
-			if err == nil {
-				apiRes.Size = volumeState.Used
-			}
-		}
-
-		return nil
-	}
 }
 
 // InstanceMount mounts an instance's storage volume (if not already mounted).
@@ -1099,7 +1095,7 @@ func InstanceDiskBlockSize(pool Pool, inst instance.Instance, op *operations.Ope
 	defer func() { _ = InstanceUnmount(pool, inst, op) }()
 
 	if mountInfo.DiskPath == "" {
-		return -1, fmt.Errorf("No disk path available from mount")
+		return -1, errors.New("No disk path available from mount")
 	}
 
 	blockDiskSize, err := drivers.BlockDiskSizeBytes(mountInfo.DiskPath)
@@ -1125,10 +1121,11 @@ type ComparableSnapshot struct {
 // CompareSnapshots returns a list of snapshot indexes (from the associated input slices) to sync from the source
 // and to delete from the target respectively.
 // A snapshot will be added to "to sync from source" slice if it either doesn't exist in the target or its ID or
-// creation date is different to the source.
+// creation date is different to the source. When excludeOlder is true, source snapshots earlier than
+// latest target snapshot are excluded.
 // A snapshot will be added to the "to delete from target" slice if it doesn't exist in the source or its ID or
 // creation date is different to the source.
-func CompareSnapshots(sourceSnapshots []ComparableSnapshot, targetSnapshots []ComparableSnapshot) ([]int, []int) {
+func CompareSnapshots(sourceSnapshots []ComparableSnapshot, targetSnapshots []ComparableSnapshot, excludeOlder bool) ([]int, []int) {
 	// Compare source and target.
 	sourceSnapshotsByName := make(map[string]*ComparableSnapshot, len(sourceSnapshots))
 	targetSnapshotsByName := make(map[string]*ComparableSnapshot, len(targetSnapshots))
@@ -1140,6 +1137,9 @@ func CompareSnapshots(sourceSnapshots []ComparableSnapshot, targetSnapshots []Co
 		sourceSnapshotsByName[sourceSnapshots[sourceSnapIndex].Name] = &sourceSnapshots[sourceSnapIndex]
 	}
 
+	// Find the latest creation date among target snapshots.
+	var latestTargetSnapshotTime time.Time
+
 	// If target snapshot doesn't exist in source, or its creation date or ID differ,
 	// then mark it for deletion on target.
 	for targetSnapIndex := range targetSnapshots {
@@ -1149,6 +1149,8 @@ func CompareSnapshots(sourceSnapshots []ComparableSnapshot, targetSnapshots []Co
 		sourceSnap, sourceSnapExists := sourceSnapshotsByName[targetSnapshots[targetSnapIndex].Name]
 		if !sourceSnapExists || !sourceSnap.CreationDate.Equal(targetSnapshots[targetSnapIndex].CreationDate) || sourceSnap.ID != targetSnapshots[targetSnapIndex].ID {
 			deleteFromTarget = append(deleteFromTarget, targetSnapIndex)
+		} else if targetSnapshots[targetSnapIndex].CreationDate.After(latestTargetSnapshotTime) {
+			latestTargetSnapshotTime = targetSnapshots[targetSnapIndex].CreationDate
 		}
 	}
 
@@ -1156,10 +1158,70 @@ func CompareSnapshots(sourceSnapshots []ComparableSnapshot, targetSnapshots []Co
 	// then mark it for syncing to target.
 	for sourceSnapIndex := range sourceSnapshots {
 		targetSnap, targetSnapExists := targetSnapshotsByName[sourceSnapshots[sourceSnapIndex].Name]
-		if !targetSnapExists || !targetSnap.CreationDate.Equal(sourceSnapshots[sourceSnapIndex].CreationDate) || targetSnap.ID != sourceSnapshots[sourceSnapIndex].ID {
+		if (!targetSnapExists && (!excludeOlder || sourceSnapshots[sourceSnapIndex].CreationDate.After(latestTargetSnapshotTime))) || (targetSnapExists && (!targetSnap.CreationDate.Equal(sourceSnapshots[sourceSnapIndex].CreationDate) || targetSnap.ID != sourceSnapshots[sourceSnapIndex].ID)) {
 			syncFromSource = append(syncFromSource, sourceSnapIndex)
 		}
 	}
 
 	return syncFromSource, deleteFromTarget
+}
+
+// CalculateVolumeSnapshotSize returns the size of a volume snapshot in bytes.
+func CalculateVolumeSnapshotSize(projectName string, pool Pool, contentType drivers.ContentType, volumeType drivers.VolumeType, volName string, snapName string) (int64, error) {
+	if contentType != drivers.ContentTypeBlock {
+		return 0, nil
+	}
+
+	var volSize int64
+
+	snapVolumeName := drivers.GetSnapshotVolumeName(volName, snapName)
+	var fullSnapVolName string
+	if volumeType == drivers.VolumeTypeCustom {
+		fullSnapVolName = project.StorageVolume(projectName, snapVolumeName)
+	} else {
+		fullSnapVolName = project.Instance(projectName, snapVolumeName)
+	}
+
+	snapVol := pool.GetVolume(volumeType, contentType, fullSnapVolName, nil)
+	err := snapVol.MountTask(func(mountPath string, op *operations.Operation) error {
+		poolBackend, ok := pool.(*backend)
+		if !ok {
+			return errors.New("Pool is not a backend")
+		}
+
+		volDiskPath, err := poolBackend.driver.GetVolumeDiskPath(snapVol)
+		if err != nil {
+			return err
+		}
+
+		volSize, err = drivers.BlockDiskSizeBytes(volDiskPath)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}, nil)
+	if err != nil {
+		return 0, err
+	}
+
+	return volSize, nil
+}
+
+// VolumeSnapshotsToMigrationSnapshots converts a *api.StorageVolumeSnapshot to a *migration.Snapshot.
+func VolumeSnapshotsToMigrationSnapshots(snapshots []*api.StorageVolumeSnapshot, projectName string, pool Pool, contentType drivers.ContentType, volumeType drivers.VolumeType, volName string) ([]*migration.Snapshot, error) {
+	migrationSnapshots := make([]*migration.Snapshot, 0, len(snapshots))
+	for _, snap := range snapshots {
+		mSnapshot := &migration.Snapshot{Name: &snap.Name}
+
+		volSize, err := CalculateVolumeSnapshotSize(projectName, pool, contentType, volumeType, volName, snap.Name)
+		if err != nil {
+			return nil, err
+		}
+
+		migration.SetSnapshotConfigValue(mSnapshot, "size", fmt.Sprintf("%d", volSize))
+		migrationSnapshots = append(migrationSnapshots, mSnapshot)
+	}
+
+	return migrationSnapshots, nil
 }

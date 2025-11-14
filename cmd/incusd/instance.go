@@ -11,7 +11,6 @@ import (
 	"time"
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	"github.com/lxc/incus/v6/internal/server/db"
 	dbCluster "github.com/lxc/incus/v6/internal/server/db/cluster"
@@ -27,6 +26,7 @@ import (
 	"github.com/lxc/incus/v6/internal/server/task"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -34,8 +34,8 @@ import (
 
 // instanceCreateAsEmpty creates an empty instance.
 func instanceCreateAsEmpty(s *state.State, args db.InstanceArgs, op *operations.Operation) (instance.Instance, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Create the instance record.
 	inst, instOp, cleanup, err := instance.CreateInternal(s, args, op, true, true)
@@ -43,7 +43,7 @@ func instanceCreateAsEmpty(s *state.State, args db.InstanceArgs, op *operations.
 		return nil, fmt.Errorf("Failed creating instance record: %w", err)
 	}
 
-	revert.Add(cleanup)
+	reverter.Add(cleanup)
 	defer instOp.Done(err)
 
 	pool, err := storagePools.LoadByInstance(s, inst)
@@ -56,14 +56,14 @@ func instanceCreateAsEmpty(s *state.State, args db.InstanceArgs, op *operations.
 		return nil, fmt.Errorf("Failed creating instance: %w", err)
 	}
 
-	revert.Add(func() { _ = inst.Delete(true) })
+	reverter.Add(func() { _ = inst.Delete(true) })
 
 	err = inst.UpdateBackupFile()
 	if err != nil {
 		return nil, err
 	}
 
-	revert.Success()
+	reverter.Success()
 	return inst, nil
 }
 
@@ -85,7 +85,7 @@ func instanceImageTransfer(s *state.State, r *http.Request, projectName string, 
 	return nil
 }
 
-func ensureImageIsLocallyAvailable(ctx context.Context, s *state.State, r *http.Request, img *api.Image, projectName string, instanceType instancetype.Type) error {
+func ensureImageIsLocallyAvailable(ctx context.Context, s *state.State, r *http.Request, img *api.Image, projectName string) error {
 	// Check if the image is available locally or it's on another member.
 	// Ensure we are the only ones operating on this image. Otherwise another instance created at the same
 	// time may also arrive at the conclusion that the image doesn't exist on this cluster member and then
@@ -129,9 +129,9 @@ func ensureImageIsLocallyAvailable(ctx context.Context, s *state.State, r *http.
 }
 
 // instanceCreateFromImage creates an instance from a rootfs image.
-func instanceCreateFromImage(ctx context.Context, s *state.State, r *http.Request, img *api.Image, args db.InstanceArgs, op *operations.Operation) error {
-	revert := revert.New()
-	defer revert.Fail()
+func instanceCreateFromImage(ctx context.Context, s *state.State, img *api.Image, args db.InstanceArgs, op *operations.Operation) error {
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Validate the type of the image matches the type of the instance.
 	imgType, err := instancetype.New(img.Type)
@@ -159,7 +159,7 @@ func instanceCreateFromImage(ctx context.Context, s *state.State, r *http.Reques
 		return fmt.Errorf("Failed creating instance record: %w", err)
 	}
 
-	revert.Add(cleanup)
+	reverter.Add(cleanup)
 	defer instOp.Done(nil)
 
 	err = s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
@@ -179,19 +179,28 @@ func instanceCreateFromImage(ctx context.Context, s *state.State, r *http.Reques
 		return fmt.Errorf("Failed loading instance storage pool: %w", err)
 	}
 
+	// Lock this operation to ensure that concurrent image operations don't conflict.
+	// Other operations will wait for this one to finish.
+	unlock, err := imageOperationLock(ctx, img.Fingerprint)
+	if err != nil {
+		return err
+	}
+
+	defer unlock()
+
 	err = pool.CreateInstanceFromImage(inst, img.Fingerprint, op)
 	if err != nil {
 		return fmt.Errorf("Failed creating instance from image: %w", err)
 	}
 
-	revert.Add(func() { _ = inst.Delete(true) })
+	reverter.Add(func() { _ = inst.Delete(true) })
 
 	err = inst.UpdateBackupFile()
 	if err != nil {
 		return err
 	}
 
-	revert.Success()
+	reverter.Success()
 	return nil
 }
 
@@ -206,7 +215,7 @@ func instanceRebuildFromImage(ctx context.Context, s *state.State, r *http.Reque
 		return fmt.Errorf("Requested image's type %q doesn't match instance type %q", imgType, inst.Type())
 	}
 
-	err = ensureImageIsLocallyAvailable(ctx, s, r, img, inst.Project().Name, inst.Type())
+	err = ensureImageIsLocallyAvailable(ctx, s, r, img, inst.Project().Name)
 	if err != nil {
 		return err
 	}
@@ -219,7 +228,7 @@ func instanceRebuildFromImage(ctx context.Context, s *state.State, r *http.Reque
 	return nil
 }
 
-func instanceRebuildFromEmpty(s *state.State, inst instance.Instance, op *operations.Operation) error {
+func instanceRebuildFromEmpty(inst instance.Instance, op *operations.Operation) error {
 	err := inst.Rebuild(nil, op) // Rebuild as empty.
 	if err != nil {
 		return fmt.Errorf("Failed rebuilding as an empty instance: %w", err)
@@ -234,6 +243,7 @@ type instanceCreateAsCopyOpts struct {
 	targetInstance       db.InstanceArgs   // Configuration for new instance.
 	instanceOnly         bool              // Only copy the instance and not it's snapshots.
 	refresh              bool              // Refresh an existing target instance.
+	refreshExcludeOlder  bool              // During refresh, exclude source snapshots earlier than latest target snapshot
 	applyTemplateTrigger bool              // Apply deferred TemplateTriggerCopy.
 	allowInconsistent    bool              // Ignore some copy errors
 }
@@ -245,8 +255,8 @@ func instanceCreateAsCopy(s *state.State, opts instanceCreateAsCopyOpts, op *ope
 	var err error
 	var cleanup revert.Hook
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	if opts.refresh {
 		// Load the target instance.
@@ -264,7 +274,7 @@ func instanceCreateAsCopy(s *state.State, opts instanceCreateAsCopyOpts, op *ope
 			return nil, fmt.Errorf("Failed creating instance record: %w", err)
 		}
 
-		revert.Add(cleanup)
+		reverter.Add(cleanup)
 	} else {
 		instOp, err = inst.LockExclusive()
 		if err != nil {
@@ -316,7 +326,7 @@ func instanceCreateAsCopy(s *state.State, opts instanceCreateAsCopyOpts, op *ope
 				})
 			}
 
-			syncSourceSnapshotIndexes, deleteTargetSnapshotIndexes := storagePools.CompareSnapshots(sourceSnapshotComparable, targetSnapshotsComparable)
+			syncSourceSnapshotIndexes, deleteTargetSnapshotIndexes := storagePools.CompareSnapshots(sourceSnapshotComparable, targetSnapshotsComparable, opts.refreshExcludeOlder)
 
 			// Delete extra snapshots first.
 			for _, deleteTargetSnapIndex := range deleteTargetSnapshotIndexes {
@@ -399,7 +409,7 @@ func instanceCreateAsCopy(s *state.State, opts instanceCreateAsCopyOpts, op *ope
 				return nil, fmt.Errorf("Failed creating instance snapshot record %q: %w", newSnapName, err)
 			}
 
-			revert.Add(cleanup)
+			reverter.Add(cleanup)
 			defer snapInstOp.Done(err)
 		}
 	}
@@ -421,7 +431,7 @@ func instanceCreateAsCopy(s *state.State, opts instanceCreateAsCopyOpts, op *ope
 			return nil, fmt.Errorf("Create instance from copy: %w", err)
 		}
 
-		revert.Add(func() { _ = inst.Delete(true) })
+		reverter.Add(func() { _ = inst.Delete(true) })
 
 		if opts.applyTemplateTrigger {
 			// Trigger the templates on next start.
@@ -437,16 +447,16 @@ func instanceCreateAsCopy(s *state.State, opts instanceCreateAsCopyOpts, op *ope
 		return nil, err
 	}
 
-	revert.Success()
+	reverter.Success()
 	return inst, nil
 }
 
 // Load all instances of this nodes under the given project.
-func instanceLoadNodeProjectAll(ctx context.Context, s *state.State, project string, instanceType instancetype.Type) ([]instance.Instance, error) {
+func instanceLoadNodeProjectAll(ctx context.Context, s *state.State, projectName string) ([]instance.Instance, error) {
 	var err error
 	var instances []instance.Instance
 
-	filter := dbCluster.InstanceFilter{Type: instanceType.Filter(), Project: &project}
+	filter := dbCluster.InstanceFilter{Project: &projectName}
 	if s.ServerName != "" {
 		filter.Node = &s.ServerName
 	}
@@ -504,7 +514,7 @@ func autoCreateInstanceSnapshots(ctx context.Context, s *state.State, instances 
 
 var instSnapshotsPruneRunning = sync.Map{}
 
-func pruneExpiredInstanceSnapshots(ctx context.Context, s *state.State, snapshots []instance.Instance) error {
+func pruneExpiredInstanceSnapshots(ctx context.Context, snapshots []instance.Instance) error {
 	// Find snapshots to delete
 	for _, snapshot := range snapshots {
 		err := ctx.Err()
@@ -544,7 +554,7 @@ func pruneExpiredAndAutoCreateInstanceSnapshotsTask(d *Daemon) (task.Func, task.
 
 			if len(expiredSnaps) > 0 {
 				expiredSnapshots := make([]dbCluster.Instance, 0, len(expiredSnaps))
-				parents := make(map[string]*dbCluster.Instance, 0)
+				parents := make(map[string]*dbCluster.Instance)
 
 				// Enrich expired snapshot list with info from parent (opportunistically loading
 				// the parent info from the DB if not already loaded).
@@ -606,7 +616,7 @@ func pruneExpiredAndAutoCreateInstanceSnapshotsTask(d *Daemon) (task.Func, task.
 			return
 		}
 
-		// Get list of instances on the local member that are due to have snaphots creating.
+		// Get list of instances on the local member that are due to have snapshots creating.
 		filter := dbCluster.InstanceFilter{Node: &s.ServerName}
 
 		err = s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
@@ -652,7 +662,7 @@ func pruneExpiredAndAutoCreateInstanceSnapshotsTask(d *Daemon) (task.Func, task.
 		// disk space.
 		if len(expiredSnapshotInstances) > 0 {
 			opRun := func(op *operations.Operation) error {
-				return pruneExpiredInstanceSnapshots(ctx, s, expiredSnapshotInstances)
+				return pruneExpiredInstanceSnapshots(ctx, expiredSnapshotInstances)
 			}
 
 			op, err := operations.OperationCreate(s, "", operations.OperationClassTask, operationtype.SnapshotsExpire, nil, nil, opRun, nil, nil, nil)

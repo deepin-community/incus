@@ -4,19 +4,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/gorilla/mux"
-
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/server/daemon"
 	"github.com/lxc/incus/v6/internal/server/device/config"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
-	"github.com/lxc/incus/v6/shared/api/guest"
+	api "github.com/lxc/incus/v6/shared/api/guest"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -86,8 +83,8 @@ var DevIncusConfigGet = devIncusHandler{"/1.0/config", func(d *Daemon, w http.Re
 }}
 
 var DevIncusConfigKeyGet = devIncusHandler{"/1.0/config/{key}", func(d *Daemon, w http.ResponseWriter, r *http.Request) *devIncusResponse {
-	key, err := url.PathUnescape(mux.Vars(r)["key"])
-	if err != nil {
+	key := r.PathValue("key")
+	if key == "" {
 		return &devIncusResponse{"bad request", http.StatusBadRequest, "raw"}
 	}
 
@@ -121,7 +118,7 @@ var DevIncusMetadataGet = devIncusHandler{"/1.0/meta-data", func(d *Daemon, w ht
 	var client incus.InstanceServer
 	var err error
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		client, err = getVsockClient(d)
 		if err == nil {
 			break
@@ -251,21 +248,20 @@ func hoistReq(f func(*Daemon, http.ResponseWriter, *http.Request) *devIncusRespo
 }
 
 func devIncusAPI(d *Daemon) http.Handler {
-	m := mux.NewRouter()
-	m.UseEncodedPath() // Allow encoded values in path segments.
+	router := http.NewServeMux()
 
 	for _, handler := range handlers {
-		m.HandleFunc(handler.path, hoistReq(handler.f, d))
+		router.HandleFunc(handler.path, hoistReq(handler.f, d))
 	}
 
-	return m
+	return router
 }
 
 // Create a new net.Listener bound to the unix socket of the DevIncus endpoint.
 func createDevIncuslListener(dir string) (net.Listener, error) {
 	path := filepath.Join(dir, "incus", "sock")
 
-	err := os.MkdirAll(filepath.Dir(path), 0755)
+	err := os.MkdirAll(filepath.Dir(path), 0o755)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +293,7 @@ func createDevIncuslListener(dir string) (net.Listener, error) {
 		return nil, err
 	}
 
-	err = socketUnixSetPermissions(path, 0600)
+	err = socketUnixSetPermissions(path, 0o600)
 	if err != nil {
 		_ = listener.Close()
 		return nil, err

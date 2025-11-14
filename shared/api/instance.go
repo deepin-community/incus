@@ -276,7 +276,7 @@ func (c *Instance) Writable() InstancePut {
 // IsActive checks whether the instance state indicates the instance is active.
 //
 // API extension: instances.
-func (c Instance) IsActive() bool {
+func (c *Instance) IsActive() bool {
 	switch c.StatusCode {
 	case Stopped:
 		return false
@@ -361,6 +361,12 @@ type InstanceSource struct {
 	// Whether this is refreshing an existing instance (for migration and copy)
 	// Example: false
 	Refresh bool `json:"refresh,omitempty" yaml:"refresh,omitempty"`
+
+	// Whether to exclude source snapshots earlier than latest target snapshot
+	// Example: false
+	//
+	// API extension: custom_volume_refresh_exclude_older_snapshots
+	RefreshExcludeOlder bool `json:"refresh_exclude_older,omitempty" yaml:"refresh_exclude_older,omitempty"`
 
 	// Source project name (for copy and local image)
 	// Example: blah

@@ -4,7 +4,9 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -111,7 +113,7 @@ func NewTestDqliteServer(t *testing.T) (string, driver.NodeStore, func()) {
 	require.NoError(t, listener.Close())
 
 	dir, dirCleanup := newDir(t)
-	err = os.Mkdir(filepath.Join(dir, "global"), 0755)
+	err = os.Mkdir(filepath.Join(dir, "global"), 0o755)
 	require.NoError(t, err)
 
 	server, err := dqlite.New(
@@ -144,7 +146,7 @@ func newDir(t *testing.T) (string, func()) {
 	cleanup := func() {
 		_, err := os.Stat(dir)
 		if err != nil {
-			assert.True(t, os.IsNotExist(err))
+			assert.True(t, errors.Is(err, fs.ErrNotExist))
 		} else {
 			assert.NoError(t, os.RemoveAll(dir))
 		}

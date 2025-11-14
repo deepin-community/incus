@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -27,6 +29,7 @@ type cmdMove struct {
 	flagAllowInconsistent bool
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdMove) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("move", i18n.G("[<remote>:]<instance> [<remote>:][<instance>]"))
@@ -65,13 +68,13 @@ incus move <instance>/<old snapshot name> <instance>/<new snapshot name>
 	cmd.Flags().StringVar(&c.flagTargetProject, "target-project", "", i18n.G("Copy to a project different from the source")+"``")
 	cmd.Flags().BoolVar(&c.flagAllowInconsistent, "allow-inconsistent", false, i18n.G("Ignore copy errors for volatile files"))
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
 
 		if len(args) == 1 {
-			return c.global.cmpRemotes(false)
+			return c.global.cmpRemotes(toComplete, false)
 		}
 
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -80,17 +83,18 @@ incus move <instance>/<old snapshot name> <instance>/<new snapshot name>
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdMove) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
 	// Quick checks.
 	if c.flagTarget == "" && c.flagTargetProject == "" && c.flagStorage == "" {
-		exit, err := c.global.CheckArgs(cmd, args, 2, 2)
+		exit, err := c.global.checkArgs(cmd, args, 2, 2)
 		if exit {
 			return err
 		}
 	} else {
-		exit, err := c.global.CheckArgs(cmd, args, 1, 2)
+		exit, err := c.global.checkArgs(cmd, args, 1, 2)
 		if exit {
 			return err
 		}
@@ -124,7 +128,7 @@ func (c *cmdMove) Run(cmd *cobra.Command, args []string) error {
 	// simply won't work).
 	if sourceRemote == destRemote && c.flagTarget == "" && c.flagStorage == "" && c.flagTargetProject == "" {
 		if c.flagConfig != nil || c.flagDevice != nil || c.flagProfile != nil || c.flagNoProfiles {
-			return fmt.Errorf(i18n.G("Can't override configuration or profiles in local rename"))
+			return errors.New(i18n.G("Can't override configuration or profiles in local rename"))
 		}
 
 		source, err := conf.GetInstanceServer(sourceRemote)
@@ -247,7 +251,7 @@ func (c *cmdMove) moveInstance(sourceResource string, destResource string, state
 
 	// Make sure we have an instance or snapshot name.
 	if sourceName == "" {
-		return fmt.Errorf(i18n.G("You must specify a source instance name"))
+		return errors.New(i18n.G("You must specify a source instance name"))
 	}
 
 	// The destination name is optional.
@@ -262,7 +266,7 @@ func (c *cmdMove) moveInstance(sourceResource string, destResource string, state
 	}
 
 	if !source.IsClustered() && c.flagTarget != "" {
-		return fmt.Errorf(i18n.G("--target can only be used with clusters"))
+		return errors.New(i18n.G("--target can only be used with clusters"))
 	}
 
 	// Set the target if specified.
@@ -316,7 +320,7 @@ func (c *cmdMove) moveInstance(sourceResource string, destResource string, state
 			return err
 		}
 
-		// Fetch the current isntance.
+		// Fetch the current instance.
 		inst, _, err := source.GetInstance(sourceName)
 		if err != nil {
 			return err
@@ -324,9 +328,7 @@ func (c *cmdMove) moveInstance(sourceResource string, destResource string, state
 
 		for devName, dev := range deviceMap {
 			fullDev := inst.ExpandedDevices[devName]
-			for k, v := range dev {
-				fullDev[k] = v
-			}
+			maps.Copy(fullDev, dev)
 
 			req.Devices[devName] = fullDev
 		}

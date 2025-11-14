@@ -1,13 +1,13 @@
 package device
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/internal/server/instance"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
@@ -15,6 +15,7 @@ import (
 	"github.com/lxc/incus/v6/internal/server/network"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -42,21 +43,98 @@ func (d *nicMACVLAN) validateConfig(instConf instance.ConfigReader) error {
 
 	var requiredFields []string
 	optionalFields := []string{
+		// gendoc:generate(entity=devices, group=nic_macvlan, key=name)
+		//
+		// ---
+		//  type: string
+		//  default: kernel assigned
+		//  managed: no
+		//  shortdesc: The name of the interface inside the instance
 		"name",
+
+		// gendoc:generate(entity=devices, group=nic_macvlan, key=network)
+		//
+		// ---
+		//  type: string
+		//  managed: no
+		//  shortdesc: The managed network to link the device to (instead of specifying the `nictype` directly)
 		"network",
+
+		// gendoc:generate(entity=devices, group=nic_macvlan, key=parent)
+		//
+		// ---
+		//  type: string
+		//  managed: yes
+		//  shortdesc: The name of the parent host device (required if specifying the `nictype` directly)
 		"parent",
+
+		// gendoc:generate(entity=devices, group=nic_macvlan, key=mtu)
+		//
+		// ---
+		//  type: integer
+		//  default: MTU of the parent device
+		//  managed: yes
+		//  shortdesc: The Maximum Transmit Unit (MTU) of the new interface
 		"mtu",
+
+		// gendoc:generate(entity=devices, group=nic_macvlan, key=hwaddr)
+		//
+		// ---
+		//  type: string
+		//  default: randomly assigned
+		//  managed: no
+		//  shortdesc: The MAC address of the new interface
 		"hwaddr",
+
+		// gendoc:generate(entity=devices, group=nic_macvlan, key=vlan)
+		//
+		// ---
+		//  type: integer
+		//  managed: no
+		//  shortdesc: The VLAN ID to attach to
 		"vlan",
+
+		// gendoc:generate(entity=devices, group=nic_macvlan, key=boot.priority)
+		//
+		// ---
+		//  type: integer
+		//  managed: no
+		//  shortdesc: Boot priority for VMs (higher value boots first)
 		"boot.priority",
+
+		// gendoc:generate(entity=devices, group=nic_macvlan, key=gvrp)
+		//
+		// ---
+		//  type: bool
+		//  default: false
+		//  managed: no
+		//  shortdesc: Register VLAN using GARP VLAN Registration Protocol
 		"gvrp",
+
+		// gendoc:generate(entity=devices, group=nic_macvlan, key=mode)
+		//
+		// ---
+		//  type: string
+		//  default: bridge
+		//  managed: no
+		//  shortdesc: Macvlan mode (one of `bridge`, `vepa`, `passthru` or `private`)
+		"mode",
+
+		// gendoc:generate(entity=devices, group=nic_macvlan, key=io.bus)
+		//
+		// ---
+		//  type: string
+		//  default: `virtio`
+		//  managed: no
+		//  shortdesc: Override the bus for the device (can be `virtio` or `usb`) (VM only)
+		"io.bus",
 	}
 
 	// Check that if network proeperty is set that conflicting keys are not present.
 	if d.config["network"] != "" {
 		requiredFields = append(requiredFields, "network")
 
-		bannedKeys := []string{"nictype", "parent", "mtu", "vlan", "gvrp"}
+		bannedKeys := []string{"nictype", "parent", "mtu", "vlan", "gvrp", "mode"}
 		for _, bannedKey := range bannedKeys {
 			if d.config[bannedKey] != "" {
 				return fmt.Errorf("Cannot use %q property in conjunction with %q property", bannedKey, "network")
@@ -72,11 +150,11 @@ func (d *nicMACVLAN) validateConfig(instConf instance.ConfigReader) error {
 		}
 
 		if d.network.Status() != api.NetworkStatusCreated {
-			return fmt.Errorf("Specified network is not fully created")
+			return errors.New("Specified network is not fully created")
 		}
 
 		if d.network.Type() != "macvlan" {
-			return fmt.Errorf("Specified network must be of type macvlan")
+			return errors.New("Specified network must be of type macvlan")
 		}
 
 		netConfig := d.network.Config()
@@ -123,7 +201,7 @@ func (d *nicMACVLAN) PreStartCheck() error {
 // validateEnvironment checks the runtime environment for correctness.
 func (d *nicMACVLAN) validateEnvironment() error {
 	if d.inst.Type() == instancetype.Container && d.config["name"] == "" {
-		return fmt.Errorf("Requires name property to start")
+		return errors.New("Requires name property to start")
 	}
 
 	if !util.PathExists(fmt.Sprintf("/sys/class/net/%s", d.config["parent"])) {
@@ -144,8 +222,8 @@ func (d *nicMACVLAN) Start() (*deviceConfig.RunConfig, error) {
 	networkCreateSharedDeviceLock.Lock()
 	defer networkCreateSharedDeviceLock.Unlock()
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	saveData := make(map[string]string)
 
@@ -168,7 +246,7 @@ func (d *nicMACVLAN) Start() (*deviceConfig.RunConfig, error) {
 	saveData["last_state.created"] = fmt.Sprintf("%t", statusDev != "existing")
 
 	if util.IsTrue(saveData["last_state.created"]) {
-		revert.Add(func() {
+		reverter.Add(func() {
 			_ = networkRemoveInterfaceIfNeeded(d.state, actualParentName, d.inst, d.config["parent"], d.config["vlan"])
 		})
 	}
@@ -179,7 +257,20 @@ func (d *nicMACVLAN) Start() (*deviceConfig.RunConfig, error) {
 			Name:   saveData["host_name"],
 			Parent: actualParentName,
 		},
-		Mode: "bridge",
+	}
+
+	mode := d.config["mode"]
+	if mode != "" {
+		// Validate the provided mode.
+		switch mode {
+		case "bridge", "vepa", "passthru", "private":
+			link.Mode = mode
+		default:
+			return nil, fmt.Errorf("Invalid MACVLAN mode specified: %q", mode)
+		}
+	} else {
+		// Default to bridge mode if not specified.
+		link.Mode = "bridge"
 	}
 
 	// Set the MAC address.
@@ -204,7 +295,7 @@ func (d *nicMACVLAN) Start() (*deviceConfig.RunConfig, error) {
 
 	if d.inst.Type() == instancetype.VM {
 		// Enable all multicast processing which is required for IPv6 NDP functionality.
-		link.AllMutlicast = true
+		link.AllMulticast = true
 
 		// Bring the interface up on host side.
 		link.Up = true
@@ -226,12 +317,12 @@ func (d *nicMACVLAN) Start() (*deviceConfig.RunConfig, error) {
 		}
 	}
 
-	revert.Add(func() { _ = network.InterfaceRemove(saveData["host_name"]) })
+	reverter.Add(func() { _ = network.InterfaceRemove(saveData["host_name"]) })
 
 	if d.inst.Type() == instancetype.VM {
 		// Disable IPv6 on host interface to avoid getting IPv6 link-local addresses unnecessarily.
 		err = localUtil.SysctlSet(fmt.Sprintf("net/ipv6/conf/%s/disable_ipv6", link.Name), "1")
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("Failed to disable IPv6 on host interface %q: %w", link.Name, err)
 		}
 	}
@@ -250,6 +341,10 @@ func (d *nicMACVLAN) Start() (*deviceConfig.RunConfig, error) {
 		{Key: "hwaddr", Value: d.config["hwaddr"]},
 	}
 
+	if d.config["io.bus"] == "usb" {
+		runConf.UseUSBBus = true
+	}
+
 	if d.inst.Type() == instancetype.VM {
 		runConf.NetworkInterface = append(runConf.NetworkInterface,
 			[]deviceConfig.RunConfigItem{
@@ -258,7 +353,8 @@ func (d *nicMACVLAN) Start() (*deviceConfig.RunConfig, error) {
 			}...)
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return &runConf, nil
 }
 

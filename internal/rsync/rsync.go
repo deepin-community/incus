@@ -2,6 +2,7 @@ package rsync
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,7 +31,7 @@ var RunWrapper func(cmd *exec.Cmd, source string, destination string) (func(), e
 // rsync is a wrapper for the rsync command which will respect RunWrapper.
 func rsync(args ...string) (string, error) {
 	if len(args) < 2 {
-		return "", fmt.Errorf("rsync call expects a minimum of two arguments (source and destination)")
+		return "", errors.New("rsync call expects a minimum of two arguments (source and destination)")
 	}
 
 	// Setup the command.
@@ -64,7 +65,7 @@ func rsync(args ...string) (string, error) {
 
 // LocalCopy copies a directory using rsync (with the --devices option).
 func LocalCopy(source string, dest string, bwlimit string, xattrs bool, rsyncArgs ...string) (string, error) {
-	err := os.MkdirAll(dest, 0755)
+	err := os.MkdirAll(dest, 0o755)
 	if err != nil {
 		return "", err
 	}
@@ -107,13 +108,11 @@ func LocalCopy(source string, dest string, bwlimit string, xattrs bool, rsyncArg
 
 	msg, err := rsync(args...)
 	if err != nil {
-		runError, ok := err.(subprocess.RunError)
+		var exitError *exec.ExitError
+		ok := errors.As(err, &exitError)
 		if ok {
-			exitError, ok := runError.Unwrap().(*exec.ExitError)
-			if ok {
-				if exitError.ExitCode() == 24 {
-					return msg, nil
-				}
+			if exitError.ExitCode() == 24 {
+				return msg, nil
 			}
 		}
 
@@ -184,7 +183,8 @@ func sendSetup(name string, path string, bwlimit string, execPath string, featur
 		path,
 		"localhost:/tmp/foo",
 		"-e",
-		rsyncCmd}...)
+		rsyncCmd,
+	}...)
 
 	cmd := exec.Command("rsync", args...)
 
@@ -459,7 +459,7 @@ func AtLeast(min string) bool {
 		return false
 	}
 
-	// Load minium version.
+	// Load minimum version.
 	minVer, err := version.NewDottedVersion(min)
 	if err != nil {
 		return false

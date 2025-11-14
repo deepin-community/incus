@@ -7,9 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 
@@ -119,7 +116,7 @@ func tlsHTTPClient(client *http.Client, tlsClientCert string, tlsClientKey strin
 // Any errors encountered during the setup process are also handled by the function.
 func unixHTTPClient(args *ConnectionArgs, path string) (*http.Client, error) {
 	// Setup a Unix socket dialer
-	unixDial := func(_ context.Context, network, addr string) (net.Conn, error) {
+	unixDial := func(_ context.Context, _ string, _ string) (net.Conn, error) {
 		raddr, err := net.ResolveUnixAddr("unix", path)
 		if err != nil {
 			return nil, err
@@ -167,22 +164,22 @@ type remoteOperationResult struct {
 	Error error
 }
 
-func remoteOperationError(msg string, errors []remoteOperationResult) error {
+func remoteOperationError(msg string, errorOperationResults []remoteOperationResult) error {
 	// Check if empty
-	if len(errors) == 0 {
+	if len(errorOperationResults) == 0 {
 		return nil
 	}
 
 	// Check if all identical
 	var err error
-	for _, entry := range errors {
+	for _, entry := range errorOperationResults {
 		if err != nil && entry.Error.Error() != err.Error() {
-			errorStrs := make([]string, 0, len(errors))
-			for _, error := range errors {
-				errorStrs = append(errorStrs, fmt.Sprintf("%s: %v", error.URL, error.Error))
+			errorStrings := make([]string, 0, len(errorOperationResults))
+			for _, operationResult := range errorOperationResults {
+				errorStrings = append(errorStrings, fmt.Sprintf("%s: %v", operationResult.URL, operationResult.Error))
 			}
 
-			return fmt.Errorf("%s:\n - %s", msg, strings.Join(errorStrs, "\n - "))
+			return fmt.Errorf("%s:\n - %s", msg, strings.Join(errorStrings, "\n - "))
 		}
 
 		err = entry.Error
@@ -252,35 +249,4 @@ type HTTPTransporter interface {
 
 	// Transport what this struct wraps
 	Transport() *http.Transport
-}
-
-func openBrowser(url string) error {
-	var err error
-
-	browser := os.Getenv("BROWSER")
-	if browser != "" {
-		if browser == "none" {
-			return nil
-		}
-
-		err = exec.Command(browser, url).Start()
-		return err
-	}
-
-	switch runtime.GOOS {
-	case "linux":
-		err = exec.Command("xdg-open", url).Start()
-	case "windows":
-		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
-	case "darwin":
-		err = exec.Command("open", url).Start()
-	default:
-		err = fmt.Errorf("unsupported platform")
-	}
-
-	if err != nil {
-		return err
-	}
-
-	return nil
 }

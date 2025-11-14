@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -17,6 +19,7 @@ type cmdConfigDevice struct {
 	profile *cmdProfile
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdConfigDevice) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("device")
@@ -60,7 +63,7 @@ func (c *cmdConfigDevice) Command() *cobra.Command {
 
 	// Workaround for subcommand usage errors. See: https://github.com/spf13/cobra/issues/706
 	cmd.Args = cobra.NoArgs
-	cmd.Run = func(cmd *cobra.Command, args []string) { _ = cmd.Usage() }
+	cmd.Run = func(cmd *cobra.Command, _ []string) { _ = cmd.Usage() }
 	return cmd
 }
 
@@ -72,8 +75,10 @@ type cmdConfigDeviceAdd struct {
 	profile      *cmdProfile
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdConfigDeviceAdd) Command() *cobra.Command {
 	cmd := &cobra.Command{}
+	cmd.Aliases = []string{"create"}
 	cmd.Short = i18n.G("Add instance devices")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Add instance devices`))
@@ -97,7 +102,7 @@ incus profile device add [<remote>:]profile1 <device-name> disk pool=some-pool s
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			if c.config != nil {
 				return c.global.cmpInstances(toComplete)
@@ -112,15 +117,16 @@ incus profile device add [<remote>:]profile1 <device-name> disk pool=some-pool s
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdConfigDeviceAdd) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 3, -1)
+	exit, err := c.global.checkArgs(cmd, args, 3, -1)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -128,7 +134,7 @@ func (c *cmdConfigDeviceAdd) Run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing name"))
+		return errors.New(i18n.G("Missing name"))
 	}
 
 	// Add the device
@@ -160,7 +166,7 @@ func (c *cmdConfigDeviceAdd) Run(cmd *cobra.Command, args []string) error {
 
 		_, ok := profile.Devices[devname]
 		if ok {
-			return fmt.Errorf(i18n.G("The device already exists"))
+			return errors.New(i18n.G("The device already exists"))
 		}
 
 		profile.Devices[devname] = device
@@ -177,7 +183,7 @@ func (c *cmdConfigDeviceAdd) Run(cmd *cobra.Command, args []string) error {
 
 		_, ok := inst.Devices[devname]
 		if ok {
-			return fmt.Errorf(i18n.G("The device already exists"))
+			return errors.New(i18n.G("The device already exists"))
 		}
 
 		inst.Devices[devname] = device
@@ -208,6 +214,7 @@ type cmdConfigDeviceGet struct {
 	profile      *cmdProfile
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdConfigDeviceGet) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	if c.config != nil {
@@ -222,7 +229,7 @@ func (c *cmdConfigDeviceGet) Command() *cobra.Command {
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			if c.config != nil {
 				return c.global.cmpInstances(toComplete)
@@ -245,15 +252,16 @@ func (c *cmdConfigDeviceGet) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdConfigDeviceGet) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 3, 3)
+	exit, err := c.global.checkArgs(cmd, args, 3, 3)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -261,7 +269,7 @@ func (c *cmdConfigDeviceGet) Run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing name"))
+		return errors.New(i18n.G("Missing name"))
 	}
 
 	// Get the config key
@@ -276,7 +284,7 @@ func (c *cmdConfigDeviceGet) Run(cmd *cobra.Command, args []string) error {
 
 		dev, ok := profile.Devices[devname]
 		if !ok {
-			return fmt.Errorf(i18n.G("Device doesn't exist"))
+			return errors.New(i18n.G("Device doesn't exist"))
 		}
 
 		fmt.Println(dev[key])
@@ -290,10 +298,10 @@ func (c *cmdConfigDeviceGet) Run(cmd *cobra.Command, args []string) error {
 		if !ok {
 			_, ok = inst.ExpandedDevices[devname]
 			if !ok {
-				return fmt.Errorf(i18n.G("Device doesn't exist"))
+				return errors.New(i18n.G("Device doesn't exist"))
 			}
 
-			return fmt.Errorf(i18n.G("Device from profile(s) cannot be retrieved for individual instance"))
+			return errors.New(i18n.G("Device from profile(s) cannot be retrieved for individual instance"))
 		}
 
 		fmt.Println(dev[key])
@@ -310,6 +318,7 @@ type cmdConfigDeviceList struct {
 	profile      *cmdProfile
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdConfigDeviceList) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Aliases = []string{"ls"}
@@ -324,7 +333,7 @@ func (c *cmdConfigDeviceList) Command() *cobra.Command {
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			if c.config != nil {
 				return c.global.cmpInstances(toComplete)
@@ -339,15 +348,16 @@ func (c *cmdConfigDeviceList) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdConfigDeviceList) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 1)
+	exit, err := c.global.checkArgs(cmd, args, 1, 1)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -355,7 +365,7 @@ func (c *cmdConfigDeviceList) Run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing name"))
+		return errors.New(i18n.G("Missing name"))
 	}
 
 	// List the devices
@@ -393,6 +403,7 @@ type cmdConfigDeviceOverride struct {
 	profile      *cmdProfile
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdConfigDeviceOverride) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("override", i18n.G("[<remote>:]<instance> <device> [key=value...]"))
@@ -402,7 +413,7 @@ func (c *cmdConfigDeviceOverride) Command() *cobra.Command {
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -413,15 +424,16 @@ func (c *cmdConfigDeviceOverride) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdConfigDeviceOverride) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 2, -1)
+	exit, err := c.global.checkArgs(cmd, args, 2, -1)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -429,7 +441,7 @@ func (c *cmdConfigDeviceOverride) Run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing name"))
+		return errors.New(i18n.G("Missing name"))
 	}
 
 	// Override the device
@@ -441,12 +453,12 @@ func (c *cmdConfigDeviceOverride) Run(cmd *cobra.Command, args []string) error {
 	devname := args[1]
 	_, ok := inst.Devices[devname]
 	if ok {
-		return fmt.Errorf(i18n.G("The device already exists"))
+		return errors.New(i18n.G("The device already exists"))
 	}
 
 	device, ok := inst.ExpandedDevices[devname]
 	if !ok {
-		return fmt.Errorf(i18n.G("The profile device doesn't exist"))
+		return errors.New(i18n.G("The profile device doesn't exist"))
 	}
 
 	if len(args) > 2 {
@@ -489,6 +501,7 @@ type cmdConfigDeviceRemove struct {
 	profile      *cmdProfile
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdConfigDeviceRemove) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	if c.config != nil {
@@ -497,14 +510,14 @@ func (c *cmdConfigDeviceRemove) Command() *cobra.Command {
 		cmd.Use = usage("remove", i18n.G("[<remote>:]<profile> <name>..."))
 	}
 
-	cmd.Aliases = []string{"rm"}
+	cmd.Aliases = []string{"delete", "rm"}
 	cmd.Short = i18n.G("Remove instance devices")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Remove instance devices`))
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			if c.config != nil {
 				return c.global.cmpInstances(toComplete)
@@ -525,15 +538,16 @@ func (c *cmdConfigDeviceRemove) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdConfigDeviceRemove) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 2, -1)
+	exit, err := c.global.checkArgs(cmd, args, 2, -1)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -541,7 +555,7 @@ func (c *cmdConfigDeviceRemove) Run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing name"))
+		return errors.New(i18n.G("Missing name"))
 	}
 
 	// Remove the device
@@ -554,7 +568,7 @@ func (c *cmdConfigDeviceRemove) Run(cmd *cobra.Command, args []string) error {
 		for _, devname := range args[1:] {
 			_, ok := profile.Devices[devname]
 			if !ok {
-				return fmt.Errorf(i18n.G("Device doesn't exist"))
+				return errors.New(i18n.G("Device doesn't exist"))
 			}
 
 			delete(profile.Devices, devname)
@@ -575,10 +589,10 @@ func (c *cmdConfigDeviceRemove) Run(cmd *cobra.Command, args []string) error {
 			if !ok {
 				_, ok := inst.ExpandedDevices[devname]
 				if !ok {
-					return fmt.Errorf(i18n.G("Device doesn't exist"))
+					return errors.New(i18n.G("Device doesn't exist"))
 				}
 
-				return fmt.Errorf(i18n.G("Device from profile(s) cannot be removed from individual instance. Override device or modify profile instead"))
+				return errors.New(i18n.G("Device from profile(s) cannot be removed from individual instance. Override device or modify profile instead"))
 			}
 
 			delete(inst.Devices, devname)
@@ -610,6 +624,7 @@ type cmdConfigDeviceSet struct {
 	profile      *cmdProfile
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdConfigDeviceSet) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Short = i18n.G("Set device configuration keys")
@@ -631,7 +646,7 @@ For backward compatibility, a single configuration key may still be set with:
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			if c.config != nil {
 				return c.global.cmpInstances(toComplete)
@@ -654,15 +669,16 @@ For backward compatibility, a single configuration key may still be set with:
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdConfigDeviceSet) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 3, -1)
+	exit, err := c.global.checkArgs(cmd, args, 3, -1)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -670,7 +686,7 @@ func (c *cmdConfigDeviceSet) Run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing name"))
+		return errors.New(i18n.G("Missing name"))
 	}
 
 	// Set the device config key
@@ -689,12 +705,10 @@ func (c *cmdConfigDeviceSet) Run(cmd *cobra.Command, args []string) error {
 
 		dev, ok := profile.Devices[devname]
 		if !ok {
-			return fmt.Errorf(i18n.G("Device doesn't exist"))
+			return errors.New(i18n.G("Device doesn't exist"))
 		}
 
-		for k, v := range keys {
-			dev[k] = v
-		}
+		maps.Copy(dev, keys)
 
 		profile.Devices[devname] = dev
 
@@ -712,15 +726,13 @@ func (c *cmdConfigDeviceSet) Run(cmd *cobra.Command, args []string) error {
 		if !ok {
 			_, ok = inst.ExpandedDevices[devname]
 			if !ok {
-				return fmt.Errorf(i18n.G("Device doesn't exist"))
+				return errors.New(i18n.G("Device doesn't exist"))
 			}
 
-			return fmt.Errorf(i18n.G("Device from profile(s) cannot be modified for individual instance. Override device or modify profile instead"))
+			return errors.New(i18n.G("Device from profile(s) cannot be modified for individual instance. Override device or modify profile instead"))
 		}
 
-		for k, v := range keys {
-			dev[k] = v
-		}
+		maps.Copy(dev, keys)
 
 		inst.Devices[devname] = dev
 
@@ -746,6 +758,7 @@ type cmdConfigDeviceShow struct {
 	profile      *cmdProfile
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdConfigDeviceShow) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	if c.config != nil {
@@ -760,7 +773,7 @@ func (c *cmdConfigDeviceShow) Command() *cobra.Command {
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			if c.config != nil {
 				return c.global.cmpInstances(toComplete)
@@ -775,15 +788,16 @@ func (c *cmdConfigDeviceShow) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdConfigDeviceShow) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 1)
+	exit, err := c.global.checkArgs(cmd, args, 1, 1)
 	if exit {
 		return err
 	}
 
 	// Parse remote
-	resources, err := c.global.ParseServers(args[0])
+	resources, err := c.global.parseServers(args[0])
 	if err != nil {
 		return err
 	}
@@ -791,7 +805,7 @@ func (c *cmdConfigDeviceShow) Run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing name"))
+		return errors.New(i18n.G("Missing name"))
 	}
 
 	// Show the devices
@@ -831,6 +845,7 @@ type cmdConfigDeviceUnset struct {
 	profile         *cmdProfile
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdConfigDeviceUnset) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	if c.config != nil {
@@ -845,7 +860,7 @@ func (c *cmdConfigDeviceUnset) Command() *cobra.Command {
 
 	cmd.RunE = c.Run
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			if c.config != nil {
 				return c.global.cmpInstances(toComplete)
@@ -868,9 +883,10 @@ func (c *cmdConfigDeviceUnset) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdConfigDeviceUnset) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 3, 3)
+	exit, err := c.global.checkArgs(cmd, args, 3, 3)
 	if exit {
 		return err
 	}

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -227,7 +228,7 @@ func ObjectFromRequest(r *http.Request, objectType ObjectType, expandProject fun
 	// If using projects API we want to pass in the mux var, not the query parameter.
 	if objectType == ObjectTypeProject && strings.HasPrefix(r.URL.Path, fmt.Sprintf("/%s/projects", version.APIVersion)) {
 		if len(muxValues) == 0 {
-			return "", fmt.Errorf("Missing project name path variable")
+			return "", errors.New("Missing project name path variable")
 		}
 
 		return ObjectProject(muxValues[0]), nil
@@ -351,10 +352,10 @@ func ObjectStorageVolume(projectName string, poolName string, volumeType string,
 
 // escape escapes only the forward slash character as this is used as a delimiter. Everything else is allowed.
 func escape(s string) string {
-	return strings.Replace(s, "/", "%2F", -1)
+	return strings.ReplaceAll(s, "/", "%2F")
 }
 
 // unescape replaces only the escaped forward slashes.
 func unescape(s string) string {
-	return strings.Replace(s, "%2F", "/", -1)
+	return strings.ReplaceAll(s, "%2F", "/")
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/osarch"
+	"github.com/lxc/incus/v6/shared/util"
 )
 
 // ImageSourceProtocol maps image source protocol codes to human-readable names.
@@ -391,7 +393,7 @@ func (c *ClusterTx) GetImageByFingerprintPrefix(ctx context.Context, fingerprint
 	case 1:
 		object = images[0]
 	default:
-		return -1, nil, fmt.Errorf("More than one image matches")
+		return -1, nil, errors.New("More than one image matches")
 	}
 
 	image.Fingerprint = object.Fingerprint
@@ -559,13 +561,11 @@ WHERE images.fingerprint = ?
 	}
 
 	if len(addresses) == 0 {
-		return "", fmt.Errorf("Image not available on any online member")
+		return "", errors.New("Image not available on any online member")
 	}
 
-	for _, address := range addresses {
-		if address == localAddress {
-			return "", nil
-		}
+	if slices.Contains(addresses, localAddress) {
+		return "", nil
 	}
 
 	return addresses[0], nil
@@ -656,7 +656,7 @@ func (c *ClusterTx) GetImageAlias(ctx context.Context, projectName string, image
 	arg2 := []any{&id, &fingerprint, &imageType, &description}
 	err = c.tx.QueryRowContext(ctx, q, arg1...).Scan(arg2...)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return -1, api.ImageAliasesEntry{}, api.StatusErrorf(http.StatusNotFound, "Image alias not found")
 		}
 
@@ -767,16 +767,25 @@ func (c *ClusterTx) UpdateImageLastUseDate(ctx context.Context, projectName stri
 
 // SetImageCachedAndLastUseDate sets the cached and last_use_date field of the image with the given fingerprint.
 func (c *ClusterTx) SetImageCachedAndLastUseDate(ctx context.Context, projectName string, fingerprint string, lastUsed time.Time) error {
+	enabled, err := cluster.ProjectHasImages(ctx, c.tx, projectName)
+	if err != nil {
+		return fmt.Errorf("Check if project has images: %w", err)
+	}
+
+	if !enabled {
+		projectName = api.ProjectDefaultName
+	}
+
 	stmt := `UPDATE images SET cached=1, last_use_date=? WHERE fingerprint=? AND project_id = (SELECT id FROM projects WHERE name = ? LIMIT 1)`
 
-	_, err := c.tx.ExecContext(ctx, stmt, lastUsed, fingerprint, projectName)
+	_, err = c.tx.ExecContext(ctx, stmt, lastUsed, fingerprint, projectName)
 
 	return err
 }
 
 // UpdateImage updates the image with the given ID.
 func (c *ClusterTx) UpdateImage(ctx context.Context, id int, fname string, sz int64, public bool, autoUpdate bool, architecture string, createdAt time.Time, expiresAt time.Time, properties map[string]string, project string, profileIds []int64) error {
-	arch, err := osarch.ArchitectureId(architecture)
+	arch, err := osarch.ArchitectureID(architecture)
 	if err != nil {
 		arch = 0
 	}
@@ -849,7 +858,7 @@ func (c *ClusterTx) UpdateImage(ctx context.Context, id int, fname string, sz in
 
 // CreateImage creates a new image.
 func (c *ClusterTx) CreateImage(ctx context.Context, project string, fp string, fname string, sz int64, public bool, autoUpdate bool, architecture string, createdAt time.Time, expiresAt time.Time, properties map[string]string, typeName string, profileIds []int64) error {
-	arch, err := osarch.ArchitectureId(architecture)
+	arch, err := osarch.ArchitectureID(architecture)
 	if err != nil {
 		arch = 0
 	}
@@ -943,18 +952,44 @@ func (c *ClusterTx) CreateImage(ctx context.Context, project string, fp string, 
 	// If these projects also have features.profiles=true, their default profiles should be associated
 	// with all created images.
 	if imageProject == "default" {
-		_, err = c.tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO images_profiles(image_id, profile_id)
-					SELECT ?, profiles.id FROM profiles
-						JOIN projects_config AS t1 ON t1.project_id = profiles.project_id
-							AND t1.key = "features.images"
-							AND t1.value = "false"
-						JOIN projects_config AS t2 ON t2.project_id = profiles.project_id
-							AND t2.key = "features.profiles"
-							AND t2.value = "true"
-						WHERE profiles.name = "default"`, id)
+		allProjects, err := cluster.GetProjects(ctx, c.tx)
 		if err != nil {
 			return err
+		}
+
+		projects := []*api.Project{}
+		for _, p := range allProjects {
+			project, err := p.ToAPI(ctx, c.tx)
+			if err != nil {
+				return err
+			}
+
+			// Select the default project and projects with 'features.images' disabled and 'features.profiles' enabled.
+			if (util.IsFalse(project.Config["features.images"]) && util.IsTrue(project.Config["features.profiles"])) || project.Name == api.ProjectDefaultName {
+				projects = append(projects, project)
+			}
+		}
+
+		pIDs := []int{}
+		for _, p := range projects {
+			dbProfiles, err := cluster.GetProfilesIfEnabled(ctx, c.tx, p.Name, []string{"default"})
+			if err != nil {
+				return err
+			}
+
+			if len(dbProfiles) != 1 {
+				return fmt.Errorf("Failed to find default profile in project %q", project)
+			}
+
+			pIDs = append(pIDs, dbProfiles[0].ID)
+		}
+
+		sql = `INSERT OR IGNORE INTO images_profiles (image_id, profile_id) VALUES (?, ?)`
+		for _, profileID := range pIDs {
+			_, err = c.tx.ExecContext(ctx, sql, id, profileID)
+			if err != nil {
+				return err
+			}
 		}
 	}
 

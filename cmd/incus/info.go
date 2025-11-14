@@ -1,20 +1,21 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/instance"
 	"github.com/lxc/incus/v6/shared/api"
-	config "github.com/lxc/incus/v6/shared/cliconfig"
 	"github.com/lxc/incus/v6/shared/units"
 )
 
@@ -27,6 +28,7 @@ type cmdInfo struct {
 	flagTarget     string
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdInfo) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("info", i18n.G("[<remote>:][<instance>]"))
@@ -46,7 +48,7 @@ incus info [<remote>:] [--resources]
 	cmd.Flags().BoolVar(&c.flagResources, "resources", false, i18n.G("Show the resources available to the server"))
 	cmd.Flags().StringVar(&c.flagTarget, "target", "", i18n.G("Cluster member name")+"``")
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstances(toComplete)
 		}
@@ -57,11 +59,12 @@ incus info [<remote>:] [--resources]
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdInfo) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 0, 1)
+	exit, err := c.global.checkArgs(cmd, args, 0, 1)
 	if exit {
 		return err
 	}
@@ -105,7 +108,7 @@ func (c *cmdInfo) Run(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	return c.instanceInfo(d, conf.Remotes[remote], cName, c.flagShowLog)
+	return c.instanceInfo(d, cName, c.flagShowLog)
 }
 
 func (c *cmdInfo) renderGPU(gpu api.ResourcesGPUCard, prefix string, initial bool) {
@@ -132,7 +135,7 @@ func (c *cmdInfo) renderGPU(gpu api.ResourcesGPUCard, prefix string, initial boo
 	}
 
 	if gpu.DRM != nil {
-		fmt.Printf(prefix + i18n.G("DRM:") + "\n")
+		fmt.Print(prefix + i18n.G("DRM:") + "\n")
 		fmt.Printf(prefix+"  "+i18n.G("ID: %d")+"\n", gpu.DRM.ID)
 
 		if gpu.DRM.CardName != "" {
@@ -149,7 +152,7 @@ func (c *cmdInfo) renderGPU(gpu api.ResourcesGPUCard, prefix string, initial boo
 	}
 
 	if gpu.Nvidia != nil {
-		fmt.Printf(prefix + i18n.G("NVIDIA information:") + "\n")
+		fmt.Print(prefix + i18n.G("NVIDIA information:") + "\n")
 		fmt.Printf(prefix+"  "+i18n.G("Architecture: %v")+"\n", gpu.Nvidia.Architecture)
 		fmt.Printf(prefix+"  "+i18n.G("Brand: %v")+"\n", gpu.Nvidia.Brand)
 		fmt.Printf(prefix+"  "+i18n.G("Model: %v")+"\n", gpu.Nvidia.Model)
@@ -159,7 +162,7 @@ func (c *cmdInfo) renderGPU(gpu api.ResourcesGPUCard, prefix string, initial boo
 	}
 
 	if gpu.SRIOV != nil {
-		fmt.Printf(prefix + i18n.G("SR-IOV information:") + "\n")
+		fmt.Print(prefix + i18n.G("SR-IOV information:") + "\n")
 		fmt.Printf(prefix+"  "+i18n.G("Current number of VFs: %d")+"\n", gpu.SRIOV.CurrentVFs)
 		fmt.Printf(prefix+"  "+i18n.G("Maximum number of VFs: %d")+"\n", gpu.SRIOV.MaximumVFs)
 		if len(gpu.SRIOV.VFs) > 0 {
@@ -172,7 +175,7 @@ func (c *cmdInfo) renderGPU(gpu api.ResourcesGPUCard, prefix string, initial boo
 	}
 
 	if gpu.Mdev != nil {
-		fmt.Printf(prefix + i18n.G("Mdev profiles:") + "\n")
+		fmt.Print(prefix + i18n.G("Mdev profiles:") + "\n")
 
 		keys := make([]string, 0, len(gpu.Mdev))
 		for k := range gpu.Mdev {
@@ -218,7 +221,7 @@ func (c *cmdInfo) renderNIC(nic api.ResourcesNetworkCard, prefix string, initial
 	}
 
 	if len(nic.Ports) > 0 {
-		fmt.Printf(prefix + i18n.G("Ports:") + "\n")
+		fmt.Print(prefix + i18n.G("Ports:") + "\n")
 		for _, port := range nic.Ports {
 			fmt.Printf(prefix+"  "+i18n.G("- Port %d (%s)")+"\n", port.Port, port.Protocol)
 			fmt.Printf(prefix+"    "+i18n.G("ID: %s")+"\n", port.ID)
@@ -250,7 +253,7 @@ func (c *cmdInfo) renderNIC(nic api.ResourcesNetworkCard, prefix string, initial
 			}
 
 			if port.Infiniband != nil {
-				fmt.Printf(prefix + "    " + i18n.G("Infiniband:") + "\n")
+				fmt.Print(prefix + "    " + i18n.G("Infiniband:") + "\n")
 
 				if port.Infiniband.IsSMName != "" {
 					fmt.Printf(prefix+"      "+i18n.G("IsSM: %s (%s)")+"\n", port.Infiniband.IsSMName, port.Infiniband.IsSMDevice)
@@ -268,7 +271,7 @@ func (c *cmdInfo) renderNIC(nic api.ResourcesNetworkCard, prefix string, initial
 	}
 
 	if nic.SRIOV != nil {
-		fmt.Printf(prefix + i18n.G("SR-IOV information:") + "\n")
+		fmt.Print(prefix + i18n.G("SR-IOV information:") + "\n")
 		fmt.Printf(prefix+"  "+i18n.G("Current number of VFs: %d")+"\n", nic.SRIOV.CurrentVFs)
 		fmt.Printf(prefix+"  "+i18n.G("Maximum number of VFs: %d")+"\n", nic.SRIOV.MaximumVFs)
 		if len(nic.SRIOV.VFs) > 0 {
@@ -309,7 +312,7 @@ func (c *cmdInfo) renderDisk(disk api.ResourcesStorageDisk, prefix string, initi
 	fmt.Printf(prefix+i18n.G("Removable: %v")+"\n", disk.Removable)
 
 	if len(disk.Partitions) != 0 {
-		fmt.Printf(prefix + i18n.G("Partitions:") + "\n")
+		fmt.Print(prefix + i18n.G("Partitions:") + "\n")
 		for _, partition := range disk.Partitions {
 			fmt.Printf(prefix+"  "+i18n.G("- Partition %d")+"\n", partition.Partition)
 			fmt.Printf(prefix+"    "+i18n.G("ID: %s")+"\n", partition.ID)
@@ -330,17 +333,17 @@ func (c *cmdInfo) renderCPU(cpu api.ResourcesCPUSocket, prefix string) {
 	}
 
 	if cpu.Cache != nil {
-		fmt.Printf(prefix + i18n.G("Caches:") + "\n")
+		fmt.Print(prefix + i18n.G("Caches:") + "\n")
 		for _, cache := range cpu.Cache {
 			fmt.Printf(prefix+"  "+i18n.G("- Level %d (type: %s): %s")+"\n", cache.Level, cache.Type, units.GetByteSizeStringIEC(int64(cache.Size), 0))
 		}
 	}
 
-	fmt.Printf(prefix + i18n.G("Cores:") + "\n")
+	fmt.Print(prefix + i18n.G("Cores:") + "\n")
 	for _, core := range cpu.Cores {
 		fmt.Printf(prefix+"  - "+i18n.G("Core %d")+"\n", core.Core)
 		fmt.Printf(prefix+"    "+i18n.G("Frequency: %vMhz")+"\n", core.Frequency)
-		fmt.Printf(prefix + "    " + i18n.G("Threads:") + "\n")
+		fmt.Print(prefix + "    " + i18n.G("Threads:") + "\n")
 		for _, thread := range core.Threads {
 			fmt.Printf(prefix+"      - "+i18n.G("%d (id: %d, online: %v, NUMA node: %v)")+"\n", thread.Thread, thread.ID, thread.Online, thread.NUMANode)
 		}
@@ -382,7 +385,7 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 	// Targeting
 	if c.flagTarget != "" {
 		if !d.IsClustered() {
-			return fmt.Errorf(i18n.G("To use --target, the destination remote must be a cluster"))
+			return errors.New(i18n.G("To use --target, the destination remote must be a cluster"))
 		}
 
 		d = d.UseTarget(c.flagTarget)
@@ -390,7 +393,7 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 
 	if c.flagResources {
 		if !d.HasExtension("resources_v2") {
-			return fmt.Errorf(i18n.G("The server doesn't implement the newer v2 resources API"))
+			return errors.New(i18n.G("The server doesn't implement the newer v2 resources API"))
 		}
 
 		resources, err := d.GetServerResources()
@@ -399,7 +402,7 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 		}
 
 		// System
-		fmt.Printf(i18n.G("System:") + "\n")
+		fmt.Print(i18n.G("System:") + "\n")
 		if resources.System.UUID != "" {
 			fmt.Printf("  "+i18n.G("UUID: %v")+"\n", resources.System.UUID)
 		}
@@ -434,7 +437,7 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 
 		// System: Chassis
 		if resources.System.Chassis != nil {
-			fmt.Printf(i18n.G("  Chassis:") + "\n")
+			fmt.Print(i18n.G("  Chassis:") + "\n")
 			if resources.System.Chassis.Vendor != "" {
 				fmt.Printf("      "+i18n.G("Vendor: %s")+"\n", resources.System.Chassis.Vendor)
 			}
@@ -454,7 +457,7 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 
 		// System: Motherboard
 		if resources.System.Motherboard != nil {
-			fmt.Printf(i18n.G("  Motherboard:") + "\n")
+			fmt.Print(i18n.G("  Motherboard:") + "\n")
 			if resources.System.Motherboard.Vendor != "" {
 				fmt.Printf("      "+i18n.G("Vendor: %s")+"\n", resources.System.Motherboard.Vendor)
 			}
@@ -474,7 +477,7 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 
 		// System: Firmware
 		if resources.System.Firmware != nil {
-			fmt.Printf(i18n.G("  Firmware:") + "\n")
+			fmt.Print(i18n.G("  Firmware:") + "\n")
 			if resources.System.Firmware.Vendor != "" {
 				fmt.Printf("      "+i18n.G("Vendor: %s")+"\n", resources.System.Firmware.Vendor)
 			}
@@ -489,7 +492,7 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 		}
 
 		// Load
-		fmt.Printf("\n" + i18n.G("Load:") + "\n")
+		fmt.Print("\n" + i18n.G("Load:") + "\n")
 		if resources.Load.Processes > 0 {
 			fmt.Printf("  "+i18n.G("Processes: %d")+"\n", resources.Load.Processes)
 			fmt.Printf("  "+i18n.G("Average: %.2f %.2f %.2f")+"\n", resources.Load.Average1Min, resources.Load.Average5Min, resources.Load.Average10Min)
@@ -497,11 +500,11 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 
 		// CPU
 		if len(resources.CPU.Sockets) == 1 {
-			fmt.Printf("\n" + i18n.G("CPU:") + "\n")
+			fmt.Print("\n" + i18n.G("CPU:") + "\n")
 			fmt.Printf("  "+i18n.G("Architecture: %s")+"\n", resources.CPU.Architecture)
 			c.renderCPU(resources.CPU.Sockets[0], "  ")
 		} else if len(resources.CPU.Sockets) > 1 {
-			fmt.Printf(i18n.G("CPUs:") + "\n")
+			fmt.Print(i18n.G("CPUs:") + "\n")
 			fmt.Printf("  "+i18n.G("Architecture: %s")+"\n", resources.CPU.Architecture)
 			for _, cpu := range resources.CPU.Sockets {
 				fmt.Printf("  "+i18n.G("Socket %d:")+"\n", cpu.Socket)
@@ -510,20 +513,20 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 		}
 
 		// Memory
-		fmt.Printf("\n" + i18n.G("Memory:") + "\n")
+		fmt.Print("\n" + i18n.G("Memory:") + "\n")
 		if resources.Memory.HugepagesTotal > 0 {
-			fmt.Printf("  " + i18n.G("Hugepages:"+"\n"))
+			fmt.Print("  " + i18n.G("Hugepages:"+"\n"))
 			fmt.Printf("    "+i18n.G("Free: %v")+"\n", units.GetByteSizeStringIEC(int64(resources.Memory.HugepagesTotal-resources.Memory.HugepagesUsed), 2))
 			fmt.Printf("    "+i18n.G("Used: %v")+"\n", units.GetByteSizeStringIEC(int64(resources.Memory.HugepagesUsed), 2))
 			fmt.Printf("    "+i18n.G("Total: %v")+"\n", units.GetByteSizeStringIEC(int64(resources.Memory.HugepagesTotal), 2))
 		}
 
 		if len(resources.Memory.Nodes) > 1 {
-			fmt.Printf("  " + i18n.G("NUMA nodes:"+"\n"))
+			fmt.Print("  " + i18n.G("NUMA nodes:"+"\n"))
 			for _, node := range resources.Memory.Nodes {
 				fmt.Printf("    "+i18n.G("Node %d:"+"\n"), node.NUMANode)
 				if node.HugepagesTotal > 0 {
-					fmt.Printf("      " + i18n.G("Hugepages:"+"\n"))
+					fmt.Print("      " + i18n.G("Hugepages:"+"\n"))
 					fmt.Printf("        "+i18n.G("Free: %v")+"\n", units.GetByteSizeStringIEC(int64(node.HugepagesTotal-node.HugepagesUsed), 2))
 					fmt.Printf("        "+i18n.G("Used: %v")+"\n", units.GetByteSizeStringIEC(int64(node.HugepagesUsed), 2))
 					fmt.Printf("        "+i18n.G("Total: %v")+"\n", units.GetByteSizeStringIEC(int64(node.HugepagesTotal), 2))
@@ -541,10 +544,10 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 
 		// GPUs
 		if len(resources.GPU.Cards) == 1 {
-			fmt.Printf("\n" + i18n.G("GPU:") + "\n")
+			fmt.Print("\n" + i18n.G("GPU:") + "\n")
 			c.renderGPU(resources.GPU.Cards[0], "  ", true)
 		} else if len(resources.GPU.Cards) > 1 {
-			fmt.Printf("\n" + i18n.G("GPUs:") + "\n")
+			fmt.Print("\n" + i18n.G("GPUs:") + "\n")
 			for id, gpu := range resources.GPU.Cards {
 				fmt.Printf("  "+i18n.G("Card %d:")+"\n", id)
 				c.renderGPU(gpu, "    ", true)
@@ -553,10 +556,10 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 
 		// Network interfaces
 		if len(resources.Network.Cards) == 1 {
-			fmt.Printf("\n" + i18n.G("NIC:") + "\n")
+			fmt.Print("\n" + i18n.G("NIC:") + "\n")
 			c.renderNIC(resources.Network.Cards[0], "  ", true)
 		} else if len(resources.Network.Cards) > 1 {
-			fmt.Printf("\n" + i18n.G("NICs:") + "\n")
+			fmt.Print("\n" + i18n.G("NICs:") + "\n")
 			for id, nic := range resources.Network.Cards {
 				fmt.Printf("  "+i18n.G("Card %d:")+"\n", id)
 				c.renderNIC(nic, "    ", true)
@@ -565,10 +568,10 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 
 		// Storage
 		if len(resources.Storage.Disks) == 1 {
-			fmt.Printf("\n" + i18n.G("Disk:") + "\n")
+			fmt.Print("\n" + i18n.G("Disk:") + "\n")
 			c.renderDisk(resources.Storage.Disks[0], "  ", true)
 		} else if len(resources.Storage.Disks) > 1 {
-			fmt.Printf("\n" + i18n.G("Disks:") + "\n")
+			fmt.Print("\n" + i18n.G("Disks:") + "\n")
 			for id, nic := range resources.Storage.Disks {
 				fmt.Printf("  "+i18n.G("Disk %d:")+"\n", id)
 				c.renderDisk(nic, "    ", true)
@@ -577,10 +580,10 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 
 		// USB
 		if len(resources.USB.Devices) == 1 {
-			fmt.Printf("\n" + i18n.G("USB device:") + "\n")
+			fmt.Print("\n" + i18n.G("USB device:") + "\n")
 			c.renderUSB(resources.USB.Devices[0], "  ")
 		} else if len(resources.USB.Devices) > 1 {
-			fmt.Printf("\n" + i18n.G("USB devices:") + "\n")
+			fmt.Print("\n" + i18n.G("USB devices:") + "\n")
 			for id, usb := range resources.USB.Devices {
 				fmt.Printf("  "+i18n.G("Device %d:")+"\n", id)
 				c.renderUSB(usb, "    ")
@@ -589,10 +592,10 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 
 		// PCI
 		if len(resources.PCI.Devices) == 1 {
-			fmt.Printf("\n" + i18n.G("PCI device:") + "\n")
+			fmt.Print("\n" + i18n.G("PCI device:") + "\n")
 			c.renderPCI(resources.PCI.Devices[0], "  ")
 		} else if len(resources.PCI.Devices) > 1 {
-			fmt.Printf("\n" + i18n.G("PCI devices:") + "\n")
+			fmt.Print("\n" + i18n.G("PCI devices:") + "\n")
 			for id, pci := range resources.PCI.Devices {
 				fmt.Printf("  "+i18n.G("Device %d:")+"\n", id)
 				c.renderPCI(pci, "    ")
@@ -617,10 +620,10 @@ func (c *cmdInfo) remoteInfo(d incus.InstanceServer) error {
 	return nil
 }
 
-func (c *cmdInfo) instanceInfo(d incus.InstanceServer, remote config.Remote, name string, showLog bool) error {
+func (c *cmdInfo) instanceInfo(d incus.InstanceServer, name string, showLog bool) error {
 	// Quick checks.
 	if c.flagTarget != "" {
-		return fmt.Errorf(i18n.G("--target cannot be used with instances"))
+		return errors.New(i18n.G("--target cannot be used with instances"))
 	}
 
 	// Get the full instance data.
@@ -630,7 +633,7 @@ func (c *cmdInfo) instanceInfo(d incus.InstanceServer, remote config.Remote, nam
 	}
 
 	fmt.Printf(i18n.G("Name: %s")+"\n", inst.Name)
-
+	fmt.Printf(i18n.G("Description: %s")+"\n", inst.Description)
 	fmt.Printf(i18n.G("Status: %s")+"\n", strings.ToUpper(inst.Status))
 
 	if inst.Type == "" {
@@ -664,6 +667,17 @@ func (c *cmdInfo) instanceInfo(d incus.InstanceServer, remote config.Remote, nam
 	if inst.State.Pid != 0 {
 		if !inst.State.StartedAt.IsZero() {
 			fmt.Printf(i18n.G("Started: %s")+"\n", inst.State.StartedAt.Local().Format(dateLayout))
+		}
+
+		// Operating System info
+		if inst.State.OSInfo != nil {
+			fmt.Println("\n" + i18n.G("Operating System:"))
+			osInfo := fmt.Sprintf("  %s: %s\n", i18n.G("OS"), inst.State.OSInfo.OS)
+			osInfo += fmt.Sprintf("  %s: %s\n", i18n.G("OS Version"), inst.State.OSInfo.OSVersion)
+			osInfo += fmt.Sprintf("  %s: %s\n", i18n.G("Kernel Version"), inst.State.OSInfo.KernelVersion)
+			osInfo += fmt.Sprintf("  %s: %s\n", i18n.G("Hostname"), inst.State.OSInfo.Hostname)
+			osInfo += fmt.Sprintf("  %s: %s\n", i18n.G("FQDN"), inst.State.OSInfo.FQDN)
+			fmt.Print(osInfo)
 		}
 
 		fmt.Println("\n" + i18n.G("Resources:"))
@@ -814,7 +828,7 @@ func (c *cmdInfo) instanceInfo(d incus.InstanceServer, remote config.Remote, nam
 			i18n.G("Stateful"),
 		}
 
-		_ = cli.RenderTable(cli.TableFormatTable, snapHeader, snapData, inst.Snapshots)
+		_ = cli.RenderTable(os.Stdout, cli.TableFormatTable, snapHeader, snapData, inst.Snapshots)
 	}
 
 	// List backups
@@ -866,22 +880,25 @@ func (c *cmdInfo) instanceInfo(d incus.InstanceServer, remote config.Remote, nam
 			i18n.G("Optimized Storage"),
 		}
 
-		_ = cli.RenderTable(cli.TableFormatTable, backupHeader, backupData, inst.Backups)
+		_ = cli.RenderTable(os.Stdout, cli.TableFormatTable, backupHeader, backupData, inst.Backups)
 	}
 
 	if showLog {
 		var log io.Reader
-		if inst.Type == "container" {
+		switch inst.Type {
+		case "container":
 			log, err = d.GetInstanceLogfile(name, "lxc.log")
 			if err != nil {
 				return err
 			}
-		} else if inst.Type == "virtual-machine" {
+
+		case "virtual-machine":
 			log, err = d.GetInstanceLogfile(name, "qemu.log")
 			if err != nil {
 				return err
 			}
-		} else {
+
+		default:
 			return fmt.Errorf(i18n.G("Unsupported instance type: %s"), inst.Type)
 		}
 

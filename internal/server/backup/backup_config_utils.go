@@ -2,7 +2,7 @@ package backup
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -25,7 +25,7 @@ func ConfigToInstanceDBArgs(state *state.State, c *config.Config, projectName st
 		return nil, nil
 	}
 
-	arch, _ := osarch.ArchitectureId(c.Container.Architecture)
+	arch, _ := osarch.ArchitectureID(c.Container.Architecture)
 	instanceType, _ := instancetype.New(c.Container.Type)
 
 	inst := &db.InstanceArgs{
@@ -51,14 +51,20 @@ func ConfigToInstanceDBArgs(state *state.State, c *config.Config, projectName st
 				return err
 			}
 
+			// Get all the profile configs.
+			profileConfigs, err := cluster.GetAllProfileConfigs(ctx, tx.Tx())
+			if err != nil {
+				return err
+			}
+
 			// Get all the profile devices.
-			profileDevices, err := cluster.GetDevices(ctx, tx.Tx(), "profile")
+			profileDevices, err := cluster.GetAllProfileDevices(ctx, tx.Tx())
 			if err != nil {
 				return err
 			}
 
 			for _, profile := range profiles {
-				apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileDevices)
+				apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileConfigs, profileDevices)
 				if err != nil {
 					return err
 				}
@@ -164,7 +170,7 @@ func UpdateInstanceConfig(c *db.Cluster, b Info, mountPath string) error {
 	}
 
 	if !rootDiskDeviceFound {
-		return fmt.Errorf("No root device could be found")
+		return errors.New("No root device could be found")
 	}
 
 	// Write updated backup.yaml file.

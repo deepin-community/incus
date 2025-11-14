@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,7 +16,8 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/internal/filter"
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/certificate"
@@ -62,6 +64,12 @@ var certificateCmd = APIEndpoint{
 //  ---
 //  produces:
 //    - application/json
+//  parameters:
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
 //  responses:
 //    "200":
 //      description: API endpoints
@@ -98,43 +106,49 @@ var certificateCmd = APIEndpoint{
 
 // swagger:operation GET /1.0/certificates?recursion=1 certificates certificates_get_recursion1
 //
-//	Get the trusted certificates
+//  Get the trusted certificates
 //
-//	Returns a list of trusted certificates (structs).
+//  Returns a list of trusted certificates (structs).
 //
-//	---
-//	produces:
-//	  - application/json
-//	responses:
-//	  "200":
-//	    description: API endpoints
-//	    schema:
-//	      type: object
-//	      description: Sync response
-//	      properties:
-//	        type:
-//	          type: string
-//	          description: Response type
-//	          example: sync
-//	        status:
-//	          type: string
-//	          description: Status description
-//	          example: Success
-//	        status_code:
-//	          type: integer
-//	          description: Status code
-//	          example: 200
-//	        metadata:
-//	          type: array
-//	          description: List of certificates
-//	          items:
-//	            $ref: "#/definitions/Certificate"
-//	  "403":
-//	    $ref: "#/responses/Forbidden"
-//	  "500":
-//	    $ref: "#/responses/InternalServerError"
+//  ---
+//  produces:
+//    - application/json
+//  parameters:
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
+//  responses:
+//    "200":
+//      description: API endpoints
+//      schema:
+//        type: object
+//        description: Sync response
+//        properties:
+//          type:
+//            type: string
+//            description: Response type
+//            example: sync
+//          status:
+//            type: string
+//            description: Status description
+//            example: Success
+//          status_code:
+//            type: integer
+//            description: Status code
+//            example: 200
+//          metadata:
+//            type: array
+//            description: List of certificates
+//            items:
+//              $ref: "#/definitions/Certificate"
+//    "403":
+//      $ref: "#/responses/Forbidden"
+//    "500":
+//      $ref: "#/responses/InternalServerError"
+
 func certificatesGet(d *Daemon, r *http.Request) response.Response {
-	recursion := localUtil.IsRecursionRequest(r)
 	s := d.State()
 
 	userHasPermission, err := s.Authorizer.GetPermissionChecker(r.Context(), r, auth.EntitlementCanView, auth.ObjectTypeCertificate)
@@ -142,8 +156,21 @@ func certificatesGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	if recursion {
-		var certResponses []api.Certificate
+	recursion := localUtil.IsRecursionRequest(r)
+
+	// Parse filter value.
+	filterStr := r.FormValue("filter")
+	clauses, err := filter.Parse(filterStr, filter.QueryOperatorSet())
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid filter: %w", err))
+	}
+
+	mustLoadObjects := recursion || (clauses != nil && len(clauses.Clauses) > 0)
+
+	linkResults := make([]string, 0)
+	fullResults := make([]api.Certificate, 0)
+
+	if mustLoadObjects {
 		var baseCerts []dbCluster.Certificate
 		var err error
 		err = d.State().DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -152,7 +179,6 @@ func certificatesGet(d *Daemon, r *http.Request) response.Response {
 				return err
 			}
 
-			certResponses = make([]api.Certificate, 0, len(baseCerts))
 			for _, baseCert := range baseCerts {
 				if !userHasPermission(auth.ObjectCertificate(baseCert.Fingerprint)) {
 					continue
@@ -163,7 +189,21 @@ func certificatesGet(d *Daemon, r *http.Request) response.Response {
 					return err
 				}
 
-				certResponses = append(certResponses, *apiCert)
+				if clauses != nil && len(clauses.Clauses) > 0 {
+					match, err := filter.Match(*apiCert, *clauses)
+					if err != nil {
+						return err
+					}
+
+					if !match {
+						continue
+					}
+				}
+
+				fullResults = append(fullResults, *apiCert)
+
+				certificateURL := fmt.Sprintf("/%s/certificates/%s", version.APIVersion, apiCert.Fingerprint)
+				linkResults = append(linkResults, certificateURL)
 			}
 
 			return nil
@@ -171,26 +211,30 @@ func certificatesGet(d *Daemon, r *http.Request) response.Response {
 		if err != nil {
 			return response.SmartError(err)
 		}
+	} else {
+		trustedCertificates, err := d.getTrustedCertificates()
+		if err != nil {
+			return response.SmartError(err)
+		}
 
-		return response.SyncResponse(true, certResponses)
-	}
+		for _, certs := range trustedCertificates {
+			for _, cert := range certs {
+				fingerprint := localtls.CertFingerprint(&cert)
+				if !userHasPermission(auth.ObjectCertificate(fingerprint)) {
+					continue
+				}
 
-	body := []string{}
-
-	trustedCertificates := d.getTrustedCertificates()
-	for _, certs := range trustedCertificates {
-		for _, cert := range certs {
-			fingerprint := localtls.CertFingerprint(&cert)
-			if !userHasPermission(auth.ObjectCertificate(fingerprint)) {
-				continue
+				certificateURL := fmt.Sprintf("/%s/certificates/%s", version.APIVersion, fingerprint)
+				linkResults = append(linkResults, certificateURL)
 			}
-
-			certificateURL := fmt.Sprintf("/%s/certificates/%s", version.APIVersion, fingerprint)
-			body = append(body, certificateURL)
 		}
 	}
 
-	return response.SyncResponse(true, body)
+	if recursion {
+		return response.SyncResponse(true, fullResults)
+	}
+
+	return response.SyncResponse(true, linkResults)
 }
 
 func updateCertificateCache(d *Daemon) {
@@ -505,16 +549,16 @@ func certificatesPost(d *Daemon, r *http.Request) response.Response {
 
 	// Quick check.
 	if req.Token && req.Certificate != "" {
-		return response.BadRequest(fmt.Errorf("Can't use certificate if token is requested"))
+		return response.BadRequest(errors.New("Can't use certificate if token is requested"))
 	}
 
 	if req.Token {
 		if req.Type != "client" {
-			return response.BadRequest(fmt.Errorf("Tokens can only be issued for client certificates"))
+			return response.BadRequest(errors.New("Tokens can only be issued for client certificates"))
 		}
 
 		if localHTTPSAddress == "" {
-			return response.BadRequest(fmt.Errorf("Can't issue token when server isn't listening on network"))
+			return response.BadRequest(errors.New("Can't issue token when server isn't listening on network"))
 		}
 	}
 
@@ -527,7 +571,7 @@ func certificatesPost(d *Daemon, r *http.Request) response.Response {
 
 	// User isn't an admin and is already trusted, can't add more certs.
 	if trusted && req.Certificate == "" && !req.Token {
-		return response.BadRequest(fmt.Errorf("Client is already trusted"))
+		return response.BadRequest(errors.New("Client is already trusted"))
 	}
 
 	// Handle requests by non-admin users.
@@ -560,7 +604,7 @@ func certificatesPost(d *Daemon, r *http.Request) response.Response {
 			}
 
 			if joinOp == nil {
-				return response.Forbidden(fmt.Errorf("No matching cluster join operation found"))
+				return response.Forbidden(errors.New("No matching cluster join operation found"))
 			}
 		} else {
 			// Check if certificate add token supplied as token.
@@ -573,7 +617,7 @@ func certificatesPost(d *Daemon, r *http.Request) response.Response {
 				}
 
 				if joinOp == nil {
-					return response.Forbidden(fmt.Errorf("No matching certificate add operation found"))
+					return response.Forbidden(errors.New("No matching certificate add operation found"))
 				}
 
 				// Create a new request from the token data as the user isn't allowed to override anything.
@@ -593,7 +637,7 @@ func certificatesPost(d *Daemon, r *http.Request) response.Response {
 					}
 
 				default:
-					return response.InternalError(fmt.Errorf("Bad certificate add operation data"))
+					return response.InternalError(errors.New("Bad certificate add operation data"))
 				}
 			} else {
 				return response.Forbidden(nil)
@@ -609,13 +653,22 @@ func certificatesPost(d *Daemon, r *http.Request) response.Response {
 	// Extract the certificate.
 	var cert *x509.Certificate
 	if req.Certificate != "" {
-		// Add supplied certificate.
-		data, err := base64.StdEncoding.DecodeString(req.Certificate)
-		if err != nil {
-			return response.BadRequest(err)
+		var der []byte
+
+		// Try to parse as PEM.
+		block, rest := pem.Decode([]byte(req.Certificate))
+		if block != nil {
+			der = block.Bytes
+		} else {
+			data, err := base64.StdEncoding.DecodeString(string(rest))
+			if err != nil {
+				return response.BadRequest(err)
+			}
+
+			der = data
 		}
 
-		cert, err = x509.ParseCertificate(data)
+		cert, err = x509.ParseCertificate(der)
 		if err != nil {
 			return response.BadRequest(fmt.Errorf("Invalid certificate material: %w", err))
 		}
@@ -678,12 +731,12 @@ func certificatesPost(d *Daemon, r *http.Request) response.Response {
 			// This can happen if the client doesn't send a client certificate or if the server is in
 			// CA mode. We rely on this check to prevent non-CA trusted client certificates from being
 			// added when in CA mode.
-			return response.BadRequest(fmt.Errorf("No client certificate provided"))
+			return response.BadRequest(errors.New("No client certificate provided"))
 		}
 
 		cert = r.TLS.PeerCertificates[len(r.TLS.PeerCertificates)-1]
 	} else {
-		return response.BadRequest(fmt.Errorf("Can't use TLS data on non-TLS link"))
+		return response.BadRequest(errors.New("Can't use TLS data on non-TLS link"))
 	}
 
 	// Check validity.
@@ -1000,17 +1053,17 @@ func doCertificateUpdate(d *Daemon, dbInfo api.Certificate, req api.CertificateP
 		certProjects := req.Projects
 		if !userCanEditCertificate {
 			if r.TLS == nil {
-				response.Forbidden(fmt.Errorf("Cannot update certificate information"))
+				response.Forbidden(errors.New("Cannot update certificate information"))
 			}
 
 			// Ensure the user in not trying to change fields other than the certificate.
 			if dbInfo.Restricted != req.Restricted || dbInfo.Name != req.Name || len(dbInfo.Projects) != len(req.Projects) {
-				return response.Forbidden(fmt.Errorf("Only the certificate can be changed"))
+				return response.Forbidden(errors.New("Only the certificate can be changed"))
 			}
 
-			for i := 0; i < len(dbInfo.Projects); i++ {
+			for i := range dbInfo.Projects {
 				if dbInfo.Projects[i] != req.Projects[i] {
-					return response.Forbidden(fmt.Errorf("Only the certificate can be changed"))
+					return response.Forbidden(errors.New("Only the certificate can be changed"))
 				}
 			}
 
@@ -1049,7 +1102,7 @@ func doCertificateUpdate(d *Daemon, dbInfo api.Certificate, req api.CertificateP
 				}
 
 				if !trusted {
-					return response.Forbidden(fmt.Errorf("Certificate cannot be changed"))
+					return response.Forbidden(errors.New("Certificate cannot be changed"))
 				}
 			}
 		}
@@ -1057,6 +1110,9 @@ func doCertificateUpdate(d *Daemon, dbInfo api.Certificate, req api.CertificateP
 		if req.Certificate != "" && dbInfo.Certificate != req.Certificate {
 			// Add supplied certificate.
 			block, _ := pem.Decode([]byte(req.Certificate))
+			if block == nil {
+				return response.BadRequest(errors.New("Invalid PEM encoded certificate"))
+			}
 
 			cert, err := x509.ParseCertificate(block.Bytes)
 			if err != nil {
@@ -1154,7 +1210,7 @@ func certificateDelete(d *Daemon, r *http.Request) response.Response {
 		// Non-admins are able to delete only their own certificate.
 		if !userCanEditCertificate {
 			if r.TLS == nil {
-				response.Forbidden(fmt.Errorf("Cannot delete certificate"))
+				response.Forbidden(errors.New("Cannot delete certificate"))
 			}
 
 			certBlock, _ := pem.Decode([]byte(certInfo.Certificate))
@@ -1179,7 +1235,7 @@ func certificateDelete(d *Daemon, r *http.Request) response.Response {
 			}
 
 			if !trusted {
-				return response.Forbidden(fmt.Errorf("Certificate cannot be deleted"))
+				return response.Forbidden(errors.New("Certificate cannot be deleted"))
 			}
 		}
 
@@ -1221,22 +1277,22 @@ func certificateDelete(d *Daemon, r *http.Request) response.Response {
 
 func certificateValidate(cert *x509.Certificate) error {
 	if time.Now().Before(cert.NotBefore) {
-		return fmt.Errorf("The provided certificate isn't valid yet")
+		return errors.New("The provided certificate isn't valid yet")
 	}
 
 	if time.Now().After(cert.NotAfter) {
-		return fmt.Errorf("The provided certificate is expired")
+		return errors.New("The provided certificate is expired")
 	}
 
 	if cert.PublicKeyAlgorithm == x509.RSA {
 		pubKey, ok := cert.PublicKey.(*rsa.PublicKey)
 		if !ok {
-			return fmt.Errorf("Unable to validate the RSA certificate")
+			return errors.New("Unable to validate the RSA certificate")
 		}
 
 		// Check that we're dealing with at least 2048bit (Size returns a value in bytes).
 		if pubKey.Size()*8 < 2048 {
-			return fmt.Errorf("RSA key is too weak (minimum of 2048bit)")
+			return errors.New("RSA key is too weak (minimum of 2048bit)")
 		}
 	}
 

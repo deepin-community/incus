@@ -24,7 +24,7 @@ func GetStableRandomGenerator(seed string) (*rand.Rand, error) {
 // GetStableRandomInt64FromList returns a stable random value from a given list.
 func GetStableRandomInt64FromList(seed int64, list []int64) (int64, error) {
 	if len(list) <= 0 {
-		return 0, fmt.Errorf("Cannot get stable random value from empty list")
+		return 0, errors.New("Cannot get stable random value from empty list")
 	}
 
 	r, err := GetStableRandomGenerator(fmt.Sprintf("%d", seed))
@@ -46,7 +46,7 @@ func GenerateSequenceInt64(begin, end, step int) ([]int64, error) {
 		count = (end-step-begin)/step + 1
 	}
 
-	var sequence = make([]int64, count)
+	sequence := make([]int64, count)
 	for i := 0; i < count; i, begin = i+1, begin+step {
 		sequence[i] = int64(begin)
 	}

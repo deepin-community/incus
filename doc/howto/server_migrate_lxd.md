@@ -56,14 +56,14 @@ Uninstall the LXD package? [default=no]: yes
 ```{terminal}
 :input: incus list
 :user: root
-To start your first container, try: incus launch images:ubuntu/22.04
-Or for a virtual machine: incus launch images:ubuntu/22.04 --vm
+To start your first container, try: incus launch images:debian/12
+Or for a virtual machine: incus launch images:debian/12 --vm
 
-+------+---------+-----------------------+-----------------------------------------------+-----------+-----------+
-| NAME |  STATE  |         IPV4          |                     IPV6                      |   TYPE    | SNAPSHOTS |
-+------+---------+-----------------------+-----------------------------------------------+-----------+-----------+
-| u1   | RUNNING | 10.204.220.101 (eth0) | fd42:1eb6:f1d8:4e2a:216:3eff:fe65:940d (eth0) | CONTAINER | 0         |
-+------+---------+-----------------------+-----------------------------------------------+-----------+-----------+
++------+---------+-----------------------+------------------------------------------------+-----------+-----------+
+| NAME |  STATE  |         IPV4          |                     IPV6                       |   TYPE    | SNAPSHOTS |
++------+---------+-----------------------+------------------------------------------------+-----------+-----------+
+| u1   | RUNNING | 10.204.220.101 (eth0) | fd42:1eb6:f1d8:4e2a:1266:6aff:fe65:940d (eth0) | CONTAINER | 0         |
++------+---------+-----------------------+------------------------------------------------+-----------+-----------+
 ```
 
 The tool will also look for any configuration that is incompatible with Incus and fail before any data is migrated.

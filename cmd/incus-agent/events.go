@@ -2,9 +2,10 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/lxc/incus/v6/internal/server/events"
 	"github.com/lxc/incus/v6/internal/server/response"
@@ -61,7 +62,7 @@ func eventsSocket(d *Daemon, r *http.Request, w http.ResponseWriter) error {
 	} else {
 		h, ok := w.(http.Hijacker)
 		if !ok {
-			return fmt.Errorf("Missing implemented http.Hijacker interface")
+			return errors.New("Missing implemented http.Hijacker interface")
 		}
 
 		conn, _, err := h.Hijack()
@@ -129,11 +130,6 @@ func eventsProcess(event api.Event) {
 		return
 	}
 
-	// Only care about device additions, we don't try to handle remove.
-	if e.Action != "added" {
-		return
-	}
-
 	// We only handle disk hotplug.
 	if e.Config["type"] != "disk" {
 		return
@@ -144,14 +140,27 @@ func eventsProcess(event api.Event) {
 		return
 	}
 
-	// Attempt to perform the mount.
-	mntSource := fmt.Sprintf("incus_%s", e.Name)
+	mntSource := "incus_" + e.Name
 
-	err = tryMountShared(mntSource, e.Config["path"], "virtiofs", nil)
-	if err != nil {
-		logger.Infof("Failed to mount hotplug %q (Type: %q) to %q", mntSource, "virtiofs", e.Config["path"])
-		return
+	if e.Action == "added" {
+		// Attempt to perform the mount.
+		for range 20 {
+			time.Sleep(500 * time.Millisecond)
+
+			err = osMountShared(mntSource, e.Config["path"], "virtiofs", nil)
+			if err == nil {
+				break
+			}
+		}
+
+		if err != nil {
+			logger.Infof("Failed to mount hotplug %q (Type: %q) to %q", mntSource, "virtiofs", e.Config["path"])
+			return
+		}
+
+		logger.Infof("Mounted hotplug %q (Type: %q) to %q", mntSource, "virtiofs", e.Config["path"])
+	} else if e.Action == "removed" {
+		// Attempt to unmount the disk.
+		_ = osUmount(mntSource)
 	}
-
-	logger.Infof("Mounted hotplug %q (Type: %q) to %q", mntSource, "virtiofs", e.Config["path"])
 }

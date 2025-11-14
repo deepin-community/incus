@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,7 +12,6 @@ import (
 	"github.com/gorilla/mux"
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/db/cluster"
 	"github.com/lxc/incus/v6/internal/server/db/operationtype"
@@ -26,6 +26,7 @@ import (
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/osarch"
+	"github.com/lxc/incus/v6/shared/revert"
 )
 
 // swagger:operation PUT /1.0/instances/{name} instances instance_put
@@ -65,11 +66,6 @@ func instancePut(d *Daemon, r *http.Request) response.Response {
 
 	s := d.State()
 
-	instanceType, err := urlInstanceTypeDetect(r)
-	if err != nil {
-		return response.SmartError(err)
-	}
-
 	projectName := request.ProjectParam(r)
 
 	// Get the container
@@ -79,11 +75,11 @@ func instancePut(d *Daemon, r *http.Request) response.Response {
 	}
 
 	if internalInstance.IsSnapshot(name) {
-		return response.BadRequest(fmt.Errorf("Invalid instance name"))
+		return response.BadRequest(errors.New("Invalid instance name"))
 	}
 
 	// Handle requests targeted to a container on a different node
-	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name, instanceType)
+	resp, err := forwardedResponseIfInstanceIsRemote(s, r, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
@@ -92,15 +88,15 @@ func instancePut(d *Daemon, r *http.Request) response.Response {
 		return resp
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	unlock, err := instanceOperationLock(s.ShutdownCtx, projectName, name)
 	if err != nil {
 		return response.SmartError(err)
 	}
 
-	revert.Add(func() {
+	reverter.Add(func() {
 		unlock()
 	})
 
@@ -110,8 +106,7 @@ func instancePut(d *Daemon, r *http.Request) response.Response {
 	}
 
 	// Validate the ETag
-	etag := []any{inst.Architecture(), inst.LocalConfig(), inst.LocalDevices(), inst.IsEphemeral(), inst.Profiles()}
-	err = localUtil.EtagCheck(r, etag)
+	err = localUtil.EtagCheck(r, inst.ETag())
 	if err != nil {
 		return response.PreconditionFailed(err)
 	}
@@ -122,7 +117,7 @@ func instancePut(d *Daemon, r *http.Request) response.Response {
 		return response.BadRequest(err)
 	}
 
-	architecture, err := osarch.ArchitectureId(configRaw.Architecture)
+	architecture, err := osarch.ArchitectureID(configRaw.Architecture)
 	if err != nil {
 		architecture = 0
 	}
@@ -138,13 +133,18 @@ func instancePut(d *Daemon, r *http.Request) response.Response {
 				return err
 			}
 
-			profileDevices, err := cluster.GetDevices(ctx, tx.Tx(), "profile")
+			profileConfigs, err := cluster.GetAllProfileConfigs(ctx, tx.Tx())
+			if err != nil {
+				return err
+			}
+
+			profileDevices, err := cluster.GetAllProfileDevices(ctx, tx.Tx())
 			if err != nil {
 				return err
 			}
 
 			for _, profile := range profiles {
-				apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileDevices)
+				apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileConfigs, profileDevices)
 				if err != nil {
 					return err
 				}
@@ -201,7 +201,7 @@ func instancePut(d *Daemon, r *http.Request) response.Response {
 		return response.InternalError(err)
 	}
 
-	revert.Success()
+	reverter.Success()
 	return operations.OperationResponse(op)
 }
 

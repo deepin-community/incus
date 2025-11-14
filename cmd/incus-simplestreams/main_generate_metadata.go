@@ -14,6 +14,7 @@ import (
 
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/ask"
 	"github.com/lxc/incus/v6/shared/osarch"
 )
 
@@ -52,7 +53,7 @@ func (c *cmdGenerateMetadata) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Setup asker.
-	asker := cli.NewAsker(bufio.NewReader(os.Stdin))
+	asker := ask.NewAsker(bufio.NewReader(os.Stdin))
 
 	// Create the tarball.
 	metaFile, err := os.Create(args[0])
@@ -96,7 +97,7 @@ func (c *cmdGenerateMetadata) Run(cmd *cobra.Command, args []string) error {
 	// Question - architecture
 	var incusArch string
 	metaArchitecture, err := asker.AskString("Architecture name: ", "", func(value string) error {
-		id, err := osarch.ArchitectureId(value)
+		id, err := osarch.ArchitectureID(value)
 		if err != nil {
 			return err
 		}
@@ -149,7 +150,7 @@ func (c *cmdGenerateMetadata) Run(cmd *cobra.Command, args []string) error {
 	hdr := &tar.Header{
 		Name:    "metadata.yaml",
 		Size:    int64(len(body)),
-		Mode:    0644,
+		Mode:    0o644,
 		Uname:   "root",
 		Gname:   "root",
 		ModTime: time.Now(),

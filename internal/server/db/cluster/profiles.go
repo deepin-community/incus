@@ -5,6 +5,7 @@ package cluster
 import (
 	"context"
 	"database/sql"
+	"maps"
 
 	"github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/shared/api"
@@ -12,28 +13,28 @@ import (
 
 // Code generation directives.
 //
-//go:generate -command mapper incus-generate db mapper -t profiles.mapper.go
-//go:generate mapper reset -i -b "//go:build linux && cgo && !agent"
+//generate-database:mapper target profiles.mapper.go
+//generate-database:mapper reset -i -b "//go:build linux && cgo && !agent"
 //
-//go:generate mapper stmt -e profile objects
-//go:generate mapper stmt -e profile objects-by-ID
-//go:generate mapper stmt -e profile objects-by-Name
-//go:generate mapper stmt -e profile objects-by-Project
-//go:generate mapper stmt -e profile objects-by-Project-and-Name
-//go:generate mapper stmt -e profile id
-//go:generate mapper stmt -e profile create
-//go:generate mapper stmt -e profile rename
-//go:generate mapper stmt -e profile update
-//go:generate mapper stmt -e profile delete-by-Project-and-Name
+//generate-database:mapper stmt -e profile objects
+//generate-database:mapper stmt -e profile objects-by-ID
+//generate-database:mapper stmt -e profile objects-by-Name
+//generate-database:mapper stmt -e profile objects-by-Project
+//generate-database:mapper stmt -e profile objects-by-Project-and-Name
+//generate-database:mapper stmt -e profile id
+//generate-database:mapper stmt -e profile create
+//generate-database:mapper stmt -e profile rename
+//generate-database:mapper stmt -e profile update
+//generate-database:mapper stmt -e profile delete-by-Project-and-Name
 //
-//go:generate mapper method -i -e profile ID
-//go:generate mapper method -i -e profile Exists
-//go:generate mapper method -i -e profile GetMany references=Config,Device
-//go:generate mapper method -i -e profile GetOne
-//go:generate mapper method -i -e profile Create references=Config,Device
-//go:generate mapper method -i -e profile Rename
-//go:generate mapper method -i -e profile Update references=Config,Device
-//go:generate mapper method -i -e profile DeleteOne-by-Project-and-Name
+//generate-database:mapper method -i -e profile ID
+//generate-database:mapper method -i -e profile Exists
+//generate-database:mapper method -i -e profile GetMany references=Config,Device
+//generate-database:mapper method -i -e profile GetOne
+//generate-database:mapper method -i -e profile Create references=Config,Device
+//generate-database:mapper method -i -e profile Rename
+//generate-database:mapper method -i -e profile Update references=Config,Device
+//generate-database:mapper method -i -e profile DeleteOne-by-Project-and-Name
 
 // Profile is a value object holding db-related details about a profile.
 type Profile struct {
@@ -52,21 +53,31 @@ type ProfileFilter struct {
 }
 
 // ToAPI returns a cluster Profile as an API struct.
-func (p *Profile) ToAPI(ctx context.Context, tx *sql.Tx, profileDevices map[int][]Device) (*api.Profile, error) {
-	config, err := GetProfileConfig(ctx, tx, p.ID)
-	if err != nil {
-		return nil, err
-	}
+func (p *Profile) ToAPI(ctx context.Context, tx *sql.Tx, profileConfigs map[int]map[string]string, profileDevices map[int][]Device) (*api.Profile, error) {
+	var err error
 
-	var devices map[string]Device
-	if profileDevices != nil {
-		devices = map[string]Device{}
-
-		for _, dev := range profileDevices[p.ID] {
-			devices[dev.Name] = dev
+	var dbConfig map[string]string
+	if profileConfigs != nil {
+		dbConfig = profileConfigs[p.ID]
+		if dbConfig == nil {
+			dbConfig = map[string]string{}
 		}
 	} else {
-		devices, err = GetProfileDevices(ctx, tx, p.ID)
+		dbConfig, err = GetProfileConfig(ctx, tx, p.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var dbDevices map[string]Device
+	if profileDevices != nil {
+		dbDevices = map[string]Device{}
+
+		for _, dev := range profileDevices[p.ID] {
+			dbDevices[dev.Name] = dev
+		}
+	} else {
+		dbDevices, err = GetProfileDevices(ctx, tx, p.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -76,8 +87,8 @@ func (p *Profile) ToAPI(ctx context.Context, tx *sql.Tx, profileDevices map[int]
 		Name: p.Name,
 		ProfilePut: api.ProfilePut{
 			Description: p.Description,
-			Config:      config,
-			Devices:     DevicesToAPI(devices),
+			Config:      dbConfig,
+			Devices:     DevicesToAPI(dbDevices),
 		},
 		Project: p.Project,
 	}
@@ -122,15 +133,11 @@ func ExpandInstanceConfig(config map[string]string, profiles []api.Profile) map[
 	}
 
 	for i := range profileConfigs {
-		for k, v := range profileConfigs[i] {
-			expandedConfig[k] = v
-		}
+		maps.Copy(expandedConfig, profileConfigs[i])
 	}
 
 	// Stick the given config on top
-	for k, v := range config {
-		expandedConfig[k] = v
-	}
+	maps.Copy(expandedConfig, config)
 
 	return expandedConfig
 }
@@ -147,15 +154,21 @@ func ExpandInstanceDevices(devices config.Devices, profiles []api.Profile) confi
 	}
 
 	for i := range profileDevices {
-		for k, v := range profileDevices[i] {
-			expandedDevices[k] = v
-		}
+		maps.Copy(expandedDevices, profileDevices[i])
 	}
 
 	// Stick the given devices on top
-	for k, v := range devices {
-		expandedDevices[k] = v
-	}
+	maps.Copy(expandedDevices, devices)
 
 	return expandedDevices
+}
+
+// GetAllProfileConfigs returns a map of all profile configurations, keyed by database ID.
+func GetAllProfileConfigs(ctx context.Context, tx *sql.Tx) (map[int]map[string]string, error) {
+	return GetConfig(ctx, tx, "profiles", "profile")
+}
+
+// GetAllProfileDevices returns a map of all profile devices, keyed by database ID.
+func GetAllProfileDevices(ctx context.Context, tx *sql.Tx) (map[int][]Device, error) {
+	return GetDevices(ctx, tx, "profiles", "profile")
 }

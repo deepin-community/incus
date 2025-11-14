@@ -1,6 +1,7 @@
 package device
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ type UnixEvent struct {
 	Path   string // The absolute source path on the host.
 }
 
-// UnixSubscription used to subcribe to specific events.
+// UnixSubscription used to subscribe to specific events.
 type UnixSubscription struct {
 	Path    string                                           // The absolute source path on the host.
 	Handler func(UnixEvent) (*deviceConfig.RunConfig, error) // The function to run when an event occurs.
@@ -34,7 +35,7 @@ var unixMutex sync.Mutex
 // unixRegisterHandler registers a handler function to be called whenever a Unix device event occurs.
 func unixRegisterHandler(s *state.State, inst instance.Instance, deviceName, path string, handler func(UnixEvent) (*deviceConfig.RunConfig, error)) error {
 	if path == "" || handler == nil {
-		return fmt.Errorf("Invalid subscription")
+		return errors.New("Invalid subscription")
 	}
 
 	unixMutex.Lock()

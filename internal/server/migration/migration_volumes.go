@@ -21,7 +21,7 @@ type Info struct {
 
 // InfoResponse represents the response to the index frame sent if supported.
 // Right now this doesn't contain anything useful, its just used to indicate receipt of the index header.
-// But in the future the itention is to use it allow the target to send back additional information to the source
+// But in the future the intention is to use it allow the target to send back additional information to the source
 // about which frames (such as snapshots) it needs for the migration after having inspected the Info index header.
 type InfoResponse struct {
 	StatusCode int
@@ -32,7 +32,7 @@ type InfoResponse struct {
 // Err returns the error of the response.
 func (r *InfoResponse) Err() error {
 	if r.StatusCode != http.StatusOK {
-		return api.StatusErrorf(r.StatusCode, r.Error)
+		return api.StatusErrorf(r.StatusCode, "%s", r.Error)
 	}
 
 	return nil
@@ -61,6 +61,7 @@ type VolumeSourceArgs struct {
 	Info               *Info
 	VolumeOnly         bool
 	ClusterMove        bool
+	StorageMove        bool
 }
 
 // VolumeTargetArgs represents the arguments needed to setup a volume migration sink.
@@ -69,15 +70,17 @@ type VolumeTargetArgs struct {
 	Name                  string
 	Description           string
 	Config                map[string]string // Only used for custom volume migration.
-	Snapshots             []string
+	Snapshots             []*migration.Snapshot
 	MigrationType         Type
 	TrackProgress         bool
 	Refresh               bool
+	RefreshExcludeOlder   bool
 	Live                  bool
 	VolumeSize            int64
 	ContentType           string
 	VolumeOnly            bool
 	ClusterMoveSourceName string
+	StoragePool           string
 }
 
 // TypesToHeader converts one or more Types to a MigrationHeader. It uses the first type argument

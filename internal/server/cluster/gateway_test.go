@@ -20,7 +20,12 @@ import (
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/state"
 	localtls "github.com/lxc/incus/v6/shared/tls"
+	"github.com/lxc/incus/v6/shared/tls/tlstest"
 )
+
+func trustedCerts() (map[certificate.Type]map[string]x509.Certificate, error) {
+	return nil, nil
+}
 
 // Basic creation and shutdown. By default, the gateway runs an in-memory gRPC
 // server.
@@ -28,7 +33,7 @@ func TestGateway_Single(t *testing.T) {
 	node, cleanup := db.NewTestNode(t)
 	defer cleanup()
 
-	cert := localtls.TestingKeyPair()
+	cert := tlstest.TestingKeyPair(t)
 
 	s := &state.State{
 		ServerCert: func() *localtls.CertInfo { return cert },
@@ -36,10 +41,6 @@ func TestGateway_Single(t *testing.T) {
 
 	gateway := newGateway(t, node, cert, s)
 	defer func() { _ = gateway.Shutdown() }()
-
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
-		return nil
-	}
 
 	handlerFuncs := gateway.HandlerFuncs(nil, trustedCerts)
 	assert.Len(t, handlerFuncs, 1)
@@ -86,7 +87,7 @@ func TestGateway_SingleWithNetworkAddress(t *testing.T) {
 	node, cleanup := db.NewTestNode(t)
 	defer cleanup()
 
-	cert := localtls.TestingKeyPair()
+	cert := tlstest.TestingKeyPair(t)
 	mux := http.NewServeMux()
 	server := newServer(cert, mux)
 	defer server.Close()
@@ -100,10 +101,6 @@ func TestGateway_SingleWithNetworkAddress(t *testing.T) {
 
 	gateway := newGateway(t, node, cert, s)
 	defer func() { _ = gateway.Shutdown() }()
-
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
-		return nil
-	}
 
 	for path, handler := range gateway.HandlerFuncs(nil, trustedCerts) {
 		mux.HandleFunc(path, handler)
@@ -131,7 +128,7 @@ func TestGateway_NetworkAuth(t *testing.T) {
 	node, cleanup := db.NewTestNode(t)
 	defer cleanup()
 
-	cert := localtls.TestingKeyPair()
+	cert := tlstest.TestingKeyPair(t)
 	mux := http.NewServeMux()
 	server := newServer(cert, mux)
 	defer server.Close()
@@ -146,16 +143,12 @@ func TestGateway_NetworkAuth(t *testing.T) {
 	gateway := newGateway(t, node, cert, s)
 	defer func() { _ = gateway.Shutdown() }()
 
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
-		return nil
-	}
-
 	for path, handler := range gateway.HandlerFuncs(nil, trustedCerts) {
 		mux.HandleFunc(path, handler)
 	}
 
 	// Make a request using a certificate different than the cluster one.
-	certAlt := localtls.TestingAltKeyPair()
+	certAlt := tlstest.TestingAltKeyPair(t)
 	config, err := cluster.TLSClientConfig(certAlt, certAlt)
 	config.InsecureSkipVerify = true // Skip client-side verification
 	require.NoError(t, err)
@@ -174,7 +167,7 @@ func TestGateway_RaftNodesNotLeader(t *testing.T) {
 	node, cleanup := db.NewTestNode(t)
 	defer cleanup()
 
-	cert := localtls.TestingKeyPair()
+	cert := tlstest.TestingKeyPair(t)
 	mux := http.NewServeMux()
 	server := newServer(cert, mux)
 	defer server.Close()
@@ -199,7 +192,7 @@ func TestGateway_RaftNodesNotLeader(t *testing.T) {
 
 // Create a new test Gateway with the given parameters, and ensure no error happens.
 func newGateway(t *testing.T, node *db.Node, networkCert *localtls.CertInfo, s *state.State) *cluster.Gateway {
-	require.NoError(t, os.Mkdir(filepath.Join(node.Dir(), "global"), 0755))
+	require.NoError(t, os.Mkdir(filepath.Join(node.Dir(), "global"), 0o755))
 	stateFunc := func() *state.State { return s }
 	gateway, err := cluster.NewGateway(context.Background(), node, networkCert, stateFunc, cluster.Latency(0.2), cluster.LogLevel("TRACE"))
 	require.NoError(t, err)

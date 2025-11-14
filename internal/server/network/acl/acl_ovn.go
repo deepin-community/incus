@@ -3,13 +3,13 @@ package acl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/db/cluster"
 	"github.com/lxc/incus/v6/internal/server/instance"
@@ -17,21 +17,26 @@ import (
 	"github.com/lxc/incus/v6/internal/server/state"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
 
 // OVN ACL rule priorities.
-const ovnACLPriorityPortGroupDefaultAction = 0
-const ovnACLPriorityNICDefaultActionIngress = 100
+const (
+	ovnACLPriorityPortGroupDefaultAction  = 0
+	ovnACLPriorityNICDefaultActionIngress = 100
+)
 
 // ovnACLPriorityNICDefaultActionEgress needs to be >10 higher than ovnACLPriorityNICDefaultActionIngress so that
 // ingress reject rules (that OVN adds 10 to their priorities) don't prevent egress rules being tested first.
-const ovnACLPriorityNICDefaultActionEgress = 111
-const ovnACLPrioritySwitchAllow = 200
-const ovnACLPriorityPortGroupAllow = 300
-const ovnACLPriorityPortGroupReject = 400
-const ovnACLPriorityPortGroupDrop = 500
+const (
+	ovnACLPriorityNICDefaultActionEgress = 111
+	ovnACLPrioritySwitchAllow            = 200
+	ovnACLPriorityPortGroupAllow         = 300
+	ovnACLPriorityPortGroupReject        = 400
+	ovnACLPriorityPortGroupDrop          = 500
+)
 
 // ovnACLPortGroupPrefix prefix used when naming ACL related port groups in OVN.
 const ovnACLPortGroupPrefix = "incus_acl"
@@ -83,8 +88,8 @@ func OVNIntSwitchRouterPortName(networkID int64) ovn.OVNSwitchPort {
 // is checked for existence (it is created & applies network specific ACL rules if not).
 // Returns a revert fail function that can be used to undo this function if a subsequent step fails.
 func OVNEnsureACLs(s *state.State, l logger.Logger, client *ovn.NB, aclProjectName string, aclNameIDs map[string]int64, aclNets map[string]NetworkACLUsage, aclNames []string, reapplyRules bool) (revert.Hook, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	var err error
 	var projectID int64
@@ -100,7 +105,42 @@ func OVNEnsureACLs(s *state.State, l logger.Logger, client *ovn.NB, aclProjectNa
 		return nil, err
 	}
 
-	peerTargetNetIDs, err := s.DB.Cluster.GetNetworkPeersTargetNetworkIDs(aclProjectName, db.NetworkTypeOVN)
+	peerTargetNetIDs := make(map[cluster.NetworkPeerConnection]int64)
+	err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+		// Get created networks for the project.
+		networks, err := tx.GetCreatedNetworksByProject(ctx, aclProjectName)
+		if err != nil {
+			return fmt.Errorf("Failed getting created networks for project %q: %w", aclProjectName, err)
+		}
+
+		for netID, network := range networks {
+			// Filter for OVN networks in Go.
+			if network.Type != "ovn" {
+				continue
+			}
+
+			// Get peers for the current OVN network.
+			peerFilter := cluster.NetworkPeerFilter{NetworkID: &netID}
+			dbPeers, err := cluster.GetNetworkPeers(ctx, tx.Tx(), peerFilter)
+			if err != nil {
+				return fmt.Errorf("Failed loading network peers for network ID %d: %w", netID, err)
+			}
+
+			for _, dbPeer := range dbPeers {
+				// Only include peers with a valid target network ID.
+				if dbPeer.TargetNetworkID.Valid {
+					peerKey := cluster.NetworkPeerConnection{
+						NetworkName: network.Name,
+						PeerName:    dbPeer.Name,
+					}
+
+					peerTargetNetIDs[peerKey] = dbPeer.TargetNetworkID.Int64
+				}
+			}
+		}
+
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("Failed getting peer connection mappings: %w", err)
 	}
@@ -138,7 +178,7 @@ func OVNEnsureACLs(s *state.State, l logger.Logger, client *ovn.NB, aclProjectNa
 
 			err := s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
 				// Load the config we'll need to create the port group with ACL rules.
-				_, aclInfo, err = tx.GetNetworkACL(ctx, aclProjectName, aclName)
+				_, aclInfo, err = cluster.GetNetworkACLAPI(ctx, tx.Tx(), aclProjectName, aclName)
 
 				return err
 			})
@@ -172,7 +212,7 @@ func OVNEnsureACLs(s *state.State, l logger.Logger, client *ovn.NB, aclProjectNa
 			// new per-ACL-per-network port groups.
 			if reapplyRules || !portGroupHasACLs || len(addACLNets) > 0 {
 				err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-					_, aclInfo, err = tx.GetNetworkACL(ctx, aclProjectName, aclName)
+					_, aclInfo, err = cluster.GetNetworkACLAPI(ctx, tx.Tx(), aclProjectName, aclName)
 
 					return err
 				})
@@ -190,7 +230,7 @@ func OVNEnsureACLs(s *state.State, l logger.Logger, client *ovn.NB, aclProjectNa
 	// We will create port groups (without ACL rules) for any missing referenced ACL OVN port groups so that
 	// when we add the rules for the new ACL port groups this doesn't trigger an OVN log error about missing
 	// port groups.
-	referencedACLs := make(map[string]struct{}, 0)
+	referencedACLs := make(map[string]struct{})
 	for _, aclStatus := range createACLPortGroups {
 		ovnAddReferencedACLs(aclStatus.aclInfo, referencedACLs)
 	}
@@ -228,7 +268,7 @@ func OVNEnsureACLs(s *state.State, l logger.Logger, client *ovn.NB, aclProjectNa
 				return nil, fmt.Errorf("Failed creating port group %q for referenced security ACL %q setup: %w", portGroupName, aclName, err)
 			}
 
-			revert.Add(func() { _ = client.DeletePortGroup(context.TODO(), portGroupName) })
+			reverter.Add(func() { _ = client.DeletePortGroup(context.TODO(), portGroupName) })
 		}
 	}
 
@@ -242,7 +282,7 @@ func OVNEnsureACLs(s *state.State, l logger.Logger, client *ovn.NB, aclProjectNa
 			return nil, fmt.Errorf("Failed creating port group %q for security ACL %q setup: %w", portGroupName, aclStatus.name, err)
 		}
 
-		revert.Add(func() { _ = client.DeletePortGroup(context.TODO(), portGroupName) })
+		reverter.Add(func() { _ = client.DeletePortGroup(context.TODO(), portGroupName) })
 
 		// Create any per-ACL-per-network port groups needed.
 		for _, aclNet := range aclNets {
@@ -255,11 +295,11 @@ func OVNEnsureACLs(s *state.State, l logger.Logger, client *ovn.NB, aclProjectNa
 				return nil, fmt.Errorf("Failed creating port group %q for security ACL %q and network %q setup: %w", portGroupName, aclStatus.name, aclNet.Name, err)
 			}
 
-			revert.Add(func() { _ = client.DeletePortGroup(context.TODO(), netPortGroupName) })
+			reverter.Add(func() { _ = client.DeletePortGroup(context.TODO(), netPortGroupName) })
 		}
 
 		// Now apply our ACL rules to port group (and any per-ACL-per-network port groups needed).
-		err = ovnApplyToPortGroup(l, client, aclStatus.aclInfo, portGroupName, aclNameIDs, aclNets, peerTargetNetIDs)
+		err = ovnApplyToPortGroup(s, l, client, aclStatus.aclInfo, portGroupName, aclNameIDs, aclNets, peerTargetNetIDs)
 		if err != nil {
 			return nil, fmt.Errorf("Failed applying ACL rules to port group %q for security ACL %q setup: %w", portGroupName, aclStatus.name, err)
 		}
@@ -281,7 +321,7 @@ func OVNEnsureACLs(s *state.State, l logger.Logger, client *ovn.NB, aclProjectNa
 				return nil, fmt.Errorf("Failed creating port group %q for security ACL %q and network %q setup: %w", portGroupName, aclStatus.name, aclNet.Name, err)
 			}
 
-			revert.Add(func() { _ = client.DeletePortGroup(context.TODO(), netPortGroupName) })
+			reverter.Add(func() { _ = client.DeletePortGroup(context.TODO(), netPortGroupName) })
 		}
 
 		// If aclInfo has been loaded, then we should use it to apply ACL rules to the existing port group
@@ -289,15 +329,16 @@ func OVNEnsureACLs(s *state.State, l logger.Logger, client *ovn.NB, aclProjectNa
 		if aclStatus.aclInfo != nil {
 			l.Debug("Applying ACL rules to OVN port group", logger.Ctx{"networkACL": aclStatus.name, "portGroup": portGroupName})
 
-			err := ovnApplyToPortGroup(l, client, aclStatus.aclInfo, portGroupName, aclNameIDs, aclNets, peerTargetNetIDs)
+			err := ovnApplyToPortGroup(s, l, client, aclStatus.aclInfo, portGroupName, aclNameIDs, aclNets, peerTargetNetIDs)
 			if err != nil {
 				return nil, fmt.Errorf("Failed applying ACL rules to port group %q for security ACL %q setup: %w", portGroupName, aclStatus.name, err)
 			}
 		}
 	}
 
-	cleanup := revert.Clone().Fail
-	revert.Success()
+	cleanup := reverter.Clone().Fail
+	reverter.Success()
+
 	return cleanup, nil
 }
 
@@ -334,11 +375,11 @@ func ovnAddReferencedACLs(info *api.NetworkACL, referencedACLNames map[string]st
 }
 
 // ovnApplyToPortGroup applies the rules in the specified ACL to the specified port group.
-func ovnApplyToPortGroup(l logger.Logger, client *ovn.NB, aclInfo *api.NetworkACL, portGroupName ovn.OVNPortGroup, aclNameIDs map[string]int64, aclNets map[string]NetworkACLUsage, peerTargetNetIDs map[db.NetworkPeer]int64) error {
+func ovnApplyToPortGroup(s *state.State, l logger.Logger, client *ovn.NB, aclInfo *api.NetworkACL, portGroupName ovn.OVNPortGroup, aclNameIDs map[string]int64, aclNets map[string]NetworkACLUsage, peerTargetNetIDs map[cluster.NetworkPeerConnection]int64) error {
 	// Create slice for port group rules that has the capacity for ingress and egress rules, plus default rule.
 	portGroupRules := make([]ovn.OVNACLRule, 0, len(aclInfo.Ingress)+len(aclInfo.Egress)+1)
 	networkRules := make([]ovn.OVNACLRule, 0)
-	networkPeersNeeded := make([]db.NetworkPeer, 0)
+	networkPeersNeeded := make([]cluster.NetworkPeerConnection, 0)
 
 	// convertACLRules converts the ACL rules to OVN ACL rules.
 	convertACLRules := func(direction string, rules ...api.NetworkACLRule) error {
@@ -347,7 +388,7 @@ func ovnApplyToPortGroup(l logger.Logger, client *ovn.NB, aclInfo *api.NetworkAC
 				continue
 			}
 
-			ovnACLRule, networkSpecific, networkPeers, err := ovnRuleCriteriaToOVNACLRule(direction, &rule, portGroupName, aclNameIDs, peerTargetNetIDs)
+			ovnACLRule, networkSpecific, networkPeers, err := ovnRuleCriteriaToOVNACLRule(s, direction, &rule, portGroupName, aclNameIDs, peerTargetNetIDs)
 			if err != nil {
 				return err
 			}
@@ -430,9 +471,9 @@ func ovnApplyToPortGroup(l logger.Logger, client *ovn.NB, aclInfo *api.NetworkAC
 
 // ovnRuleCriteriaToOVNACLRule converts an ACL rule into an OVNACLRule for an OVN port group or network.
 // Returns a bool indicating if any of the rule subjects are network specific.
-func ovnRuleCriteriaToOVNACLRule(direction string, rule *api.NetworkACLRule, portGroupName ovn.OVNPortGroup, aclNameIDs map[string]int64, peerTargetNetIDs map[db.NetworkPeer]int64) (ovn.OVNACLRule, bool, []db.NetworkPeer, error) {
+func ovnRuleCriteriaToOVNACLRule(s *state.State, direction string, rule *api.NetworkACLRule, portGroupName ovn.OVNPortGroup, aclNameIDs map[string]int64, peerTargetNetIDs map[cluster.NetworkPeerConnection]int64) (ovn.OVNACLRule, bool, []cluster.NetworkPeerConnection, error) {
 	networkSpecific := false
-	networkPeersNeeded := make([]db.NetworkPeer, 0)
+	networkPeersNeeded := make([]cluster.NetworkPeerConnection, 0)
 	portGroupRule := ovn.OVNACLRule{
 		Direction: "to-lport", // Always use this so that outport is available to Match.
 	}
@@ -467,7 +508,7 @@ func ovnRuleCriteriaToOVNACLRule(direction string, rule *api.NetworkACLRule, por
 
 	// Add subject filters.
 	if rule.Source != "" {
-		match, netSpecificMatch, networkPeers, err := ovnRuleSubjectToOVNACLMatch("src", aclNameIDs, peerTargetNetIDs, util.SplitNTrimSpace(rule.Source, ",", -1, false)...)
+		match, netSpecificMatch, networkPeers, err := ovnRuleSubjectToOVNACLMatch(s, "src", aclNameIDs, peerTargetNetIDs, util.SplitNTrimSpace(rule.Source, ",", -1, false)...)
 		if err != nil {
 			return ovn.OVNACLRule{}, false, nil, err
 		}
@@ -481,7 +522,7 @@ func ovnRuleCriteriaToOVNACLRule(direction string, rule *api.NetworkACLRule, por
 	}
 
 	if rule.Destination != "" {
-		match, netSpecificMatch, networkPeers, err := ovnRuleSubjectToOVNACLMatch("dst", aclNameIDs, peerTargetNetIDs, util.SplitNTrimSpace(rule.Destination, ",", -1, false)...)
+		match, netSpecificMatch, networkPeers, err := ovnRuleSubjectToOVNACLMatch(s, "dst", aclNameIDs, peerTargetNetIDs, util.SplitNTrimSpace(rule.Destination, ",", -1, false)...)
 		if err != nil {
 			return ovn.OVNACLRule{}, false, nil, err
 		}
@@ -542,10 +583,10 @@ func ovnRulePortToOVNACLMatch(protocol string, direction string, portCriteria ..
 
 // ovnRuleSubjectToOVNACLMatch converts direction (src/dst) and subject criteria list into an OVN match statement.
 // Returns a bool indicating if any of the subjects are network specific.
-func ovnRuleSubjectToOVNACLMatch(direction string, aclNameIDs map[string]int64, peerTargetNetIDs map[db.NetworkPeer]int64, subjectCriteria ...string) (string, bool, []db.NetworkPeer, error) {
+func ovnRuleSubjectToOVNACLMatch(s *state.State, direction string, aclNameIDs map[string]int64, peerTargetNetIDs map[cluster.NetworkPeerConnection]int64, subjectCriteria ...string) (string, bool, []cluster.NetworkPeerConnection, error) {
 	fieldParts := make([]string, 0, len(subjectCriteria))
 	networkSpecific := false
-	networkPeersNeeded := make([]db.NetworkPeer, 0)
+	networkPeersNeeded := make([]cluster.NetworkPeerConnection, 0)
 
 	// For each criterion check if value looks like an IP range or IP CIDR, and if not use it as an ACL name.
 	for _, subjectCriterion := range subjectCriteria {
@@ -593,37 +634,40 @@ func ovnRuleSubjectToOVNACLMatch(direction string, aclNameIDs map[string]int64, 
 					// Convert deprecated #external to non-deprecated @external if needed.
 					subjectPortSelector = ovn.OVNPortGroup(ruleSubjectExternal)
 					networkSpecific = true
-				} else if strings.HasPrefix(subjectCriterion, "@") {
-					// Subject is a network peer name. Convert to address set criteria.
-					peerParts := strings.SplitN(strings.TrimPrefix(subjectCriterion, "@"), "/", 2)
-					if len(peerParts) != 2 {
-						return "", false, nil, fmt.Errorf("Cannot parse subject as peer %q", subjectCriterion)
-					}
-
-					peer := db.NetworkPeer{
-						NetworkName: peerParts[0],
-						PeerName:    peerParts[1],
-					}
-
-					networkID, found := peerTargetNetIDs[peer]
-					if !found {
-						return "", false, nil, fmt.Errorf("Cannot find network ID for peer %q", subjectCriterion)
-					}
-
-					addrSetPrefix := OVNIntSwitchPortGroupAddressSetPrefix(networkID)
-
-					fieldParts = append(fieldParts, fmt.Sprintf("ip6.%s == $%s_ip6 || ip4.%s == $%s_ip4", direction, addrSetPrefix, direction, addrSetPrefix))
-					networkPeersNeeded = append(networkPeersNeeded, peer)
-
-					continue // Not a port based selector.
 				} else {
-					// Assume the bare name is an ACL name and convert to port group.
-					aclID, found := aclNameIDs[subjectCriterion]
-					if !found {
-						return "", false, nil, fmt.Errorf("Cannot find security ACL ID for %q", subjectCriterion)
-					}
+					after, ok := strings.CutPrefix(subjectCriterion, "@")
+					if ok {
+						// Subject is a network peer name. Convert to address set criteria.
+						peerParts := strings.SplitN(after, "/", 2)
+						if len(peerParts) != 2 {
+							return "", false, nil, fmt.Errorf("Cannot parse subject as peer %q", subjectCriterion)
+						}
 
-					subjectPortSelector = OVNACLPortGroupName(aclID)
+						peer := cluster.NetworkPeerConnection{
+							NetworkName: peerParts[0],
+							PeerName:    peerParts[1],
+						}
+
+						networkID, found := peerTargetNetIDs[peer]
+						if !found {
+							return "", false, nil, fmt.Errorf("Cannot find network ID for peer %q", subjectCriterion)
+						}
+
+						addrSetPrefix := OVNIntSwitchPortGroupAddressSetPrefix(networkID)
+
+						fieldParts = append(fieldParts, fmt.Sprintf("ip6.%s == $%s_ip6 || ip4.%s == $%s_ip4", direction, addrSetPrefix, direction, addrSetPrefix))
+						networkPeersNeeded = append(networkPeersNeeded, peer)
+
+						continue // Not a port based selector.
+					} else {
+						// Assume the bare name is an ACL name and convert to port group.
+						aclID, found := aclNameIDs[subjectCriterion]
+						if !found {
+							return "", false, nil, fmt.Errorf("Cannot find security ACL ID for %q", subjectCriterion)
+						}
+
+						subjectPortSelector = OVNACLPortGroupName(aclID)
+					}
 				}
 
 				portType := "inport"
@@ -646,7 +690,7 @@ func OVNApplyNetworkBaselineRules(client *ovn.NB, switchName ovn.OVNSwitch, rout
 			Direction: "to-lport",
 			Action:    "allow",
 			Priority:  ovnACLPrioritySwitchAllow,
-			Match:     "(arp || nd)", // Neighbour discovery.
+			Match:     "(arp || nd)", // Neighbour discovery.  // codespell:ignore nd
 		},
 		{
 			Direction: "to-lport",
@@ -757,7 +801,7 @@ func OVNApplyNetworkBaselineRules(client *ovn.NB, switchName ovn.OVNSwitch, rout
 // OVNPortGroupDeleteIfUnused deletes unused port groups. Accepts optional ignoreUsageType and ignoreUsageNicName
 // arguments, allowing the used by logic to ignore an instance/profile NIC or network (useful if config not
 // applied to database yet). Also accepts optional list of ACLs to explicitly consider in use by OVN.
-// The combination of ignoring the specifified usage type and explicit keep ACLs allows the caller to ensure that
+// The combination of ignoring the specified usage type and explicit keep ACLs allows the caller to ensure that
 // the desired ACLs are considered unused by the usage type even if the referring config has not yet been removed
 // from the database.
 func OVNPortGroupDeleteIfUnused(s *state.State, l logger.Logger, client *ovn.NB, aclProjectName string, ignoreUsageType any, ignoreUsageNicName string, keepACLs ...string) error {
@@ -768,16 +812,18 @@ func OVNPortGroupDeleteIfUnused(s *state.State, l logger.Logger, client *ovn.NB,
 	err := s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
 		var err error
 
-		// Get map of ACL names to DB IDs (used for generating OVN port group names).
-		aclNameIDs, err = tx.GetNetworkACLIDsByNames(ctx, aclProjectName)
+		// Get all the ACLs.
+		acls, err := cluster.GetNetworkACLs(ctx, tx.Tx(), cluster.NetworkACLFilter{Project: &aclProjectName})
 		if err != nil {
-			return fmt.Errorf("Failed getting network ACL IDs for security ACL port group removal: %w", err)
+			return err
 		}
 
-		// Convert aclNameIDs to aclNames slice for use with UsedBy.
-		aclNames = make([]string, 0, len(aclNameIDs))
-		for aclName := range aclNameIDs {
-			aclNames = append(aclNames, aclName)
+		// Convert acls to aclNames slice for use with UsedBy.
+		aclNames = make([]string, 0, len(acls))
+		aclNameIDs = make(map[string]int64)
+		for _, acl := range acls {
+			aclNames = append(aclNames, acl.Name)
+			aclNameIDs[acl.Name] = int64(acl.ID)
 		}
 
 		// Get project ID.
@@ -813,7 +859,7 @@ func OVNPortGroupDeleteIfUnused(s *state.State, l logger.Logger, client *ovn.NB,
 
 	// Filter project port group list by ACL related ones, and store them in a map keyed by port group name.
 	// This contains the initial candidates for removal. But any found to be in use will be removed from list.
-	removeACLPortGroups := make(map[ovn.OVNPortGroup]struct{}, 0)
+	removeACLPortGroups := make(map[ovn.OVNPortGroup]struct{})
 	for _, portGroup := range portGroups {
 		// If port group is related to an ACL and is not related to one of keepACLs, then add it as a
 		// candidate for removal.
@@ -831,18 +877,19 @@ func OVNPortGroupDeleteIfUnused(s *state.State, l logger.Logger, client *ovn.NB,
 	}
 
 	// Map to record ACLs being referenced by other ACLs. Need to check later if they are in use with OVN ACLs.
-	aclUsedACLS := make(map[string][]string, 0)
+	aclUsedACLS := make(map[string][]string)
 
-	// Find alls ACLs that are either directly referred to by OVN entities (networks, instance/profile NICs)
+	// Find all ACLs that are either directly referred to by OVN entities (networks, instance/profile NICs)
 	// or indirectly by being referred to by a ruleset of another ACL that is itself in use by OVN entities.
 	// For the indirectly referred to ACLs, store a list of the ACLs that are referring to it.
 	err = UsedBy(s, aclProjectName, func(ctx context.Context, tx *db.ClusterTx, matchedACLNames []string, usageType any, nicName string, nicConfig map[string]string) error {
 		switch u := usageType.(type) {
+
 		case db.InstanceArgs:
 			ignoreInst, isIgnoreInst := ignoreUsageType.(instance.Instance)
 
 			if isIgnoreInst && ignoreUsageNicName == "" {
-				return fmt.Errorf("ignoreUsageNicName should be specified when providing an instance in ignoreUsageType")
+				return errors.New("ignoreUsageNicName should be specified when providing an instance in ignoreUsageType")
 			}
 
 			// If an ignore instance was provided, then skip the device that the ACLs were just removed
@@ -866,11 +913,12 @@ func OVNPortGroupDeleteIfUnused(s *state.State, l logger.Logger, client *ovn.NB,
 					delete(removeACLPortGroups, OVNACLNetworkPortGroupName(aclNameIDs[matchedACLName], netID))
 				}
 			}
+
 		case *api.Network:
 			ignoreNet, isIgnoreNet := ignoreUsageType.(*api.Network)
 
 			if isIgnoreNet && ignoreUsageNicName != "" {
-				return fmt.Errorf("ignoreUsageNicName should be empty when providing a network in ignoreUsageType")
+				return errors.New("ignoreUsageNicName should be empty when providing a network in ignoreUsageType")
 			}
 
 			// If an ignore network was provided, then skip the network that the ACLs were just removed
@@ -894,11 +942,12 @@ func OVNPortGroupDeleteIfUnused(s *state.State, l logger.Logger, client *ovn.NB,
 					delete(removeACLPortGroups, OVNACLNetworkPortGroupName(aclNameIDs[matchedACLName], netID))
 				}
 			}
+
 		case cluster.Profile:
 			ignoreProfile, isIgnoreProfile := ignoreUsageType.(cluster.Profile)
 
 			if isIgnoreProfile && ignoreUsageNicName == "" {
-				return fmt.Errorf("ignoreUsageNicName should be specified when providing a profile in ignoreUsageType")
+				return errors.New("ignoreUsageNicName should be specified when providing a profile in ignoreUsageType")
 			}
 
 			// If an ignore profile was provided, then skip the device that the ACLs were just removed
@@ -922,6 +971,7 @@ func OVNPortGroupDeleteIfUnused(s *state.State, l logger.Logger, client *ovn.NB,
 					delete(removeACLPortGroups, OVNACLNetworkPortGroupName(aclNameIDs[matchedACLName], netID))
 				}
 			}
+
 		case *api.NetworkACL:
 			// Record which ACLs this ACL's ruleset refers to.
 			for _, matchedACLName := range matchedACLNames {
@@ -934,13 +984,14 @@ func OVNPortGroupDeleteIfUnused(s *state.State, l logger.Logger, client *ovn.NB,
 					aclUsedACLS[matchedACLName] = append(aclUsedACLS[matchedACLName], u.Name)
 				}
 			}
+
 		default:
 			return fmt.Errorf("Unrecognised usage type %T", u)
 		}
 
 		return nil
 	}, aclNames...)
-	if err != nil && err != db.ErrInstanceListStop {
+	if err != nil && !errors.Is(err, db.ErrInstanceListStop) {
 		return fmt.Errorf("Failed getting ACL usage: %w", err)
 	}
 

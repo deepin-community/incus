@@ -392,7 +392,7 @@ func TestCreateInstance_Snapshot(t *testing.T) {
 		"image.os":                "BusyBox",
 		"volatile.apply_template": "create",
 		"volatile.base_image":     "1f7f054e6ccb",
-		"volatile.eth0.hwaddr":    "00:16:3e:2a:3f:e2",
+		"volatile.eth0.hwaddr":    "10:66:6a:2a:3f:e2",
 		"volatile.idmap.base":     "0",
 	})
 	require.NoError(t, err)
@@ -425,8 +425,7 @@ func TestGetInstancesByMemberAddress(t *testing.T) {
 	addContainer(t, tx, nodeID3, "c3")
 	addContainer(t, tx, nodeID2, "c4")
 
-	instType := instancetype.Container
-	result, err := tx.GetInstancesByMemberAddress(context.Background(), time.Duration(db.DefaultOfflineThreshold)*time.Second, []string{"default"}, instType)
+	result, err := tx.GetInstancesByMemberAddress(context.Background(), time.Duration(db.DefaultOfflineThreshold)*time.Second, []string{"default"})
 	require.NoError(t, err)
 	assert.Equal(
 		t,
@@ -466,7 +465,8 @@ func TestGetInstancePool(t *testing.T) {
 		err = cluster.CreateInstanceDevices(context.TODO(), tx.Tx(), id, map[string]cluster.Device{
 			"root": {
 				Name: "root",
-				Config: map[string]string{"path": "/",
+				Config: map[string]string{
+					"path": "/",
 					"pool": "default",
 					"type": "disk",
 				},

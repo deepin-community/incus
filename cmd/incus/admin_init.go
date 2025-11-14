@@ -4,12 +4,13 @@ package main
 
 import (
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/ports"
@@ -38,6 +39,7 @@ type cmdAdminInit struct {
 	hostname string
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdAdminInit) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("init")
@@ -47,7 +49,7 @@ func (c *cmdAdminInit) Command() *cobra.Command {
   init --auto [--network-address=IP] [--network-port=8443] [--storage-backend=dir]
               [--storage-create-device=DEVICE] [--storage-create-loop=SIZE]
               [--storage-pool=POOL]
-  init --preseed
+  init --preseed [preseed.yaml]
   init --dump
 `
 	cmd.RunE = c.Run
@@ -66,24 +68,25 @@ func (c *cmdAdminInit) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdAdminInit) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
 	if c.flagAuto && c.flagPreseed {
-		return fmt.Errorf(i18n.G("Can't use --auto and --preseed together"))
+		return errors.New(i18n.G("Can't use --auto and --preseed together"))
 	}
 
 	if c.flagMinimal && c.flagPreseed {
-		return fmt.Errorf(i18n.G("Can't use --minimal and --preseed together"))
+		return errors.New(i18n.G("Can't use --minimal and --preseed together"))
 	}
 
 	if c.flagMinimal && c.flagAuto {
-		return fmt.Errorf(i18n.G("Can't use --minimal and --auto together"))
+		return errors.New(i18n.G("Can't use --minimal and --auto together"))
 	}
 
 	if !c.flagAuto && (c.flagNetworkAddress != "" || c.flagNetworkPort != -1 ||
 		c.flagStorageBackend != "" || c.flagStorageDevice != "" ||
 		c.flagStorageLoopSize != -1 || c.flagStoragePool != "") {
-		return fmt.Errorf(i18n.G("Configuration flags require --auto"))
+		return errors.New(i18n.G("Configuration flags require --auto"))
 	}
 
 	if c.flagDump && (c.flagAuto || c.flagMinimal ||
@@ -91,7 +94,7 @@ func (c *cmdAdminInit) Run(cmd *cobra.Command, args []string) error {
 		c.flagNetworkPort != -1 || c.flagStorageBackend != "" ||
 		c.flagStorageDevice != "" || c.flagStorageLoopSize != -1 ||
 		c.flagStoragePool != "") {
-		return fmt.Errorf(i18n.G("Can't use --dump with other flags"))
+		return errors.New(i18n.G("Can't use --dump with other flags"))
 	}
 
 	// Connect to the daemon
@@ -118,25 +121,21 @@ func (c *cmdAdminInit) Run(cmd *cobra.Command, args []string) error {
 	// Prepare the input data
 	var config *api.InitPreseed
 
-	// Preseed mode
-	if c.flagPreseed {
-		config, err = c.RunPreseed(cmd, args, d)
+	switch {
+	case c.flagPreseed:
+		config, err = c.RunPreseed(cmd, args)
 		if err != nil {
 			return err
 		}
-	}
 
-	// Auto mode
-	if c.flagAuto || c.flagMinimal {
-		config, err = c.RunAuto(cmd, args, d, server)
+	case c.flagAuto || c.flagMinimal:
+		config, err = c.RunAuto(d, server)
 		if err != nil {
 			return err
 		}
-	}
 
-	// Interactive mode
-	if !c.flagAuto && !c.flagMinimal && !c.flagPreseed {
-		config, err = c.RunInteractive(cmd, args, d, server)
+	default:
+		config, err = c.RunInteractive(cmd, d, server)
 		if err != nil {
 			return err
 		}
@@ -191,7 +190,7 @@ func (c *cmdAdminInit) Run(cmd *cobra.Command, args []string) error {
 		}
 
 		if config.Cluster.ClusterCertificate == "" {
-			return fmt.Errorf(i18n.G("Unable to connect to any of the cluster members specified in join token"))
+			return errors.New(i18n.G("Unable to connect to any of the cluster members specified in join token"))
 		}
 	}
 

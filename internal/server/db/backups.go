@@ -5,6 +5,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -56,7 +57,7 @@ func (c *ClusterTx) getInstanceBackupID(ctx context.Context, name string) (int, 
 	arg2 := []any{&id}
 
 	err := dbQueryRowScan(ctx, c, q, arg1, arg2)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return -1, api.StatusErrorf(http.StatusNotFound, "Instance backup not found")
 	}
 
@@ -80,12 +81,14 @@ SELECT instances_backups.id, instances_backups.instance_id,
     WHERE projects.name=? AND instances_backups.name=?
 `
 	arg1 := []any{projectName, name}
-	arg2 := []any{&args.ID, &args.InstanceID, &args.CreationDate,
-		&args.ExpiryDate, &instanceOnlyInt, &optimizedStorageInt}
+	arg2 := []any{
+		&args.ID, &args.InstanceID, &args.CreationDate,
+		&args.ExpiryDate, &instanceOnlyInt, &optimizedStorageInt,
+	}
 
 	err := dbQueryRowScan(ctx, c, q, arg1, arg2)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return args, api.StatusErrorf(http.StatusNotFound, "Instance backup not found")
 		}
 
@@ -120,12 +123,14 @@ SELECT instances_backups.name, instances_backups.instance_id,
     WHERE instances_backups.id=?
 `
 	arg1 := []any{backupID}
-	arg2 := []any{&args.Name, &args.InstanceID, &args.CreationDate,
-		&args.ExpiryDate, &instanceOnlyInt, &optimizedStorageInt}
+	arg2 := []any{
+		&args.Name, &args.InstanceID, &args.CreationDate,
+		&args.ExpiryDate, &instanceOnlyInt, &optimizedStorageInt,
+	}
 
 	err := dbQueryRowScan(ctx, c, q, arg1, arg2)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return args, api.StatusErrorf(http.StatusNotFound, "Instance backup not found")
 		}
 
@@ -237,7 +242,8 @@ func (c *ClusterTx) RenameInstanceBackup(ctx context.Context, oldName, newName s
 		logger.Ctx{
 			"query":   "UPDATE instances_backups SET name = ? WHERE name = ?",
 			"oldName": oldName,
-			"newName": newName})
+			"newName": newName,
+		})
 	_, err = stmt.ExecContext(ctx, newName, oldName)
 	if err != nil {
 		return err
@@ -441,7 +447,7 @@ func (c *ClusterTx) getStoragePoolVolumeBackupID(ctx context.Context, name strin
 	arg2 := []any{&id}
 
 	err := dbQueryRowScan(ctx, c, q, arg1, arg2)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return -1, api.StatusErrorf(http.StatusNotFound, "Storage volume backup not found")
 	}
 
@@ -485,7 +491,7 @@ WHERE projects.name=? AND backups.name=?
 
 	err := dbQueryRowScan(ctx, c, q, arg1, outfmt)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return args, api.StatusErrorf(http.StatusNotFound, "Storage volume backup not found")
 		}
 
@@ -517,7 +523,7 @@ WHERE backups.id=?
 
 	err := dbQueryRowScan(ctx, c, q, arg1, outfmt)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return args, api.StatusErrorf(http.StatusNotFound, "Storage volume backup not found")
 		}
 
@@ -543,7 +549,8 @@ func (c *ClusterTx) RenameVolumeBackup(ctx context.Context, oldName, newName str
 		logger.Ctx{
 			"query":   "UPDATE storage_volumes_backups SET name = ? WHERE name = ?",
 			"oldName": oldName,
-			"newName": newName})
+			"newName": newName,
+		})
 	_, err = stmt.Exec(newName, oldName)
 	if err != nil {
 		return err
@@ -612,7 +619,7 @@ func (c *ClusterTx) getStoragePoolBucketBackupID(ctx context.Context, name strin
 	arg2 := []any{&id}
 
 	err := dbQueryRowScan(ctx, c, q, arg1, arg2)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return -1, api.StatusErrorf(http.StatusNotFound, "Storage volume backup not found")
 	}
 
@@ -654,7 +661,7 @@ WHERE projects.name=? AND backups.name=?
 
 	err := dbQueryRowScan(ctx, c, q, arg1, outfmt)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return args, api.StatusErrorf(http.StatusNotFound, "Storage bucket backup not found")
 		}
 
@@ -723,7 +730,8 @@ func (c *ClusterTx) RenameBucketBackup(ctx context.Context, oldName, newName str
 		logger.Ctx{
 			"query":   "UPDATE storage_buckets_backups SET name = ? WHERE name = ?",
 			"oldName": oldName,
-			"newName": newName})
+			"newName": newName,
+		})
 	_, err = stmt.Exec(newName, oldName)
 	if err != nil {
 		return err

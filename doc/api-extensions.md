@@ -2587,3 +2587,247 @@ This implements a new `security.promiscuous` configuration option on OVN NICs.
 ## `ovn_nic_ip_address_none`
 
 This adds `none` as a value for `ipv4.address` and `ipv6.address` for OVN NICs.
+
+## `instances_state_os_info`
+
+This extension adds a pointer to an `InstanceStateOSInfo` struct to the instance's state API.
+
+## `network_load_balancer_state`
+
+This adds a new `/1.0/networks/NAME/load-balancers/IP/state` API endpoint
+which returns load-balancer health check information (when configured).
+
+## `instance_nic_macvlan_mode`
+
+This adds a `mode` configuration key on `macvlan` network interfaces which allows for configuring the Macvlan mode.
+
+## `storage_lvm_cluster_create`
+
+Allow for creating new LVM cluster pools by setting the `source` to the shared block device.
+
+## `network_ovn_external_interfaces`
+
+This adds support for `bridge.external_interfaces` on OVN networks.
+
+## `instances_scriptlet_get_instances_count`
+
+This allows the instance scriptlet to fetch the count instances given an optional Project or Location filter as well as including pending instances.
+
+## `cluster_rebalance`
+
+This adds automatic live-migration to balance load on cluster again.
+
+As part of this, the following configuration options have been added:
+
+* `cluster.rebalance.batch`
+* `cluster.rebalance.cooldown`
+* `cluster.rebalance.interval`
+* `cluster.rebalance.threshold`
+
+## `custom_volume_refresh_exclude_older_snapshots`
+
+This adds support for excluding source snapshots earlier than latest target snapshot.
+
+## `storage_initial_owner`
+
+This adds ability to set the initial owner of a custom volume.
+
+The following configuration options have been added:
+
+* `initial.gid`
+* `initial.mode`
+* `initial.uid`
+
+## `storage_live_migration`
+
+This adds support for virtual-machines live-migration between storage pools.
+
+## `instance_console_screenshot`
+
+This adds support to take screenshots of the current VGA console of a VM.
+
+## `image_import_alias`
+
+Adds a new `X-Incus-aliases` HTTP header to set aliases while uploading an image.
+
+## `authorization_scriptlet`
+
+This adds the ability to define a scriptlet in a new configuration key, `authorization.scriptlet`, managing authorization on the Incus cluster.
+
+## `console_force`
+
+This adds support for forcing a connection to the console, even if there is already an active session.
+It introduces the new `--force` flag for connecting to the instance console.
+
+## `network_ovn_state_addresses`
+
+This adds extra fields to the OVN network state struct for the IPv4 and IPv6 addresses used on the uplink.
+
+## `qemu_scriptlet_config`
+
+This extends the QEMU scriptlet feature by allowing to modify QEMU configuration before a VM starts, and passing information about the instance to the scriptlet.
+
+## `network_bridge_acl_devices`
+
+This adds support for device ACLs when attached to a bridged network.
+
+## `instance_debug_memory`
+
+Add new memory dump API at `/1.0/instances/NAME/debug/memory`.
+
+## `init_preseed_storage_volumes`
+
+This API extension provides the ability to configure storage volumes in preseed init.
+
+## `init_preseed_profile_project`
+
+This API extension provides the ability to specify the project as part of profile definitions in preseed init.
+
+## `instance_nic_routed_host_address`
+
+Adds support for specifying the VRF to add the routes to.
+
+## `instance_smbios11`
+
+A new category of configuration options, `smbios11.XYZ` has been added
+which allows passing key/value pairs through `SMBIOS Type 11` on systems that
+support it.
+
+## `api_filtering_extended`
+
+This extends the API filtering mechanism to all API collections.
+
+## `acme_dns01`
+
+Adds support for `DNS-01` challenge to the Incus ACME support for certificate generation.
+
+## `security_iommu`
+
+Introduce a new `security.iommu` configuration key to control whether to
+enable IOMMU emulation. This is done through `virtio_iommu` on Linux and the emulated Intel IOMMU on Windows.
+
+## `network_ipv4_dhcp_routes`
+
+Introduces a new `ipv4.dhcp.routes` configuration option on bridged and OVN networks.
+This allows specifying pairs of CIDR networks and gateway address to be announced by the DHCP server.
+
+## `network_state_ovn_ls`
+
+Adds a new `LogicalSwitch` field to the `NetworkStateOVN` struct which is part of the `GET /1.0/networks/NAME/state` API.
+
+This is used to get the OVN logical switch name.
+
+## `network_dns_nameservers`
+
+Introduces the `dns.nameservers` configuration option on bridged and OVN networks.
+This allows specifying IPv4 and IPv6 DNS server addresses to be announced by the DHCP server and via Router Advertisements.
+
+## `acme_http01_port`
+
+Adds `acme.http.port` to control an alternative HTTP port for `HTTP-01` validation.
+
+## `network_ovn_ipv4_dhcp_expiry`
+
+Introduces `ipv4.dhcp.expiry` for OVN networks.
+
+## `instance_state_cpu_time`
+
+This adds an `allocated_time` field below `CPU` in the instance state API.
+
+## `network_io_bus`
+
+This introduces a new `io.bus` property for compatible network devices allowing to choose between `virtio` (default) and `usb`.
+
+## `disk_io_bus_usb`
+
+Adds a new `usb` value for `io.bus` on `disk` devices.
+
+## `server_logging`
+
+This implements a new set of `logging` configuration keys on the server, allowing for multiple logging targets.
+The former `loki` configuration keys are being transitioned over as part of this.
+
+## `network_forward_snat`
+
+Adds a `snat` configuration option for network forwards which will cause any DNAT to get a matching SNAT applied.
+So new connections from the target will appear as coming from the network forward address.
+
+This is limited to bridged networks as OVN doesn't support flexible enough SNAT for this.
+
+## `memory_hotplug`
+
+This adds memory hotplugging for VMs, allowing them to add memory at runtime without rebooting.
+
+## `instance_nic_routed_host_tables`
+
+This adds support for specifying host-routing tables on `nic` devices that use the routed mode.
+
+## `instance_publish_split`
+
+This adds support for creating a split format image out of an existing instance.
+
+## `init_preseed_certificates`
+
+This API extension provides the ability to configure certificates in preseed init.
+
+## `custom_volume_sftp`
+
+This adds the SFTP API to custom storage volumes.
+
+## `network_ovn_external_nic_address`
+
+This adds support for configuring a custom external IPv4 or IPv6 address
+for a given instance so long as that address is available through a
+network forward.
+
+## `network_physical_gateway_hwaddr`
+
+Allows setting the MAC address of the IPv4 and IPv6 gateways when used with OVN.
+
+## `backup_s3_upload`
+
+Adds support for immediately uploading instance or volume backups to an S3 compatible endpoint.
+
+## `snapshot_manual_expiry`
+
+Introduces a `snapshots.expiry.manual` configuration key to both
+instances and storage volumes which allows overriding the default expiry
+value for snapshots created directly by the user as opposed to created
+on schedule.
+
+## `resources_cpu_address_sizes`
+
+This adds tracking of CPU address sizes in the resources API.
+The main use of this is within clusters to calculate a cluster-wide
+maximum memory amount for hotplugging into virtual machines.
+
+## `disk_attached`
+
+This introduces a new `attached` property to disk devices describing whether disks are attached or ejected.
+
+## `limits_memory_hotplug`
+
+The `limits.memory.hotplug` option controls how memory hotplug is handled for the virtual machine.
+It can be set to `false` to completely disable memory hotplugging.
+Alternatively, it can be set to a value that defines the maximum amount of memory the VM can reach through hotplug.
+This value must be greater than or equal to `limits.memory`.
+
+## `disk_wwn`
+
+Add support for setting the disk World Wide Name property through the new `wwn` disk configuration option.
+
+## `server_logging_webhook`
+
+This adds support for basic webhook as a logging target.
+
+It can be selected through `logging.NAME.target.type` with the `webhook` value.
+
+The following target keys are supported:
+
+* `logging.NAME.target.address` (URL of the target)
+* `logging.NAME.target.ca_cert` (Certificate when using an HTTPS target with a self-signed certificate)
+* `logging.NAME.target.username` (Username for HTTP authentication)
+* `logging.NAME.target.password` (Password for HTTP authentication)
+* `logging.NAME.target.retry` (How many times to retry the transmission)
+
+The webhook data matches what's sent over the existing events API.

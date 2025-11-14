@@ -204,7 +204,7 @@ func operationGet(d *Daemon, r *http.Request) response.Response {
 		}
 
 		if len(ops) > 1 {
-			return fmt.Errorf("More than one operation matches")
+			return errors.New("More than one operation matches")
 		}
 
 		operation := ops[0]
@@ -262,11 +262,19 @@ func operationDelete(d *Daemon, r *http.Request) response.Response {
 		if objectType != "" {
 			for _, v := range op.Resources() {
 				for _, u := range v {
-					_, _, _, pathArgs, err := dbCluster.URLToEntityType(u.String())
-					if err != nil {
-						return response.InternalError(fmt.Errorf("Unable to parse operation resource URL: %w", err))
+					// When dealing with specific objects, get the arguments from the URL.
+					var pathArgs []string
+
+					if objectType != auth.ObjectTypeProject {
+						var err error
+
+						_, _, _, pathArgs, err = dbCluster.URLToEntityType(u.String())
+						if err != nil {
+							return response.InternalError(fmt.Errorf("Unable to parse operation resource URL: %w", err))
+						}
 					}
 
+					// Check that the access is allowed.
 					object, err := auth.NewObject(objectType, projectName, pathArgs...)
 					if err != nil {
 						return response.InternalError(fmt.Errorf("Unable to create authorization object for operation: %w", err))
@@ -304,7 +312,7 @@ func operationDelete(d *Daemon, r *http.Request) response.Response {
 		}
 
 		if len(ops) > 1 {
-			return fmt.Errorf("More than one operation matches")
+			return errors.New("More than one operation matches")
 		}
 
 		operation := ops[0]
@@ -356,7 +364,7 @@ func operationCancel(s *state.State, r *http.Request, projectName string, op *ap
 		}
 
 		if len(ops) > 1 {
-			return fmt.Errorf("More than one operation matches")
+			return errors.New("More than one operation matches")
 		}
 
 		operation := ops[0]
@@ -961,12 +969,9 @@ func operationWaitGet(d *Daemon, r *http.Request) response.Response {
 			}
 
 			// Wait for the operation.
-			err = op.Wait(ctx)
-			if err != nil {
-				_ = response.SmartError(err).Render(w)
-				return nil
-			}
+			_ = op.Wait(ctx)
 
+			// Render the current state.
 			_, body, err := op.Render()
 			if err != nil {
 				_ = response.SmartError(err).Render(w)
@@ -994,7 +999,7 @@ func operationWaitGet(d *Daemon, r *http.Request) response.Response {
 		}
 
 		if len(ops) > 1 {
-			return fmt.Errorf("More than one operation matches")
+			return errors.New("More than one operation matches")
 		}
 
 		operation := ops[0]
@@ -1114,7 +1119,7 @@ func operationWebsocketGet(d *Daemon, r *http.Request) response.Response {
 	// Then check if the query is from an operation on another node, and, if so, forward it
 	secret := r.FormValue("secret")
 	if secret == "" {
-		return response.BadRequest(fmt.Errorf("Missing websocket secret"))
+		return response.BadRequest(errors.New("Missing websocket secret"))
 	}
 
 	var address string
@@ -1130,7 +1135,7 @@ func operationWebsocketGet(d *Daemon, r *http.Request) response.Response {
 		}
 
 		if len(ops) > 1 {
-			return fmt.Errorf("More than one operation matches")
+			return errors.New("More than one operation matches")
 		}
 
 		operation := ops[0]

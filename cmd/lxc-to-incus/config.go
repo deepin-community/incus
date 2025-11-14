@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	internalUtil "github.com/lxc/incus/v6/internal/util"
@@ -15,6 +16,7 @@ var checkedKeys = []string{
 	"lxc.aa_allow_incomplete",
 	"lxc.aa_profile",
 	"lxc.apparmor.allow_incomplete",
+	"lxc.apparmor.allow_nesting",
 	"lxc.apparmor.profile",
 	"lxc.arch",
 	"lxc.autodev",
@@ -54,14 +56,7 @@ func getUnsupportedKeys(config []string) []string {
 	var out []string
 
 	for _, a := range config {
-		supported := false
-
-		for _, b := range checkedKeys {
-			if a == b {
-				supported = true
-				break
-			}
-		}
+		supported := slices.Contains(checkedKeys, a)
 
 		if !supported {
 			out = append(out, a)

@@ -15,7 +15,7 @@ Image
   Images for various operating systems are available on the built-in remote image servers.
   See {ref}`images` for more information.
 
-  Unless the image is available locally, you must specify the name of the image server and the name of the image (for example, `images:ubuntu/22.04` for the official 22.04 Ubuntu image).
+  Unless the image is available locally, you must specify the name of the image server and the name of the image (for example, `images:debian/12` for a Debian 12 image).
 
 Instance name
 : Instance names must be unique within an Incus deployment (also within a cluster).
@@ -38,7 +38,7 @@ Instead of specifying the instance configuration as flags, you can pass it to th
 
 For example, to launch a container with the configuration from `config.yaml`, enter the following command:
 
-    incus launch images:ubuntu/22.04 ubuntu-config < config.yaml
+    incus launch images:debian/12 debian-config < config.yaml
 
 ```{tip}
 Check the contents of an existing instance configuration ([`incus config show <instance_name> --expanded`](incus_config_show.md)) to see the required syntax of the YAML file.
@@ -50,31 +50,31 @@ The following examples use [`incus launch`](incus_launch.md), but you can use [`
 
 ### Launch a container
 
-To launch a container with an Ubuntu 22.04 image from the `images` server using the instance name `ubuntu-container`, enter the following command:
+To launch a system container with a Debian 12 image from the `images` server using the instance name `debian-container`, enter the following command:
 
-    incus launch images:ubuntu/22.04 ubuntu-container
+    incus launch images:debian/12 debian-container
 
 ### Launch a virtual machine
 
-To launch a virtual machine with an Ubuntu 22.04 image from the `images` server using the instance name `ubuntu-vm`, enter the following command:
+To launch a virtual machine with a Debian 12 image from the `images` server using the instance name `debian-vm`, enter the following command:
 
-    incus launch images:ubuntu/22.04 ubuntu-vm --vm
+    incus launch images:debian/12 debian-vm --vm
 
 Or with a bigger disk:
 
-    incus launch images:ubuntu/22.04 ubuntu-vm-big --vm --device root,size=30GiB
+    incus launch images:debian/12 debian-vm-big --vm --device root,size=30GiB
 
 ### Launch a container with specific configuration options
 
 To launch a container and limit its resources to one vCPU and 192 MiB of RAM, enter the following command:
 
-    incus launch images:ubuntu/22.04 ubuntu-limited --config limits.cpu=1 --config limits.memory=192MiB
+    incus launch images:debian/12 debian-limited --config limits.cpu=1 --config limits.memory=192MiB
 
 ### Launch a VM on a specific cluster member
 
 To launch a virtual machine on the cluster member `server2`, enter the following command:
 
-    incus launch images:ubuntu/22.04 ubuntu-container --vm --target server2
+    incus launch images:debian/12 debian-container --vm --target server2
 
 ### Launch a container with a specific instance type
 
@@ -95,11 +95,21 @@ For example, the following three instance types are equivalent:
 
 To launch a container with this instance type, enter the following command:
 
-    incus launch images:ubuntu/22.04 my-instance --type t2.micro
+    incus launch images:debian/12 my-instance --type t2.micro
 
 The list of supported clouds and instance types can be found at [`https://github.com/dustinkirkland/instance-type`](https://github.com/dustinkirkland/instance-type).
 
 ### Launch a VM that boots from an ISO
+
+```{note}
+When creating a Windows virtual machine, make sure to set the `image.os` property to something starting with `Windows`.
+Doing so will tell Incus to expect Windows to be running inside of the virtual machine and to tweak behavior accordingly.
+
+This notably will cause:
+ - Some unsupported virtual devices to be disabled
+ - The {abbr}`RTC (Real Time Clock)` clock to be based on system local time rather than UTC
+ - IOMMU handling to switch to an Intel IOMMU controller
+```
 
 To launch a VM that boots from an ISO, you must first create a VM.
 Let's assume that we want to create a VM and install it from the ISO image.
@@ -148,16 +158,38 @@ The virtual machine images from the [images](https://images.linuxcontainers.org)
 For other virtual machines, you may want to manually install the agent.
 
 ```{note}
-The Incus Agent is currently available only on Linux virtual machines.
+The Incus Agent is currently available only on Linux and Windows virtual machines.
 ```
 
-Incus provides the agent through a remote `9p` file system with mount name `config`.
-To install the agent, you'll need to get access to the virtual machine and run the following commands:
+Incus provides the agent primarily through a remote `9p` file system with mount name `config`.
+Alternatively, it is possible to get the agent files through a virtual CD-ROM drive by adding a `disk` device to the instance and using `agent:config` as the `source` property.
+
+    incus config device add INSTANCE-NAME agent disk source=agent:config
+
+To install the agent on a Linux system with `9p`, you'll need to get access to the virtual machine and run the following commands:
 
     mount -t 9p config /mnt
     cd /mnt
     ./install.sh
 
+When using the virtual CD-ROM drive, you can use the following instead:
+
+    mount /dev/disk/by-label/incus-agent /mnt
+    cd /mnt
+    ./install.sh
+
+```{note}
+All installation commands showed above should be run from a `root` shell.
+They require a Linux system using `systemd` as its init system.
+
 The first line will mount the remote file system on the mount point `/mnt`.
 The subsequent commands will run the installation script `install.sh` to install and run the Incus Agent.
-You need to perform this task once.
+```
+
+For Windows systems, the virtual CD-ROM drive must be used.
+The agent can manually be started by opening a terminal and running (assuming `d:\` is the CD-ROM):
+
+    d:\
+    .\incus-agent.exe
+
+To have it persist and run automatically, a system service can be manually defined to start it up.

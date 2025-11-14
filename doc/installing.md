@@ -33,7 +33,11 @@ Packages are available for a number of Linux distributions, either in their main
 ````{tabs}
 
 ```{group-tab} Alpine
-Incus and all of its dependencies are available in Alpine Linux's community repository as `incus`.
+Incus and all of its dependencies are available in Alpine Linux's edge main and community repository as `incus`.
+
+Uncomment the edge main and community repositories in `/etc/apk/repositories` and run:
+
+    apk update
 
 Install Incus with:
 
@@ -58,34 +62,59 @@ Install Incus with:
 
     pacman -S incus
 
+See also [the Incus documentation page at Arch Linux](https://wiki.archlinux.org/title/Incus) for more details about the installation, configuration, use and troubleshooting.
+
 Please report packaging issues [here](https://gitlab.archlinux.org/archlinux/packaging/packages/incus).
+```
+
+```{group-tab} Chimera Linux
+Incus and its dependencies are available in Chimera Linux's `user` repository as `incus`. Enable the user repository:
+
+    apk add chimera-repo-user
+    apk update
+
+Then add the `incus` package; this will install other dependencies including `incus-client`. Enable the service.
+
+    apk add incus
+    dinitctl enable incus
+
+If running virtual machines, also add the EDK2 firmware. Note that Chimera Linux does not provide complete support for Secure Boot, so virtual machines must be launched with this feature disabled per the example.
+
+    apk add qemu-edk2-firmware
+    dinitctl restart incus
+    # example, launch virtual machine with secureboot disabled:
+    # incus launch images:debian/12 --vm -c security.secureboot=false
+
+Please report packaging issues [here](https://github.com/chimera-linux/cports/issues).
 ```
 
 ```{group-tab} Debian
 There are three options currently available to Debian users.
 
-1. Native `incus` package
+1. Native `incus` and `incus-base` packages
 
-    A native `incus` package is currently available in the Debian testing and unstable repositories.
-    This package will be featured in the upcoming Debian 13 (`trixie`) release.
+    Native `incus` and `incus-base` packages are currently available in the Debian testing and unstable repositories.
+    These packages will be featured in the upcoming Debian 13 (`trixie`) release.
 
-    On such systems, just running `apt install incus` will get Incus installed.
-    To run virtual machines, also run `apt install qemu-system`.
-    If migrating from LXD, also run `apt install incus-tools` to get the `lxd-to-incus` command.
+    Debian's packaging will track the Incus LTS releases, as these better align with Debian's release cycle and support policies.
 
-1. Native `incus` backported package
+    On such systems, running `apt install incus` will get Incus installed with all dependencies required for running containers and virtual machines.
+    If you only wish to run containers in Incus, you can run just `apt install incus-base`.
+    If migrating from LXD, also run `apt install incus-extra` to get the `lxd-to-incus` command.
 
-   A native `incus` backported package is currently available for Debian 12 (`bookworm`) users.
+1. Native `incus` and `incus-base` backported packages
 
-   On such systems, just running `apt install incus/bookworm-backports` will get Incus installed.
-   To run virtual machines, also run `apt install qemu-system`.
-   If migrating from LXD, also run `apt install incus-tools` to get the `lxd-to-incus` command.
+   Native `incus` and `incus-base` backported packages are currently available for Debian 12 (`bookworm`) users.
+
+   On such systems, running `apt install incus/bookworm-backports` will get Incus installed with all dependencies required for running containers and virtual machines.
+   If you only wish to run containers in Incus, you can run just `apt install incus-base/bookworm-backports`.
+   If migrating from LXD, also run `apt install incus-extra/bookworm-backports` to get the `lxd-to-incus` command.
 
    ****NOTE:**** Users of backported packages should not file bugs in the Debian Bug Tracker, instead please reach out [through our forum](https://discuss.linuxcontainers.org) or directly to the Debian packager.
 
 1. Zabbly package repository
 
-    [Zabbly](https://zabbly.com) provides up to date and supported Incus packages for Debian stable releases (11 and 12).
+    [Zabbly](https://zabbly.com) provides up to date and supported Incus packages for Debian stable releases (11 and 12) and the upcoming Debian 13 (`trixie`) release.
     Those packages contain everything needed to use all Incus features.
 
     Up to date installation instructions may be found here: [`https://github.com/zabbly/incus`](https://github.com/zabbly/incus)
@@ -96,21 +125,13 @@ Docker/Podman images of Incus, based on the Zabbly package repository, are avail
 ```
 
 ```{group-tab} Fedora
-RPM packages of Incus and its dependencies are not yet available via official Fedora repositories but via the [`ganto/lxc4`](https://copr.fedorainfracloud.org/coprs/ganto/lxc4/) Community Project (COPR) repository.
-
-Install the COPR plugin for `dnf` and then enable the COPR repository:
-
-    dnf install 'dnf-command(copr)'
-    dnf copr enable ganto/lxc4
+Incus and all of its dependencies are available in Fedora.
 
 Install Incus with:
 
     dnf install incus
 
-For the additional setup steps see [Getting started with Incus on Fedora](https://github.com/ganto/copr-lxc4/wiki/Getting-Started-with-Incus-on-Fedora).
-
-Note that this is not an official project of Incus nor Fedora.
-Please report packaging issues [here](https://github.com/ganto/copr-lxc4/issues).
+Please report packaging issues [here](https://bugzilla.redhat.com/).
 ```
 
 ```{group-tab} Gentoo
@@ -163,7 +184,26 @@ Finally, you can add users to the `incus-admin` group to provide non-root access
 
     users.users.YOUR_USERNAME.extraGroups = ["incus-admin"];
 
+Instead of giving the users a full Incus daemon access, you can add users to the `incus` group, which will only grant access to the Incus user socket. In your NixOS configuration:
+
+    users.users.YOUR_USERNAME.extraGroups = ["incus"];
+
 For any NixOS specific issues, please [file an issue](https://github.com/NixOS/nixpkgs/issues/new/choose) in the package repository.
+```
+
+```{group-tab} openSUSE
+Incus and its dependencies are packaged in both openSUSE Tumbleweed and openSUSE Leap 15.6 and later (this is available through openSUSE Backports, so you can also install the same packages through PackageHub for SUSE Linux Enterprise Server 15 SP6 and later, though no support is provided by SUSE for said packages).
+
+Install Incus with:
+
+    zypper in incus
+
+If migrating from LXD, please also install `incus-tools` for `lxd-to-incus`.
+
+The default setup should work fine for most users, but if you intend to run many containers on your system you may wish to apply some custom `sysctl` settings [as suggested in the production deployments guide](./reference/server_settings.md).
+
+Please report packaging issues [here](https://bugzilla.opensuse.org/).
+Make sure to mark the bug as being in the "Containers" component, to make sure the right package maintainers see the bug.
 ```
 
 ```{group-tab} Rocky Linux
@@ -198,7 +238,7 @@ There are two options currently available to Ubuntu users.
 
 1. Zabbly package repository
 
-    [Zabbly](https://zabbly.com) provides up to date and supported Incus packages for Ubuntu LTS releases (20.04 and 22.04).
+    [Zabbly](https://zabbly.com) provides up to date and supported Incus packages for Ubuntu LTS releases (22.04 and 24.04).
     Those packages contain everything needed to use all Incus features.
 
     Up to date installation instructions may be found here: [`https://github.com/zabbly/incus`](https://github.com/zabbly/incus)
@@ -357,9 +397,13 @@ You can get the development resources required to build Incus on your OpenSUSE T
 
     sudo zypper install autoconf automake git go libacl-devel libcap-devel liblxc1 liblxc-devel sqlite3-devel libtool libudev-devel liblz4-devel libuv-devel make pkg-config tcl
 
-In addition, for normal operation, you'll also likely need
+In addition, for normal operation, you'll also likely need:
 
     sudo zypper install dnsmasq squashfs xz rsync tar attr acl qemu qemu-img qemu-spice qemu-hw-display-virtio-gpu-pci iptables ebtables nftables
+
+For using NVIDIA GPUs inside containers, you will need the NVIDIA container tools and LXC hooks:
+
+    sudo zypper install libnvidia-container-tools lxc
 
 ```
 

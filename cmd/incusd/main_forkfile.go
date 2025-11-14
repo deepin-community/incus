@@ -58,12 +58,18 @@ void forkfile(void)
 
 	// Attach to the container.
 	if (ns_fd >= 0) {
-		attach_userns_fd(ns_fd);
+		int setns_flags = CLONE_NEWNS;
 
-		if (!change_namespaces(pidfd, ns_fd, CLONE_NEWNS)) {
+		if (in_same_namespace(getpid(), ns_fd, "user") > 0)
+			setns_flags |= CLONE_NEWUSER;
+
+		if (!change_namespaces(pidfd, ns_fd, setns_flags)) {
 			error("error: setns");
 			_exit(1);
 		}
+
+		if (setns_flags & CLONE_NEWUSER)
+			finalize_userns();
 	} else {
 		if (fchdir(rootfs_fd) < 0) {
 			error("error: fchdir");
@@ -101,7 +107,7 @@ type cmdForkfile struct {
 	global *cmdGlobal
 }
 
-func (c *cmdForkfile) Command() *cobra.Command {
+func (c *cmdForkfile) command() *cobra.Command {
 	// Main subcommand
 	cmd := &cobra.Command{}
 	cmd.Use = "forkfile <listen fd> <rootfs fd> <PIDFd> <PID>"
@@ -118,12 +124,12 @@ func (c *cmdForkfile) Command() *cobra.Command {
 `
 	cmd.Hidden = true
 	cmd.Args = cobra.ExactArgs(4)
-	cmd.RunE = c.Run
+	cmd.RunE = c.run
 
 	return cmd
 }
 
-func (c *cmdForkfile) Run(cmd *cobra.Command, args []string) error {
+func (c *cmdForkfile) run(_ *cobra.Command, args []string) error {
 	var mu sync.RWMutex
 	var connections uint64
 	var transactions uint64
@@ -229,7 +235,7 @@ func (c *cmdForkfile) Run(cmd *cobra.Command, args []string) error {
 			mu.Unlock()
 
 			// Spawn the server.
-			server, err := sftp.NewServer(conn)
+			server, err := sftp.NewServer(conn, sftp.WithAllocator())
 			if err != nil {
 				return
 			}

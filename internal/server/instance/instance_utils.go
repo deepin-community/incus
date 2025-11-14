@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -15,23 +16,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/flosch/pongo2"
+	"github.com/flosch/pongo2/v6"
 	"github.com/google/uuid"
-	liblxc "github.com/lxc/go-lxc"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/internal/instance"
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/db/cluster"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
+	"github.com/lxc/incus/v6/internal/server/instance/drivers/qemudefault"
 	"github.com/lxc/incus/v6/internal/server/instance/instancetype"
 	"github.com/lxc/incus/v6/internal/server/instance/operationlock"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	"github.com/lxc/incus/v6/internal/server/seccomp"
 	"github.com/lxc/incus/v6/internal/server/state"
+	storageDrivers "github.com/lxc/incus/v6/internal/server/storage/drivers"
 	"github.com/lxc/incus/v6/internal/server/sys"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
@@ -40,6 +41,9 @@ import (
 	"github.com/lxc/incus/v6/shared/idmap"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/osarch"
+	"github.com/lxc/incus/v6/shared/resources"
+	"github.com/lxc/incus/v6/shared/revert"
+	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
@@ -80,11 +84,11 @@ func ValidConfig(sysOS *sys.OS, config map[string]string, expanded bool, instanc
 
 	for k, v := range config {
 		if instanceType == instancetype.Any && !expanded && strings.HasPrefix(k, instance.ConfigVolatilePrefix) {
-			return fmt.Errorf("Volatile keys can only be set on instances")
+			return errors.New("Volatile keys can only be set on instances")
 		}
 
 		if instanceType == instancetype.Any && !expanded && strings.HasPrefix(k, "image.") {
-			return fmt.Errorf("Image keys can only be set on instances")
+			return errors.New("Image keys can only be set on instances")
 		}
 
 		err := validConfigKey(sysOS, k, v, instanceType)
@@ -119,11 +123,11 @@ func ValidConfig(sysOS *sys.OS, config map[string]string, expanded bool, instanc
 	isDenyCompat := util.IsTrue(val)
 
 	if rawSeccomp && (isAllow || isDeny || isDenyDefault || isDenyCompat) {
-		return fmt.Errorf("raw.seccomp is mutually exclusive with security.syscalls*")
+		return errors.New("raw.seccomp is mutually exclusive with security.syscalls*")
 	}
 
 	if isAllow && (isDeny || isDenyDefault || isDenyCompat) {
-		return fmt.Errorf("security.syscalls.allow is mutually exclusive with security.syscalls.deny*")
+		return errors.New("security.syscalls.allow is mutually exclusive with security.syscalls.deny*")
 	}
 
 	_, err = seccomp.SyscallInterceptMountFilter(config)
@@ -131,12 +135,12 @@ func ValidConfig(sysOS *sys.OS, config map[string]string, expanded bool, instanc
 		return err
 	}
 
-	if expanded && (util.IsFalseOrEmpty(config["security.privileged"])) && sysOS.IdmapSet == nil {
-		return fmt.Errorf("No uid/gid allocation configured. In this mode, only privileged containers are supported")
+	if instanceType == instancetype.Container && expanded && util.IsFalseOrEmpty(config["security.privileged"]) && sysOS.IdmapSet == nil {
+		return errors.New("No uid/gid allocation configured. In this mode, only privileged containers are supported")
 	}
 
 	if util.IsTrue(config["security.privileged"]) && util.IsTrue(config["nvidia.runtime"]) {
-		return fmt.Errorf("nvidia.runtime is incompatible with privileged containers")
+		return errors.New("nvidia.runtime is incompatible with privileged containers")
 	}
 
 	return nil
@@ -212,54 +216,21 @@ func lxcValidConfig(rawLxc string) error {
 
 		// block some keys
 		if key == "lxc.logfile" || key == "lxc.log.file" {
-			return fmt.Errorf("Setting lxc.logfile is not allowed")
+			return errors.New("Setting lxc.logfile is not allowed")
 		}
 
 		if key == "lxc.syslog" || key == "lxc.log.syslog" {
-			return fmt.Errorf("Setting lxc.log.syslog is not allowed")
+			return errors.New("Setting lxc.log.syslog is not allowed")
 		}
 
 		if key == "lxc.ephemeral" {
-			return fmt.Errorf("Setting lxc.ephemeral is not allowed")
+			return errors.New("Setting lxc.ephemeral is not allowed")
 		}
 
 		if strings.HasPrefix(key, "lxc.prlimit.") {
 			return fmt.Errorf(`Process limits should be set via ` +
 				`"limits.kernel.[limit name]" and not ` +
 				`directly via "lxc.prlimit.[limit name]"`)
-		}
-
-		networkKeyPrefix := "lxc.net."
-		if !liblxc.RuntimeLiblxcVersionAtLeast(liblxc.Version(), 2, 1, 0) {
-			networkKeyPrefix = "lxc.network."
-		}
-
-		if strings.HasPrefix(key, networkKeyPrefix) {
-			fields := strings.Split(key, ".")
-
-			if !liblxc.RuntimeLiblxcVersionAtLeast(liblxc.Version(), 2, 1, 0) {
-				// lxc.network.X.ipv4 or lxc.network.X.ipv6
-				if len(fields) == 4 && slices.Contains([]string{"ipv4", "ipv6"}, fields[3]) {
-					continue
-				}
-
-				// lxc.network.X.ipv4.gateway or lxc.network.X.ipv6.gateway
-				if len(fields) == 5 && slices.Contains([]string{"ipv4", "ipv6"}, fields[3]) && fields[4] == "gateway" {
-					continue
-				}
-			} else {
-				// lxc.net.X.ipv4.address or lxc.net.X.ipv6.address
-				if len(fields) == 5 && slices.Contains([]string{"ipv4", "ipv6"}, fields[3]) && fields[4] == "address" {
-					continue
-				}
-
-				// lxc.net.X.ipv4.gateway or lxc.net.X.ipv6.gateway
-				if len(fields) == 5 && slices.Contains([]string{"ipv4", "ipv6"}, fields[3]) && fields[4] == "gateway" {
-					continue
-				}
-			}
-
-			return fmt.Errorf("Only interface-specific ipv4/ipv6 %s keys are allowed", networkKeyPrefix)
 		}
 	}
 
@@ -275,7 +246,7 @@ func AllowedUnprivilegedOnlyMap(rawIdmap string) error {
 
 	for _, ent := range rawMaps.Entries {
 		if ent.HostID == 0 {
-			return fmt.Errorf("Cannot map root user into container as the server was configured to only allow unprivileged containers")
+			return errors.New("Cannot map root user into container as the server was configured to only allow unprivileged containers")
 		}
 	}
 
@@ -463,7 +434,7 @@ func LoadFromBackup(s *state.State, projectName string, instancePath string, app
 func DeviceNextInterfaceHWAddr() (string, error) {
 	// Generate a new random MAC address using the usual prefix
 	ret := bytes.Buffer{}
-	for _, c := range "00:16:3e:xx:xx:xx" {
+	for _, c := range "10:66:6a:xx:xx:xx" {
 		if c == 'x' {
 			c, err := rand.Int(rand.Reader, big.NewInt(16))
 			if err != nil {
@@ -523,7 +494,7 @@ func ResolveImage(ctx context.Context, tx *db.ClusterTx, projectName string, sou
 
 	if source.Properties != nil {
 		if source.Server != "" {
-			return "", fmt.Errorf("Property match is only supported for local images")
+			return "", errors.New("Property match is only supported for local images")
 		}
 
 		hashes, err := tx.GetImagesFingerprints(ctx, projectName, false)
@@ -561,10 +532,10 @@ func ResolveImage(ctx context.Context, tx *db.ClusterTx, projectName string, sou
 			return image.Fingerprint, nil
 		}
 
-		return "", fmt.Errorf("No matching image could be found")
+		return "", errors.New("No matching image could be found")
 	}
 
-	return "", fmt.Errorf("Must specify one of alias, fingerprint or properties for init from image")
+	return "", errors.New("Must specify one of alias, fingerprint or properties for init from image")
 }
 
 // SuitableArchitectures returns a slice of architecture ids based on an instance create request.
@@ -574,7 +545,7 @@ func ResolveImage(ctx context.Context, tx *db.ClusterTx, projectName string, sou
 func SuitableArchitectures(ctx context.Context, s *state.State, tx *db.ClusterTx, projectName string, sourceInst *cluster.Instance, sourceImageRef string, req api.InstancesPost) ([]int, error) {
 	// Handle cases where the architecture is already provided.
 	if slices.Contains([]string{"migration", "none"}, req.Source.Type) && req.Architecture != "" {
-		id, err := osarch.ArchitectureId(req.Architecture)
+		id, err := osarch.ArchitectureID(req.Architecture)
 		if err != nil {
 			return nil, err
 		}
@@ -606,7 +577,7 @@ func SuitableArchitectures(ctx context.Context, s *state.State, tx *db.ClusterTx
 				return nil, err
 			}
 
-			id, err := osarch.ArchitectureId(img.Architecture)
+			id, err := osarch.ArchitectureID(img.Architecture)
 			if err != nil {
 				return nil, err
 			}
@@ -631,6 +602,8 @@ func SuitableArchitectures(ctx context.Context, s *state.State, tx *db.ClusterTx
 					Proxy:         s.Proxy,
 					CachePath:     s.OS.CacheDir,
 					CacheExpiry:   time.Hour,
+					SkipGetEvents: true,
+					SkipGetServer: true,
 				})
 				if err != nil {
 					return nil, err
@@ -660,7 +633,7 @@ func SuitableArchitectures(ctx context.Context, s *state.State, tx *db.ClusterTx
 					return nil, err
 				}
 
-				id, err := osarch.ArchitectureId(img.Architecture)
+				id, err := osarch.ArchitectureID(img.Architecture)
 				if err != nil {
 					return nil, err
 				}
@@ -670,7 +643,7 @@ func SuitableArchitectures(ctx context.Context, s *state.State, tx *db.ClusterTx
 
 			architectures := []int{}
 			for arch := range entries {
-				id, err := osarch.ArchitectureId(arch)
+				id, err := osarch.ArchitectureID(arch)
 				if err != nil {
 					return nil, err
 				}
@@ -698,7 +671,7 @@ func ValidName(instanceName string, isSnapshot bool) error {
 
 		// Snapshot part is more flexible, but doesn't allow space or / character.
 		if strings.ContainsAny(snapshotName, " /") {
-			return fmt.Errorf("Invalid instance snapshot name: Cannot contain space or / characters")
+			return errors.New("Invalid instance snapshot name: Cannot contain space or / characters")
 		}
 	} else {
 		if strings.Contains(instanceName, instance.SnapshotDelimiter) {
@@ -721,8 +694,8 @@ func ValidName(instanceName string, isSnapshot bool) error {
 // instance is fully completed, and a revert fail function that can be used to undo this function if a subsequent
 // step fails.
 func CreateInternal(s *state.State, args db.InstanceArgs, op *operations.Operation, clearLogDir bool, checkArchitecture bool) (Instance, *operationlock.InstanceOperation, revert.Hook, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Check instance type requested is supported by this machine.
 	err := s.InstanceTypes[args.Type]
@@ -742,7 +715,7 @@ func CreateInternal(s *state.State, args db.InstanceArgs, op *operations.Operati
 			return err
 		})
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("Failed to get default profile for new instance")
+			return nil, nil, nil, errors.New("Failed to get default profile for new instance")
 		}
 	}
 
@@ -803,7 +776,7 @@ func CreateInternal(s *state.State, args db.InstanceArgs, op *operations.Operati
 	}
 
 	if checkArchitecture && !slices.Contains(s.OS.Architectures, args.Architecture) {
-		return nil, nil, nil, fmt.Errorf("Requested architecture isn't supported by this host")
+		return nil, nil, nil, errors.New("Requested architecture isn't supported by this host")
 	}
 
 	var profiles []string
@@ -825,7 +798,7 @@ func CreateInternal(s *state.State, args db.InstanceArgs, op *operations.Operati
 		}
 
 		if checkedProfiles[profile.Name] {
-			return nil, nil, nil, fmt.Errorf("Duplicate profile found in request")
+			return nil, nil, nil, errors.New("Duplicate profile found in request")
 		}
 
 		checkedProfiles[profile.Name] = true
@@ -845,7 +818,7 @@ func CreateInternal(s *state.State, args db.InstanceArgs, op *operations.Operati
 		return nil, nil, nil, err
 	}
 
-	revert.Add(func() { opl.Done(err) })
+	reverter.Add(func() { opl.Done(err) })
 
 	var dbInst cluster.Instance
 	var p *api.Project
@@ -987,7 +960,7 @@ func CreateInternal(s *state.State, args db.InstanceArgs, op *operations.Operati
 		return nil
 	})
 	if err != nil {
-		if err == db.ErrAlreadyDefined {
+		if errors.Is(err, db.ErrAlreadyDefined) {
 			thing := "Instance"
 			if instance.IsSnapshot(args.Name) {
 				thing = "Snapshot"
@@ -999,7 +972,7 @@ func CreateInternal(s *state.State, args db.InstanceArgs, op *operations.Operati
 		return nil, nil, nil, err
 	}
 
-	revert.Add(func() {
+	reverter.Add(func() {
 		_ = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
 			return tx.DeleteInstance(ctx, dbInst.Project, dbInst.Name)
 		})
@@ -1010,7 +983,7 @@ func CreateInternal(s *state.State, args db.InstanceArgs, op *operations.Operati
 		return nil, nil, nil, fmt.Errorf("Failed initializing instance: %w", err)
 	}
 
-	revert.Add(cleanup)
+	reverter.Add(cleanup)
 
 	// Wipe any existing log for this instance name.
 	if clearLogDir {
@@ -1018,8 +991,9 @@ func CreateInternal(s *state.State, args db.InstanceArgs, op *operations.Operati
 		_ = os.RemoveAll(inst.RunPath())
 	}
 
-	cleanup = revert.Clone().Fail
-	revert.Success()
+	cleanup = reverter.Clone().Fail
+	reverter.Success()
+
 	return inst, opl, cleanup, err
 }
 
@@ -1181,7 +1155,7 @@ func SnapshotToProtobuf(snap *api.InstanceSnapshot) *migration.Snapshot {
 	}
 
 	isEphemeral := snap.Ephemeral
-	archID, _ := osarch.ArchitectureId(snap.Architecture)
+	archID, _ := osarch.ArchitectureID(snap.Architecture)
 	arch := int32(archID)
 	stateful := snap.Stateful
 	creationDate := snap.CreatedAt.UTC().Unix()
@@ -1261,4 +1235,72 @@ func SnapshotProtobufToInstanceArgs(s *state.State, inst Instance, snap *migrati
 	}
 
 	return &args, nil
+}
+
+// ResourceUsage returns an instance's expected CPU, memory and disk usage.
+func ResourceUsage(instConfig map[string]string, instDevices map[string]map[string]string, instType api.InstanceType) (int64, int64, int64, error) {
+	var err error
+
+	limitsCPU := instConfig["limits.cpu"]
+	limitsMemory := instConfig["limits.memory"]
+	cpuUsage := int64(0)
+	memoryUsage := int64(0)
+	diskUsage := int64(0)
+
+	// Parse limits.cpu.
+	if limitsCPU != "" {
+		// Check if using shared CPU limits.
+		cpuUsage, err = strconv.ParseInt(limitsCPU, 10, 64)
+		if err != nil {
+			// Or get count of pinned CPUs.
+			pinnedCPUs, err := resources.ParseCpuset(limitsCPU)
+			if err != nil {
+				return -1, -1, -1, fmt.Errorf("Failed parsing instance resources limits.cpu: %w", err)
+			}
+
+			cpuUsage = int64(len(pinnedCPUs))
+		}
+	} else if instType == api.InstanceTypeVM {
+		// Apply VM CPU cores defaults if not specified.
+		cpuUsage = qemudefault.CPUCores
+	}
+
+	// Parse limits.memory.
+	memoryLimitStr := limitsMemory
+
+	// Apply VM memory limit defaults if not specified.
+	if instType == api.InstanceTypeVM && memoryLimitStr == "" {
+		memoryLimitStr = qemudefault.MemSize
+	}
+
+	if memoryLimitStr != "" {
+		memoryLimit, err := units.ParseByteSizeString(memoryLimitStr)
+		if err != nil {
+			return -1, -1, -1, fmt.Errorf("Failed parsing instance resources limits.memory: %w", err)
+		}
+
+		memoryUsage = int64(memoryLimit)
+	}
+
+	// Parse root disk size.
+	_, rootDiskConfig, err := instance.GetRootDiskDevice(instDevices)
+	if err == nil {
+		rootDiskSizeStr := rootDiskConfig["size"]
+
+		// Apply VM root disk size defaults if not specified.
+		if instType == api.InstanceTypeVM && rootDiskSizeStr == "" {
+			rootDiskSizeStr = storageDrivers.DefaultBlockSize
+		}
+
+		if rootDiskSizeStr != "" {
+			rootDiskSize, err := units.ParseByteSizeString(rootDiskSizeStr)
+			if err != nil {
+				return -1, -1, -1, fmt.Errorf("Failed parsing instance resources root disk size: %w", err)
+			}
+
+			diskUsage = int64(rootDiskSize)
+		}
+	}
+
+	return cpuUsage, memoryUsage, diskUsage, nil
 }

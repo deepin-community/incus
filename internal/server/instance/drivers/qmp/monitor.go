@@ -3,18 +3,23 @@ package qmp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/digitalocean/go-qemu/qmp"
-
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/util"
 )
 
-var monitors = map[string]*Monitor{}
-var monitorsLock sync.Mutex
+var (
+	monitors     = map[string]*Monitor{}
+	monitorsLock sync.Mutex
+)
 
 // RingbufSize is the size of the agent serial ringbuffer in bytes.
 var RingbufSize = 16
@@ -31,10 +36,16 @@ var EventVMShutdownReasonDisconnect = "disconnect"
 // EventDiskEjected is used to indicate that a disk device was ejected by the guest.
 var EventDiskEjected = "DEVICE_TRAY_MOVED"
 
+// EventRTCChange is used to get RTC adjustment.
+var EventRTCChange = "RTC_CHANGE"
+
+// ExcludedCommands is used to filter verbose commands from the QMP logs.
+var ExcludedCommands = []string{"ringbuf-read"}
+
 // Monitor represents a QMP monitor.
 type Monitor struct {
 	path string
-	qmp  *qmp.SocketMonitor
+	qmp  *qemuMachineProtocol
 
 	agentStarted      bool
 	agentStartedMu    sync.Mutex
@@ -43,6 +54,7 @@ type Monitor struct {
 	eventHandler      func(name string, data map[string]any)
 	serialCharDev     string
 	onDisconnectEvent bool
+	detachDisk        func(name string) error
 }
 
 // start handles the background goroutines for event handling and monitoring the ringbuffer.
@@ -61,7 +73,7 @@ func (m *Monitor) start() error {
 			"format": "utf8",
 		}
 
-		err := m.run("ringbuf-read", args, &resp)
+		err := m.Run("ringbuf-read", args, &resp)
 		if err != nil {
 			return
 		}
@@ -72,13 +84,14 @@ func (m *Monitor) start() error {
 			status := entries[len(entries)-2]
 
 			m.agentStartedMu.Lock()
-			if status == "STARTED" {
+			switch status {
+			case "STARTED":
 				if !m.agentStarted && m.eventHandler != nil {
 					go m.eventHandler(EventAgentStarted, nil)
 				}
 
 				m.agentStarted = true
-			} else if status == "STOPPED" {
+			case "STOPPED":
 				m.agentStarted = false
 			}
 
@@ -87,7 +100,7 @@ func (m *Monitor) start() error {
 	}
 
 	// Start event monitoring go routine.
-	chEvents, err := m.qmp.Events(context.Background())
+	chEvents, err := m.qmp.getEvents(context.Background())
 	if err != nil {
 		return err
 	}
@@ -109,12 +122,16 @@ func (m *Monitor) start() error {
 				if e.Event == EventDiskEjected {
 					id, ok := e.Data["id"].(string)
 					if ok {
-						go func() {
-							err = m.Eject(id)
-							if err != nil {
-								logger.Warnf("Unable to eject media %q: %v", id, err)
-							}
-						}()
+						// Only handle events that result in the tray being open.
+						trayOpen, ok := e.Data["tray-open"].(bool)
+						if ok && trayOpen {
+							go func() {
+								err = m.detachDisk(id)
+								if err != nil {
+									logger.Warnf("Unable to eject media %q: %v", id, err)
+								}
+							}()
+						}
 					}
 				}
 
@@ -168,8 +185,11 @@ func (m *Monitor) ping() error {
 		return ErrMonitorDisconnect
 	}
 
+	id := m.qmp.qmpIncreaseID()
+
 	// Query the capabilities to validate the monitor.
-	_, err := m.qmp.Run([]byte("{'execute': 'query-version'}"))
+	_, err := m.qmp.run(fmt.Appendf([]byte{},
+		`{"execute": "query-version", "id": %d}`, id), id)
 	if err != nil {
 		m.Disconnect()
 		return ErrMonitorDisconnect
@@ -179,13 +199,21 @@ func (m *Monitor) ping() error {
 }
 
 // RunJSON executes a JSON-formatted command.
-func (m *Monitor) RunJSON(request []byte, resp any) error {
+func (m *Monitor) RunJSON(request []byte, resp any, logCommand bool, id uint32) error {
 	// Check if disconnected
 	if m.disconnected {
 		return ErrMonitorDisconnect
 	}
 
-	out, err := m.qmp.Run(request)
+	var err error
+	if logCommand && m.qmp.log != nil {
+		_, err = fmt.Fprintf(m.qmp.log, "[%s] QUERY: %s\n", time.Now().Format(time.RFC3339), request)
+		if err != nil {
+			return err
+		}
+	}
+
+	out, err := m.qmp.run(request, id)
 	if err != nil {
 		// Confirm the daemon didn't die.
 		errPing := m.ping()
@@ -196,12 +224,15 @@ func (m *Monitor) RunJSON(request []byte, resp any) error {
 		return err
 	}
 
+	if logCommand && m.qmp.log != nil {
+		_, err = fmt.Fprintf(m.qmp.log, "[%s] REPLY: %s\n\n", time.Now().Format(time.RFC3339), out)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Decode the response if needed.
 	if resp != nil {
-		// Handle weird QEMU QMP bug.
-		responses := strings.Split(string(out), "\r\n")
-		out = []byte(responses[len(responses)-1])
-
 		err = json.Unmarshal(out, &resp)
 		if err != nil {
 			// Confirm the daemon didn't die.
@@ -217,13 +248,18 @@ func (m *Monitor) RunJSON(request []byte, resp any) error {
 	return nil
 }
 
+// IncreaseID returns on auto increment uint32 id.
+func (m *Monitor) IncreaseID() uint32 {
+	return m.qmp.qmpIncreaseID()
+}
+
 // run executes a command.
-func (m *Monitor) run(cmd string, args any, resp any) error {
+func (m *Monitor) Run(cmd string, args any, resp any) error {
+	id := m.IncreaseID()
+
 	// Construct the command.
-	requestArgs := struct {
-		Execute   string `json:"execute"`
-		Arguments any    `json:"arguments,omitempty"`
-	}{
+	requestArgs := qmpCommand{
+		ID:        id,
 		Execute:   cmd,
 		Arguments: args,
 	}
@@ -233,11 +269,12 @@ func (m *Monitor) run(cmd string, args any, resp any) error {
 		return err
 	}
 
-	return m.RunJSON(request, resp)
+	logCommand := !slices.Contains(ExcludedCommands, cmd)
+	return m.RunJSON(request, resp, logCommand, id)
 }
 
 // Connect creates or retrieves an existing QMP monitor for the path.
-func Connect(path string, serialCharDev string, eventHandler func(name string, data map[string]any)) (*Monitor, error) {
+func Connect(path string, serialCharDev string, eventHandler func(name string, data map[string]any), logFile string, detachDisk func(name string) error) (*Monitor, error) {
 	monitorsLock.Lock()
 	defer monitorsLock.Unlock()
 
@@ -249,14 +286,29 @@ func Connect(path string, serialCharDev string, eventHandler func(name string, d
 	}
 
 	// Setup the connection.
-	qmpConn, err := qmp.NewSocketMonitor("unix", path, time.Second)
+	unixaddr, err := net.ResolveUnixAddr("unix", path)
 	if err != nil {
 		return nil, err
 	}
 
+	uc, err := net.DialUnix("unix", nil, unixaddr)
+	if err != nil {
+		return nil, err
+	}
+
+	qmpConn := &qemuMachineProtocol{uc: uc}
+	if logFile != "" && util.PathExists(filepath.Dir(logFile)) {
+		qlog, err := newQmpLog(logFile)
+		if err != nil {
+			return nil, err
+		}
+
+		qmpConn.log = qlog
+	}
+
 	chError := make(chan error, 1)
 	go func() {
-		err = qmpConn.Connect()
+		err = qmpConn.connect()
 		chError <- err
 	}()
 
@@ -267,8 +319,8 @@ func Connect(path string, serialCharDev string, eventHandler func(name string, d
 		}
 
 	case <-time.After(5 * time.Second):
-		_ = qmpConn.Disconnect()
-		return nil, fmt.Errorf("QMP connection timed out")
+		_ = qmpConn.disconnect()
+		return nil, errors.New("QMP connection timed out")
 	}
 
 	// Setup the monitor struct.
@@ -278,6 +330,7 @@ func Connect(path string, serialCharDev string, eventHandler func(name string, d
 	monitor.chDisconnect = make(chan struct{}, 1)
 	monitor.eventHandler = eventHandler
 	monitor.serialCharDev = serialCharDev
+	monitor.detachDisk = detachDisk
 
 	// Default to generating a shutdown event when the monitor disconnects so that devices can be
 	// cleaned up. This will be disabled after a shutdown event is received from QEMU itself to avoid
@@ -313,7 +366,7 @@ func (m *Monitor) Disconnect() {
 	if !m.disconnected {
 		close(m.chDisconnect)
 		m.disconnected = true
-		_ = m.qmp.Disconnect()
+		_ = m.qmp.disconnect()
 	}
 
 	// Remove from the map.

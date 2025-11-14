@@ -5,7 +5,7 @@ Source: https://github.com/lxc/incus
 Files: *
 Copyright:
  2014 Canonical Ltd
- 2023-2024 LinuxContainers
+ 2023-2025 LinuxContainers
 License: Apache-2.0
 
 Files: shared/cgo/incus_bpf.h
@@ -35,7 +35,7 @@ Files: shared/tls/cert.go
 Copyright: 2009 The Go Authors
 License: BSD-3-clause
 
-Files: internal/usbid/*
+Files: shared/resources/usbid/*
 Copyright:
  Copyright 2013 Google Inc
  Copyright 2016 the gousb Authors
@@ -45,9 +45,18 @@ Comment: A fork+minimalized version of code specifically for Incus' use; see int
 Files: debian/*
 Copyright:
  2023 Free Ekanayaka
- 2023-2024 Mathias Gibbens
+ 2023-2025 Mathias Gibbens
 License: Apache-2.0
 Comment: Debian packaging is licensed under the same terms as upstream
+
+Files: debian/incus-base.incus.init debian/incus-base.incus-startup.init debian/incus-base.incus-user.init
+Copyright: 2024 Kwok Guy
+License: Apache-2.0
+Comment: Copied from https://github.com/MoltenArmor/incus-init-scripts
+
+Files: debian/runit-incus-user/* debian/runit-incus/*
+Copyright: 2025 Martin Steigerwald <martin@lichtvoll.de>
+License: Apache-2.0
 
 License: Apache-2.0
  Licensed under the Apache License, Version 2.0 (the "License");
@@ -103,8 +112,7 @@ License: GPL-2.0 with Linux-syscall-note exception
  GNU General Public License for more details.
  .
  You should have received a copy of the GNU General Public License
- along with this package; if not, write to the Free Software
- Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+ along with this package; if not, see https://www.gnu.org/licenses/.
  .
    NOTE! This copyright does *not* cover user programs that use kernel
  services by normal system calls - this is merely considered normal use
@@ -134,8 +142,7 @@ License: LGPL-2.1+
  Lesser General Public License for more details.
  .
  You should have received a copy of the GNU Lesser General Public
- License along with this package; if not, write to the Free Software
- Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+ License along with this package; if not, see https://www.gnu.org/licenses/.
 Comment:
  On Debian systems, the complete text of the GNU Lesser General
  Public License can be found in `/usr/share/common-licenses/LGPL-2.1'.
@@ -152,8 +159,7 @@ License: LGPL-2.1+ with Linux-syscall-note exception
  Lesser General Public License for more details.
  .
  You should have received a copy of the GNU Lesser General Public
- License along with this package; if not, write to the Free Software
- Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+ License along with this package; if not, see https://www.gnu.org/licenses/.
  .
    NOTE! This copyright does *not* cover user programs that use kernel
  services by normal system calls - this is merely considered normal use

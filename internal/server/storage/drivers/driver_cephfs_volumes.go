@@ -1,15 +1,16 @@
 package drivers
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 
 	"github.com/lxc/incus/v6/internal/instancewriter"
 	"github.com/lxc/incus/v6/internal/migration"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/rsync"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	localMigration "github.com/lxc/incus/v6/internal/server/migration"
@@ -18,6 +19,7 @@ import (
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/ioprogress"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
@@ -35,7 +37,7 @@ func (d *cephfs) CreateVolume(vol Volume, filler *VolumeFiller, op *operations.O
 
 	// Create the main volume path.
 	volPath := vol.MountPath()
-	err := vol.EnsureMountPath()
+	err := vol.EnsureMountPath(true)
 	if err != nil {
 		return err
 	}
@@ -75,7 +77,7 @@ func (d *cephfs) CreateVolumeFromCopy(vol Volume, srcVol Volume, copySnapshots b
 
 	// Create the main volume path.
 	volPath := vol.MountPath()
-	err := vol.EnsureMountPath()
+	err := vol.EnsureMountPath(false)
 	if err != nil {
 		return err
 	}
@@ -146,7 +148,7 @@ func (d *cephfs) CreateVolumeFromCopy(vol Volume, srcVol Volume, copySnapshots b
 
 		// Run EnsureMountPath after mounting and copying to ensure the mounted directory has the
 		// correct permissions set.
-		return vol.EnsureMountPath()
+		return vol.EnsureMountPath(false)
 	}, op)
 	if err != nil {
 		return err
@@ -164,7 +166,7 @@ func (d *cephfs) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, 
 
 	// Create the main volume path.
 	volPath := vol.MountPath()
-	err := vol.EnsureMountPath()
+	err := vol.EnsureMountPath(false)
 	if err != nil {
 		return err
 	}
@@ -192,11 +194,11 @@ func (d *cephfs) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, 
 		path := internalUtil.AddSlash(mountPath)
 
 		// Snapshots are sent first by the sender, so create these first.
-		for _, snapName := range volTargetArgs.Snapshots {
+		for _, snapshot := range volTargetArgs.Snapshots {
 			// Receive the snapshot.
 			var wrapper *ioprogress.ProgressTracker
 			if volTargetArgs.TrackProgress {
-				wrapper = localMigration.ProgressTracker(op, "fs_progress", snapName)
+				wrapper = localMigration.ProgressTracker(op, "fs_progress", snapshot.GetName())
 			}
 
 			err = rsync.Recv(path, conn, wrapper, volTargetArgs.MigrationType.Features)
@@ -204,7 +206,7 @@ func (d *cephfs) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, 
 				return err
 			}
 
-			fullSnapName := GetSnapshotVolumeName(vol.name, snapName)
+			fullSnapName := GetSnapshotVolumeName(vol.name, snapshot.GetName())
 			snapVol := NewVolume(d, d.name, vol.volType, vol.contentType, fullSnapName, vol.config, vol.poolConfig)
 
 			// Create the snapshot itself.
@@ -214,7 +216,7 @@ func (d *cephfs) CreateVolumeFromMigration(vol Volume, conn io.ReadWriteCloser, 
 			}
 
 			// Setup the revert.
-			revertSnaps = append(revertSnaps, snapName)
+			revertSnaps = append(revertSnaps, snapshot.GetName())
 		}
 
 		if vol.contentType == ContentTypeFS {
@@ -249,7 +251,7 @@ func (d *cephfs) DeleteVolume(vol Volume, op *operations.Operation) error {
 	}
 
 	if len(snapshots) > 0 {
-		return fmt.Errorf("Cannot remove a volume that has snapshots")
+		return errors.New("Cannot remove a volume that has snapshots")
 	}
 
 	volPath := GetVolumeMountPath(d.name, vol.volType, vol.name)
@@ -261,7 +263,7 @@ func (d *cephfs) DeleteVolume(vol Volume, op *operations.Operation) error {
 
 	// Remove the volume from the storage device.
 	err = os.RemoveAll(volPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed to delete '%s': %w", volPath, err)
 	}
 
@@ -270,7 +272,7 @@ func (d *cephfs) DeleteVolume(vol Volume, op *operations.Operation) error {
 	snapshotDir := GetVolumeSnapshotDir(d.name, vol.volType, vol.name)
 
 	err = os.RemoveAll(snapshotDir)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed to delete '%s': %w", snapshotDir, err)
 	}
 
@@ -492,7 +494,7 @@ func (d *cephfs) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) 
 	sourcePath := GetVolumeMountPath(d.name, snapVol.volType, parentName)
 	cephSnapPath := filepath.Join(sourcePath, ".snap", snapName)
 
-	err := os.Mkdir(cephSnapPath, 0711)
+	err := os.Mkdir(cephSnapPath, 0o711)
 	if err != nil {
 		return fmt.Errorf("Failed to create directory '%s': %w", cephSnapPath, err)
 	}
@@ -522,14 +524,14 @@ func (d *cephfs) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) 
 	cephSnapPath := filepath.Join(sourcePath, ".snap", snapName)
 
 	err := os.Remove(cephSnapPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed to remove '%s': %w", cephSnapPath, err)
 	}
 
 	// Remove the symlink.
 	snapPath := snapVol.MountPath()
 	err = os.Remove(snapPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed to remove '%s': %w", snapPath, err)
 	}
 
@@ -602,7 +604,7 @@ func (d *cephfs) RenameVolumeSnapshot(snapVol Volume, newSnapshotName string, op
 	// Re-generate the snapshot symlink.
 	oldPath := snapVol.MountPath()
 	err = os.Remove(oldPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("Failed to remove '%s': %w", oldPath, err)
 	}
 

@@ -1,9 +1,11 @@
 package drivers
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,7 +20,6 @@ import (
 	"github.com/google/uuid"
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	"github.com/lxc/incus/v6/internal/server/db"
 	dbCluster "github.com/lxc/incus/v6/internal/server/db/cluster"
@@ -32,19 +33,22 @@ import (
 	"github.com/lxc/incus/v6/internal/server/locking"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	"github.com/lxc/incus/v6/internal/server/project"
-	"github.com/lxc/incus/v6/internal/server/resources"
 	"github.com/lxc/incus/v6/internal/server/state"
 	storagePools "github.com/lxc/incus/v6/internal/server/storage"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/resources"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/subprocess"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
 // Track last autorestart of an instance.
-var instancesLastRestart = map[int][10]time.Time{}
-var muInstancesLastRestart sync.Mutex
+var (
+	instancesLastRestart   = map[int][10]time.Time{}
+	muInstancesLastRestart sync.Mutex
+)
 
 // ErrExecCommandNotFound indicates the command is not found.
 var ErrExecCommandNotFound = api.StatusErrorf(http.StatusBadRequest, "Command not found")
@@ -348,6 +352,17 @@ func (d *common) Snapshots() ([]instance.Instance, error) {
 		return nil, err
 	}
 
+	// Allow storage to pre-fetch snapshot details using bulk queries.
+	pool, err := d.getStoragePool()
+	if err != nil {
+		return nil, err
+	}
+
+	err = pool.CacheInstanceSnapshots(d)
+	if err != nil {
+		return nil, err
+	}
+
 	snapshots := make([]instance.Instance, 0, len(snapshotArgs))
 	for _, snapshotArg := range snapshotArgs {
 		// Populate profile info that was already loaded.
@@ -358,6 +373,18 @@ func (d *common) Snapshots() ([]instance.Instance, error) {
 			return nil, err
 		}
 
+		// Set the storage pool to the pre-loaded one (for caching).
+		snapLXC, ok := snapInst.(*lxc)
+		if ok {
+			snapLXC.storagePool = pool
+		}
+
+		snapQEMU, ok := snapInst.(*qemu)
+		if ok {
+			snapQEMU.storagePool = pool
+		}
+
+		// Pass through the current operation.
 		snapInst.SetOperation(d.op)
 
 		snapshots = append(snapshots, instance.Instance(snapInst))
@@ -388,7 +415,7 @@ func (d *common) VolatileSet(changes map[string]string) error {
 	// Quick check.
 	for key := range changes {
 		if !strings.HasPrefix(key, internalInstance.ConfigVolatilePrefix) {
-			return fmt.Errorf("Only volatile keys can be modified with VolatileSet")
+			return errors.New("Only volatile keys can be modified with VolatileSet")
 		}
 	}
 
@@ -553,8 +580,9 @@ func (d *common) deviceVolatileGetFunc(devName string) func() map[string]string 
 		volatile := make(map[string]string)
 		prefix := fmt.Sprintf("volatile.%s.", devName)
 		for k, v := range d.localConfig {
-			if strings.HasPrefix(k, prefix) {
-				volatile[strings.TrimPrefix(k, prefix)] = v
+			after, ok := strings.CutPrefix(k, prefix)
+			if ok {
+				volatile[after] = v
 			}
 		}
 		return volatile
@@ -598,7 +626,8 @@ func (d *common) restartCommon(inst instance.Instance, timeout time.Duration) er
 		"created":   d.creationDate,
 		"ephemeral": ephemeral,
 		"used":      d.lastUsedDate,
-		"timeout":   timeout}
+		"timeout":   timeout,
+	}
 
 	d.logger.Info("Restarting instance", ctxMap)
 
@@ -636,7 +665,7 @@ func (d *common) restartCommon(inst instance.Instance, timeout time.Duration) er
 		}
 	} else {
 		if inst.IsFrozen() {
-			err = fmt.Errorf("Instance is not running")
+			err = errors.New("Instance is not running")
 			op.Done(err)
 			return err
 		}
@@ -649,8 +678,13 @@ func (d *common) restartCommon(inst instance.Instance, timeout time.Duration) er
 	}
 
 	// Setup a new operation for the start phase.
-	op, err = operationlock.Create(d.Project().Name, d.Name(), d.op, operationlock.ActionRestart, true, true)
+	op, err = operationlock.CreateWaitGet(d.Project().Name, d.Name(), d.op, operationlock.ActionRestart, nil, true, false)
 	if err != nil {
+		if errors.Is(err, operationlock.ErrNonReusuableSucceeded) {
+			// An existing matching operation has now succeeded, return.
+			return nil
+		}
+
 		return fmt.Errorf("Create restart (for start) operation: %w", err)
 	}
 
@@ -750,10 +784,10 @@ func (d *common) runHooks(hooks []func() error) error {
 	return nil
 }
 
-// snapshot handles the common part of the snapshoting process.
+// snapshot handles the common part of the snapshotting process.
 func (d *common) snapshotCommon(inst instance.Instance, name string, expiry time.Time, stateful bool) error {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Setup the arguments.
 	args := db.InstanceArgs{
@@ -776,7 +810,7 @@ func (d *common) snapshotCommon(inst instance.Instance, name string, expiry time
 		return fmt.Errorf("Failed creating instance snapshot record %q: %w", name, err)
 	}
 
-	revert.Add(cleanup)
+	reverter.Add(cleanup)
 	defer snapInstOp.Done(err)
 
 	pool, err := storagePools.LoadByInstance(d.state, snap)
@@ -789,7 +823,7 @@ func (d *common) snapshotCommon(inst instance.Instance, name string, expiry time
 		return fmt.Errorf("Create instance snapshot: %w", err)
 	}
 
-	revert.Add(func() { _ = snap.Delete(true) })
+	reverter.Add(func() { _ = snap.Delete(true) })
 
 	// Mount volume for backup.yaml writing.
 	_, err = pool.MountInstance(inst, d.op)
@@ -805,7 +839,8 @@ func (d *common) snapshotCommon(inst instance.Instance, name string, expiry time
 		return err
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return nil
 }
 
@@ -862,7 +897,7 @@ func (d *common) isRunningStatusCode(statusCode api.StatusCode) bool {
 // isStartableStatusCode returns an error if the status code means the instance cannot be started currently.
 func (d *common) isStartableStatusCode(statusCode api.StatusCode) error {
 	if d.isRunningStatusCode(statusCode) {
-		return fmt.Errorf("The instance is already running")
+		return errors.New("The instance is already running")
 	}
 
 	// If the instance process exists but is crashed, don't allow starting until its been cleaned up, as it
@@ -916,7 +951,7 @@ func (d *common) validateStartup(stateful bool, statusCode api.StatusCode) error
 
 	// Validate architecture.
 	if !slices.Contains(d.state.OS.Architectures, d.architecture) {
-		return fmt.Errorf("Requested architecture isn't supported by this host")
+		return errors.New("Requested architecture isn't supported by this host")
 	}
 
 	// Must happen before creating operation Start lock to avoid the status check returning Stopped due to the
@@ -1201,7 +1236,7 @@ func (d *common) deviceLoad(inst instance.Instance, deviceName string, rawConfig
 			return nil, err
 		}
 	} else {
-		// Othewise copy the config so it cannot be modified by device.
+		// Otherwise copy the config so it cannot be modified by device.
 		configCopy = rawConfig.Clone()
 	}
 
@@ -1222,7 +1257,7 @@ func (d *common) deviceAdd(dev device.Device, instanceRunning bool) error {
 	l.Debug("Adding device")
 
 	if instanceRunning && !dev.CanHotPlug() {
-		return fmt.Errorf("Device cannot be added when instance is running")
+		return errors.New("Device cannot be added when instance is running")
 	}
 
 	return dev.Add()
@@ -1234,7 +1269,7 @@ func (d *common) deviceRemove(dev device.Device, instanceRunning bool) error {
 	l.Debug("Removing device")
 
 	if instanceRunning && !dev.CanHotPlug() {
-		return fmt.Errorf("Device cannot be removed when instance is running")
+		return errors.New("Device cannot be removed when instance is running")
 	}
 
 	return dev.Remove()
@@ -1242,8 +1277,8 @@ func (d *common) deviceRemove(dev device.Device, instanceRunning bool) error {
 
 // devicesAdd adds devices to instance.
 func (d *common) devicesAdd(inst instance.Instance, instanceRunning bool) (revert.Hook, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	for _, entry := range d.expandedDevices.Sorted() {
 		dev, err := d.deviceLoad(inst, entry.Name, entry.Config)
@@ -1264,6 +1299,9 @@ func (d *common) devicesAdd(inst instance.Instance, instanceRunning bool) (rever
 				continue
 			}
 
+			// Clear any volatile key that could have been set during validation.
+			_ = d.deviceVolatileReset(entry.Name, entry.Config, nil)
+
 			return nil, fmt.Errorf("Failed add validation for device %q: %w", entry.Name, err)
 		}
 
@@ -1272,11 +1310,12 @@ func (d *common) devicesAdd(inst instance.Instance, instanceRunning bool) (rever
 			return nil, fmt.Errorf("Failed to add device %q: %w", dev.Name(), err)
 		}
 
-		revert.Add(func() { _ = d.deviceRemove(dev, instanceRunning) })
+		reverter.Add(func() { _ = d.deviceRemove(dev, instanceRunning) })
 	}
 
-	cleanup := revert.Clone().Fail
-	revert.Success()
+	cleanup := reverter.Clone().Fail
+	reverter.Success()
+
 	return cleanup, nil
 }
 
@@ -1297,12 +1336,12 @@ func (d *common) devicesRegister(inst instance.Instance) {
 
 // devicesUpdate applies device changes to an instance.
 func (d *common) devicesUpdate(inst instance.Instance, removeDevices deviceConfig.Devices, addDevices deviceConfig.Devices, updateDevices deviceConfig.Devices, oldExpandedDevices deviceConfig.Devices, instanceRunning bool, userRequested bool) error {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	dm, ok := inst.(deviceManager)
 	if !ok {
-		return fmt.Errorf("Instance is not compatible with deviceManager interface")
+		return errors.New("Instance is not compatible with deviceManager interface")
 	}
 
 	// Remove devices in reverse order to how they were added.
@@ -1328,7 +1367,7 @@ func (d *common) devicesUpdate(inst instance.Instance, removeDevices deviceConfi
 			}
 
 			err = d.deviceRemove(dev, instanceRunning)
-			if err != nil && err != device.ErrUnsupportedDevType {
+			if err != nil && !errors.Is(err, device.ErrUnsupportedDevType) {
 				return fmt.Errorf("Failed to remove device %q: %w", dev.Name(), err)
 			}
 		}
@@ -1352,6 +1391,9 @@ func (d *common) devicesUpdate(inst instance.Instance, removeDevices deviceConfi
 			}
 
 			if userRequested {
+				// Clear any volatile key that could have been set during validation.
+				_ = d.deviceVolatileReset(entry.Name, entry.Config, nil)
+
 				return fmt.Errorf("Failed add validation for device %q: %w", entry.Name, err)
 			}
 
@@ -1373,7 +1415,7 @@ func (d *common) devicesUpdate(inst instance.Instance, removeDevices deviceConfi
 			l.Error("Failed to add device, skipping as non-user requested", logger.Ctx{"err": err})
 		}
 
-		revert.Add(func() { _ = d.deviceRemove(dev, instanceRunning) })
+		reverter.Add(func() { _ = d.deviceRemove(dev, instanceRunning) })
 
 		if instanceRunning {
 			err = dev.PreStartCheck()
@@ -1382,11 +1424,20 @@ func (d *common) devicesUpdate(inst instance.Instance, removeDevices deviceConfi
 			}
 
 			_, err := dm.deviceStart(dev, instanceRunning)
-			if err != nil && err != device.ErrUnsupportedDevType {
+			if err != nil && !errors.Is(err, device.ErrUnsupportedDevType) {
 				return fmt.Errorf("Failed to start device %q: %w", dev.Name(), err)
 			}
 
-			revert.Add(func() { _ = dm.deviceStop(dev, instanceRunning, "") })
+			reverter.Add(func() { _ = dm.deviceStop(dev, instanceRunning, "") })
+		}
+
+		// For the root disk, call Update as its size may change.
+		// Update will invoke applyQuota, which resizes the disk if necessary.
+		if internalInstance.IsRootDiskDevice(dev.Config()) {
+			err = dev.Update(oldExpandedDevices, instanceRunning)
+			if err != nil {
+				return fmt.Errorf("Failed to update device %q: %w", dev.Name(), err)
+			}
 		}
 	}
 
@@ -1422,7 +1473,7 @@ func (d *common) devicesUpdate(inst instance.Instance, removeDevices deviceConfi
 				}
 
 				err = d.deviceRemove(dev, instanceRunning)
-				if err != nil && err != device.ErrUnsupportedDevType {
+				if err != nil && !errors.Is(err, device.ErrUnsupportedDevType) {
 					l.Error("Failed to remove device after update validation failed", logger.Ctx{"err": err})
 				}
 			}
@@ -1436,7 +1487,8 @@ func (d *common) devicesUpdate(inst instance.Instance, removeDevices deviceConfi
 		}
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return nil
 }
 
@@ -1493,8 +1545,8 @@ func (d *common) deleteSnapshots(deleteFunc func(snapInst instance.Instance) err
 	return nil
 }
 
-// setNUMANode looks at all other instances and picks the least used NUMA node.
-func (d *common) setNUMANode() error {
+// balanceNUMANodes looks at all other instances and picks the least used NUMA node(s).
+func (d *common) balanceNUMANodes() error {
 	muNUMA.Lock()
 	defer muNUMA.Unlock()
 
@@ -1558,19 +1610,38 @@ func (d *common) setNUMANode() error {
 		}
 	}
 
-	// Pick least used node.
-	var node uint64
-	for _, numaNode := range nodes {
-		if numaUsage[int64(numaNode)] < numaUsage[int64(node)] {
-			node = numaNode
+	// Sort NUMA nodes by usage.
+	slices.SortFunc(nodes, func(i, j uint64) int {
+		return cmp.Compare(numaUsage[int64(i)], numaUsage[int64(j)])
+	})
+
+	// If `limits.cpu` is greater than the number of CPUs per NUMA node,
+	// then figure out how many NUMA nodes to use.
+	conf := d.ExpandedConfig()
+	cpusPerNumaNode := int(cpu.Total) / len(nodes)
+
+	limitsCPU, err := strconv.Atoi(conf["limits.cpu"])
+	if err == nil && limitsCPU > cpusPerNumaNode {
+		numaNodesToUse := int(math.Ceil(float64(limitsCPU) / float64(cpusPerNumaNode)))
+
+		selectedNumaNodes := make([]string, numaNodesToUse)
+		for i, node := range nodes[:numaNodesToUse] {
+			selectedNumaNodes[i] = strconv.FormatUint(node, 10)
 		}
+
+		joinedNumaNodes := strings.Join(selectedNumaNodes, ",")
+		return d.VolatileSet(map[string]string{"volatile.cpu.nodes": joinedNumaNodes})
 	}
 
-	return d.VolatileSet(map[string]string{"volatile.cpu.nodes": fmt.Sprintf("%d", node)})
+	return d.VolatileSet(map[string]string{"volatile.cpu.nodes": fmt.Sprintf("%d", nodes[0])})
 }
 
 // Gets the process starting time.
 func (d *common) processStartedAt(pid int) (time.Time, error) {
+	if pid < 1 {
+		return time.Time{}, fmt.Errorf("Invalid PID %q", pid)
+	}
+
 	file, err := os.Stat(fmt.Sprintf("/proc/%d", pid))
 	if err != nil {
 		return time.Time{}, err
@@ -1578,8 +1649,45 @@ func (d *common) processStartedAt(pid int) (time.Time, error) {
 
 	linuxInfo, ok := file.Sys().(*syscall.Stat_t)
 	if !ok {
-		return time.Time{}, fmt.Errorf("Bad stat type")
+		return time.Time{}, errors.New("Bad stat type")
 	}
 
 	return time.Unix(int64(linuxInfo.Ctim.Sec), int64(linuxInfo.Ctim.Nsec)), nil
+}
+
+// ETag returns the instance configuration ETag data for pre-condition validation.
+func (d *common) ETag() []any {
+	if d.IsSnapshot() {
+		return []any{d.expiryDate}
+	}
+
+	// Prepare the ETag
+	etag := []any{d.architecture, d.ephemeral, d.profiles, d.localDevices.Sorted()}
+
+	configKeys := make([]string, 0, len(d.localConfig))
+	for k := range d.localConfig {
+		configKeys = append(configKeys, k)
+	}
+
+	sort.Strings(configKeys)
+
+	for _, k := range configKeys {
+		etag = append(etag, fmt.Sprintf("%s=%s", k, d.localConfig[k]))
+	}
+
+	return etag
+}
+
+// ClearLimitsCPUNodes clears the "volatile.cpu.nodes" configuration if necessary.
+func (d *common) ClearLimitsCPUNodes(changedConfig []string) {
+	if !slices.Contains(changedConfig, "limits.cpu.nodes") {
+		return
+	}
+
+	value := d.expandedConfig["limits.cpu.nodes"]
+	if value == "balanced" {
+		return
+	}
+
+	d.localConfig["volatile.cpu.nodes"] = ""
 }

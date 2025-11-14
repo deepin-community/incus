@@ -1,0 +1,13 @@
+#!/usr/bin/env /lib/runit/invoke-run
+#Copyright: 2025 Martin Steigerwald <martin@lichtvoll.de>
+#License: Apache-2.0
+
+exec 2>&1
+
+test -e /etc/environment && . /etc/environment
+
+sv start lxcfs
+
+/usr/libexec/incus/incus-apparmor-load
+
+exec prlimit -n=1048576 -u=unlimited /usr/libexec/incus/incusd --group incus-admin

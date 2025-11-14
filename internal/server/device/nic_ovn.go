@@ -3,7 +3,9 @@ package device
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -14,8 +16,8 @@ import (
 	"github.com/mdlayher/netx/eui64"
 
 	"github.com/lxc/incus/v6/internal/linux"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/db"
+	dbCluster "github.com/lxc/incus/v6/internal/server/db/cluster"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	pcidev "github.com/lxc/incus/v6/internal/server/device/pci"
 	"github.com/lxc/incus/v6/internal/server/dnsmasq/dhcpalloc"
@@ -26,11 +28,12 @@ import (
 	"github.com/lxc/incus/v6/internal/server/network/acl"
 	"github.com/lxc/incus/v6/internal/server/network/ovn"
 	"github.com/lxc/incus/v6/internal/server/project"
-	"github.com/lxc/incus/v6/internal/server/resources"
 	"github.com/lxc/incus/v6/internal/server/state"
 	localUtil "github.com/lxc/incus/v6/internal/server/util"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/resources"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/util"
 	"github.com/lxc/incus/v6/shared/validate"
 )
@@ -84,29 +87,200 @@ func (d *nicOVN) validateConfig(instConf instance.ConfigReader) error {
 	}
 
 	requiredFields := []string{
+		// gendoc:generate(entity=devices, group=nic_ovn, key=network)
+		//
+		// ---
+		//  type: string
+		//  managed: yes
+		//  shortdesc: The managed network to link the device to (required)
 		"network",
 	}
 
 	optionalFields := []string{
+		// gendoc:generate(entity=devices, group=nic_ovn, key=name)
+		//
+		// ---
+		//  type: string
+		//  default: kernel assigned
+		//  managed: no
+		//  shortdesc: The name of the interface inside the instance
 		"name",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=hwaddr)
+		//
+		// ---
+		//  type: string
+		//  default: randomly assigned
+		//  managed: no
+		//  shortdesc: The MAC address of the new interface
 		"hwaddr",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=host_name)
+		//
+		// ---
+		//  type: string
+		//  default: randomly assigned
+		//  managed: no
+		//  shortdesc: The name of the interface inside the host
 		"host_name",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=mtu)
+		//
+		// ---
+		//  type: integer
+		//  default: MTU of the parent network
+		//  managed: yes
+		//  shortdesc: The Maximum Transmit Unit (MTU) of the new interface
 		"mtu",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=ipv4.address)
+		//
+		// ---
+		//  type: string
+		//  managed: no
+		//  shortdesc: An IPv4 address to assign to the instance through DHCP, `none` can be used to disable IP allocation
 		"ipv4.address",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=ipv6.address)
+		//
+		// ---
+		//  type: string
+		//  managed: no
+		//  shortdesc: An IPv6 address to assign to the instance through DHCP, `none` can be used to disable IP allocation
 		"ipv6.address",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=ipv4.address.external)
+		//
+		// ---
+		// type: string
+		// managed: no
+		// shortdesc: Select a specific external address (typically from a network forward)
+		"ipv4.address.external",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=ipv6.address.external)
+		//
+		// ---
+		// type: string
+		// managed: no
+		// shortdesc: Select a specific external address (typically from a network forward)
+		"ipv6.address.external",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=ipv4.routes)
+		//
+		// ---
+		//  type: string
+		//  managed: no
+		//  shortdesc: Comma-delimited list of IPv4 static routes to route to the NIC
 		"ipv4.routes",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=ipv6.routes)
+		//
+		// ---
+		//  type: string
+		//  managed: no
+		//  shortdesc: Comma-delimited list of IPv6 static routes to route to the NIC
 		"ipv6.routes",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=ipv4.routes.external)
+		//
+		// ---
+		//  type: string
+		//  managed: no
+		//  shortdesc: Comma-delimited list of IPv4 static routes to route to the NIC and publish on uplink network
 		"ipv4.routes.external",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=ipv6.routes.external)
+		//
+		// ---
+		//  type: string
+		//  managed: no
+		//  shortdesc: Comma-delimited list of IPv6 static routes to route to the NIC and publish on uplink network
 		"ipv6.routes.external",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=boot.priority)
+		//
+		// ---
+		//  type: integer
+		//  managed: no
+		//  shortdesc: Boot priority for VMs (higher value boots first)
 		"boot.priority",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=security.acls)
+		//
+		// ---
+		//  type: string
+		//  managed: no
+		//  shortdesc: Comma-separated list of network ACLs to apply
 		"security.acls",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=security.acls.default.ingress.action)
+		//
+		// ---
+		//  type: string
+		//  default: reject
+		//  managed: no
+		//  shortdesc: Action to use for ingress traffic that doesn't match any ACL rule
 		"security.acls.default.ingress.action",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=security.acls.default.egress.action)
+		//
+		// ---
+		//  type: string
+		//  default: reject
+		//  managed: no
+		//  shortdesc: Action to use for egress traffic that doesn't match any ACL rule
 		"security.acls.default.egress.action",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=security.acls.default.ingress.logged)
+		//
+		// ---
+		//  type: bool
+		//  default: false
+		//  managed: no
+		//  shortdesc: Whether to log ingress traffic that doesn't match any ACL rule
 		"security.acls.default.ingress.logged",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=security.acls.default.egress.logged)
+		//
+		// ---
+		//  type: bool
+		//  default: false
+		//  managed: no
+		//  shortdesc: Whether to log egress traffic that doesn't match any ACL rule
 		"security.acls.default.egress.logged",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=security.promiscuous)
+		//
+		// ---
+		//  type: bool
+		//  default: false
+		//  managed: no
+		//  shortdesc: Have OVN send unknown network traffic to this network interface (required for some nesting cases)
 		"security.promiscuous",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=acceleration)
+		//
+		// ---
+		//  type: string
+		//  default: none
+		//  managed: no
+		//  shortdesc: Enable hardware offloading (either `none`, `sriov` or `vdpa`)
 		"acceleration",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=nested)
+		//
+		// ---
+		//  type: string
+		//  managed: no
+		//  shortdesc: The parent NIC name to nest this NIC under (see also `vlan`)
 		"nested",
+
+		// gendoc:generate(entity=devices, group=nic_ovn, key=vlan)
+		//
+		// ---
+		//  type: integer
+		//  managed: no
+		//  shortdesc: The VLAN ID to use when nesting (see also `nested`)
 		"vlan",
 	}
 
@@ -123,11 +297,11 @@ func (d *nicOVN) validateConfig(instConf instance.ConfigReader) error {
 	}
 
 	if n.Status() != api.NetworkStatusCreated {
-		return fmt.Errorf("Specified network is not fully created")
+		return errors.New("Specified network is not fully created")
 	}
 
 	if n.Type() != "ovn" {
-		return fmt.Errorf("Specified network must be of type ovn")
+		return errors.New("Specified network must be of type ovn")
 	}
 
 	bannedKeys := []string{"mtu"}
@@ -139,18 +313,13 @@ func (d *nicOVN) validateConfig(instConf instance.ConfigReader) error {
 
 	ovnNet, ok := n.(ovnNet)
 	if !ok {
-		return fmt.Errorf("Network is not ovnNet interface type")
+		return errors.New("Network is not ovnNet interface type")
 	}
 
 	d.network = ovnNet // Stored loaded network for use by other functions.
 	netConfig := d.network.Config()
 
 	if d.config["ipv4.address"] != "" && d.config["ipv4.address"] != "none" {
-		// Check that DHCPv4 is enabled on parent network (needed to use static assigned IPs).
-		if n.DHCPv4Subnet() == nil {
-			return fmt.Errorf("Cannot specify %q when DHCP is disabled on network %q", "ipv4.address", d.config["network"])
-		}
-
 		ip, subnet, err := net.ParseCIDR(netConfig["ipv4.address"])
 		if err != nil {
 			return fmt.Errorf("Invalid network ipv4.address: %w", err)
@@ -169,11 +338,6 @@ func (d *nicOVN) validateConfig(instConf instance.ConfigReader) error {
 	}
 
 	if d.config["ipv6.address"] != "" && d.config["ipv6.address"] != "none" {
-		// Check that DHCPv6 is enabled on parent network (needed to use static assigned IPs).
-		if n.DHCPv6Subnet() == nil || util.IsFalseOrEmpty(netConfig["ipv6.dhcp.stateful"]) {
-			return fmt.Errorf("Cannot specify %q when DHCP or %q are disabled on network %q", "ipv6.address", "ipv6.dhcp.stateful", d.config["network"])
-		}
-
 		// Static IPv6 is allowed only if static IPv4 is set as well.
 		if d.config["ipv4.address"] == "" {
 			return fmt.Errorf("Cannot specify %q when %q is not set", "ipv6.address", "ipv4.address")
@@ -217,7 +381,7 @@ func (d *nicOVN) validateConfig(instConf instance.ConfigReader) error {
 		// may come from a combination of profile and instance configs.
 		if d.config["nested"] != "" {
 			if d.config["vlan"] == "" {
-				return fmt.Errorf("VLAN must be specified with a nested NIC")
+				return errors.New("VLAN must be specified with a nested NIC")
 			}
 
 			// Check the NIC that this NIC is neted under exists on this instance and shares same
@@ -229,7 +393,7 @@ func (d *nicOVN) validateConfig(instConf instance.ConfigReader) error {
 				}
 
 				if devConfig["network"] != d.config["network"] {
-					return fmt.Errorf("The nested parent NIC must be connected to same network as this NIC")
+					return errors.New("The nested parent NIC must be connected to same network as this NIC")
 				}
 
 				nestedParentNIC = devName
@@ -240,7 +404,7 @@ func (d *nicOVN) validateConfig(instConf instance.ConfigReader) error {
 				return fmt.Errorf("Instance does not have a NIC called %q for nesting under", d.config["nested"])
 			}
 		} else if d.config["vlan"] != "" {
-			return fmt.Errorf("Specifying a VLAN requires that this NIC be nested")
+			return errors.New("Specifying a VLAN requires that this NIC be nested")
 		}
 
 		// Check there isn't another NIC with any of the same addresses specified on the same network.
@@ -269,6 +433,26 @@ func (d *nicOVN) validateConfig(instConf instance.ConfigReader) error {
 
 		return validate.IsNetworkAddressV6(value)
 	})
+
+	// Validate the external address against the list of network forwards.
+	isNetworkForward := func(value string) error {
+		return d.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+			netID, _, _, err := tx.GetNetworkInAnyState(ctx, networkProjectName, d.config["network"])
+			if err != nil {
+				return fmt.Errorf("Failed getting network ID: %w", err)
+			}
+
+			_, err = dbCluster.GetNetworkForward(ctx, tx.Tx(), netID, value)
+			if err != nil {
+				return fmt.Errorf("External address %q is not a network forward on network %q: %w", value, d.config["network"], err)
+			}
+
+			return nil
+		})
+	}
+
+	rules["ipv4.address.external"] = validate.Optional(validate.And(validate.IsNetworkAddressV4, isNetworkForward))
+	rules["ipv6.address.external"] = validate.Optional(validate.And(validate.IsNetworkAddressV6, isNetworkForward))
 
 	// Now run normal validation.
 	err = d.config.Validate(rules)
@@ -395,7 +579,7 @@ func (d *nicOVN) PreStartCheck() error {
 // validateEnvironment checks the runtime environment for correctness.
 func (d *nicOVN) validateEnvironment() error {
 	if d.inst.Type() == instancetype.Container && d.config["name"] == "" {
-		return fmt.Errorf("Requires name property to start")
+		return errors.New("Requires name property to start")
 	}
 
 	integrationBridge := d.state.GlobalConfig.NetworkOVNIntegrationBridge()
@@ -427,8 +611,8 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 		return nil, err
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	saveData := make(map[string]string)
 	saveData["host_name"] = d.config["host_name"]
@@ -473,7 +657,7 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 			}
 
 			if !offload {
-				return nil, fmt.Errorf("SR-IOV acceleration requires hardware offloading be enabled in OVS")
+				return nil, errors.New("SR-IOV acceleration requires hardware offloading be enabled in OVS")
 			}
 
 			// If VM, then try and load the vfio-pci module first.
@@ -495,13 +679,13 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 			}
 
 			// Claim the SR-IOV virtual function (VF) on the parent (PF) and get the PCI information.
-			vfPCIDev, pciIOMMUGroup, err = networkSRIOVSetupVF(d.deviceCommon, vfParent, vfDev, vfID, false, saveData)
+			vfPCIDev, pciIOMMUGroup, err = networkSRIOVSetupVF(d.deviceCommon, vfParent, vfDev, vfID, saveData)
 			if err != nil {
 				network.SRIOVVirtualFunctionMutex.Unlock()
 				return nil, fmt.Errorf("Failed setting up VF: %w", err)
 			}
 
-			revert.Add(func() {
+			reverter.Add(func() {
 				_ = networkSRIOVRestoreVF(d.deviceCommon, false, saveData)
 			})
 
@@ -529,7 +713,7 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 			}
 
 			if !offload {
-				return nil, fmt.Errorf("SR-IOV acceleration requires hardware offloading be enabled in OVS")
+				return nil, errors.New("SR-IOV acceleration requires hardware offloading be enabled in OVS")
 			}
 
 			err = linux.LoadModule("vdpa")
@@ -556,13 +740,13 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 			}
 
 			// Claim the SR-IOV virtual function (VF) on the parent (PF) and get the PCI information.
-			vfPCIDev, pciIOMMUGroup, err = networkSRIOVSetupVF(d.deviceCommon, vfParent, vfDev, vfID, false, saveData)
+			vfPCIDev, pciIOMMUGroup, err = networkSRIOVSetupVF(d.deviceCommon, vfParent, vfDev, vfID, saveData)
 			if err != nil {
 				network.SRIOVVirtualFunctionMutex.Unlock()
 				return nil, err
 			}
 
-			revert.Add(func() {
+			reverter.Add(func() {
 				_ = networkSRIOVRestoreVF(d.deviceCommon, false, saveData)
 			})
 
@@ -577,7 +761,7 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 
 			// Setup the guest network interface.
 			if d.inst.Type() == instancetype.Container {
-				return nil, fmt.Errorf("VDPA acceleration is not supported for containers")
+				return nil, errors.New("VDPA acceleration is not supported for containers")
 			}
 
 			integrationBridgeNICName = vfRepresentor
@@ -613,7 +797,7 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 				}
 			}
 
-			revert.Add(func() { _ = network.InterfaceRemove(saveData["host_name"]) })
+			reverter.Add(func() { _ = network.InterfaceRemove(saveData["host_name"]) })
 		}
 	}
 
@@ -659,7 +843,7 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 
 	saveData["last_state.ip_addresses"] = dnsIPsStr.String()
 
-	revert.Add(func() {
+	reverter.Add(func() {
 		_ = d.network.InstanceDevicePortStop("", &network.OVNInstanceNICStopOpts{
 			InstanceUUID: d.inst.LocalConfig()["volatile.uuid"],
 			DeviceName:   d.name,
@@ -674,7 +858,7 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 			return nil, err
 		}
 
-		revert.Add(cleanup)
+		reverter.Add(cleanup)
 	}
 
 	runConf := deviceConfig.RunConfig{}
@@ -728,7 +912,7 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 					}...)
 			} else if d.config["acceleration"] == "vdpa" {
 				if vDPADevice == nil {
-					return nil, fmt.Errorf("vDPA device is nil")
+					return nil, errors.New("vDPA device is nil")
 				}
 
 				runConf.NetworkInterface = append(runConf.NetworkInterface,
@@ -756,7 +940,8 @@ func (d *nicOVN) Start() (*deviceConfig.RunConfig, error) {
 		}
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return &runConf, nil
 }
 
@@ -882,7 +1067,7 @@ func (d *nicOVN) findRepresentorPort(volatile map[string]string) (string, error)
 	// Track down the representor port to remove it from the integration bridge.
 	representorPort := network.SRIOVFindRepresentorPort(nics, string(physSwitchID), pfID, vfID)
 	if representorPort == "" {
-		return "", fmt.Errorf("Failed finding representor")
+		return "", errors.New("Failed finding representor")
 	}
 
 	return representorPort, nil
@@ -1003,7 +1188,7 @@ func (d *nicOVN) postStop() error {
 		vDPADevName, ok := v["last_state.vdpa.name"]
 		if !ok {
 			network.SRIOVVirtualFunctionMutex.Unlock()
-			return fmt.Errorf("Failed to find PCI slot name for vDPA device")
+			return errors.New("Failed to find PCI slot name for vDPA device")
 		}
 
 		// Delete the vDPA management device.
@@ -1112,7 +1297,7 @@ func (d *nicOVN) State() (*api.InstanceStateNetwork, error) {
 			})
 		}
 
-		if d.config["ipv6.address"] != "" && d.config["ipv4.address"] != "none" {
+		if d.config["ipv6.address"] != "" && d.config["ipv6.address"] != "none" {
 			// Static DHCPv6 allocation present, that is likely to be the NIC's IPv6. So assume that.
 			addresses = append(addresses, api.InstanceStateNetworkAddress{
 				Family:  "inet6",
@@ -1202,13 +1387,13 @@ func (d *nicOVN) Register() error {
 }
 
 func (d *nicOVN) setupHostNIC(hostName string, ovnPortName ovn.OVNSwitchPort) (revert.Hook, error) {
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Disable IPv6 on host-side veth interface (prevents host-side interface getting link-local address and
 	// accepting router advertisements) as not needed because the host-side interface is connected to a bridge.
 	err := localUtil.SysctlSet(fmt.Sprintf("net/ipv6/conf/%s/disable_ipv6", hostName), "1")
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 
@@ -1231,7 +1416,7 @@ func (d *nicOVN) setupHostNIC(hostName string, ovnPortName ovn.OVNSwitchPort) (r
 		return nil, err
 	}
 
-	revert.Add(func() { _ = vswitch.DeleteBridgePort(context.TODO(), integrationBridge, hostName) })
+	reverter.Add(func() { _ = vswitch.DeleteBridgePort(context.TODO(), integrationBridge, hostName) })
 
 	// Link OVS port to OVN logical port.
 	err = vswitch.AssociateInterfaceOVNSwitchPort(context.TODO(), hostName, string(ovnPortName))
@@ -1246,7 +1431,8 @@ func (d *nicOVN) setupHostNIC(hostName string, ovnPortName ovn.OVNSwitchPort) (r
 		return nil, fmt.Errorf("Failed to bring up the host interface %s: %w", hostName, err)
 	}
 
-	cleanup := revert.Clone().Fail
-	revert.Success()
+	cleanup := reverter.Clone().Fail
+	reverter.Success()
+
 	return cleanup, err
 }

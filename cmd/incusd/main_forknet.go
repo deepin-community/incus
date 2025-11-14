@@ -120,6 +120,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -138,7 +139,7 @@ type cmdForknet struct {
 	global *cmdGlobal
 }
 
-func (c *cmdForknet) Command() *cobra.Command {
+func (c *cmdForknet) command() *cobra.Command {
 	// Main subcommand
 	cmd := &cobra.Command{}
 	cmd.Use = "forknet"
@@ -155,14 +156,14 @@ func (c *cmdForknet) Command() *cobra.Command {
 	cmdInfo := &cobra.Command{}
 	cmdInfo.Use = "info <PID> <PidFd>"
 	cmdInfo.Args = cobra.ExactArgs(2)
-	cmdInfo.RunE = c.RunInfo
+	cmdInfo.RunE = c.runInfo
 	cmd.AddCommand(cmdInfo)
 
 	// detach
 	cmdDetach := &cobra.Command{}
 	cmdDetach.Use = "detach <netns file> <daemon PID> <ifname> <hostname>"
 	cmdDetach.Args = cobra.ExactArgs(4)
-	cmdDetach.RunE = c.RunDetach
+	cmdDetach.RunE = c.runDetach
 	cmd.AddCommand(cmdDetach)
 
 	// Workaround for subcommand usage errors. See: https://github.com/spf13/cobra/issues/706
@@ -171,7 +172,7 @@ func (c *cmdForknet) Command() *cobra.Command {
 	return cmd
 }
 
-func (c *cmdForknet) RunInfo(cmd *cobra.Command, args []string) error {
+func (c *cmdForknet) runInfo(_ *cobra.Command, _ []string) error {
 	hostInterfaces, _ := net.Interfaces()
 	networks, err := netutils.NetnsGetifaddrs(-1, hostInterfaces)
 	if err != nil {
@@ -188,21 +189,21 @@ func (c *cmdForknet) RunInfo(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func (c *cmdForknet) RunDetach(cmd *cobra.Command, args []string) error {
+func (c *cmdForknet) runDetach(_ *cobra.Command, args []string) error {
 	daemonPID := args[1]
 	ifName := args[2]
 	hostName := args[3]
 
 	if daemonPID == "" {
-		return fmt.Errorf("Daemon PID argument is required")
+		return errors.New("Daemon PID argument is required")
 	}
 
 	if ifName == "" {
-		return fmt.Errorf("ifname argument is required")
+		return errors.New("ifname argument is required")
 	}
 
 	if hostName == "" {
-		return fmt.Errorf("hostname argument is required")
+		return errors.New("hostname argument is required")
 	}
 
 	// Check if the interface exists.

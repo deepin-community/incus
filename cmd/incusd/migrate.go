@@ -37,6 +37,7 @@ type migrationFields struct {
 	// storage specific fields
 	volumeOnly        bool
 	allowInconsistent bool
+	storagePool       string
 }
 
 func (c *migrationFields) send(m proto.Message) error {
@@ -107,6 +108,7 @@ func (c *migrationFields) sendControl(err error) {
 	c.controlLock.Lock()
 	conn, _ := c.conns[api.SecretNameControl].WebSocket(context.TODO())
 	if conn != nil {
+		_ = conn.SetWriteDeadline(time.Now().Add(time.Second * 10))
 		migration.ProtoSendControl(conn, err)
 	}
 
@@ -185,6 +187,7 @@ type migrationSink struct {
 	push                  bool
 	clusterMoveSourceName string
 	refresh               bool
+	refreshExcludeOlder   bool
 }
 
 // MigrationSinkArgs arguments to configure migration sink.
@@ -201,12 +204,14 @@ type migrationSinkArgs struct {
 	Idmap                 *idmap.Set
 	Live                  bool
 	Refresh               bool
+	RefreshExcludeOlder   bool
 	ClusterMoveSourceName string
 	Snapshots             []*migration.Snapshot
 
 	// Storage specific fields
-	VolumeOnly bool
-	VolumeSize int64
+	StoragePool string
+	VolumeOnly  bool
+	VolumeSize  int64
 
 	// Transport specific fields
 	RsyncFeatures []string

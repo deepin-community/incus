@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -118,7 +119,9 @@ func (suite *containerTestSuite) TestContainer_ProfilesOverwriteDefaultNic() {
 			"eth0": deviceConfig.Device{
 				"type":    "nic",
 				"nictype": "bridged",
-				"parent":  "unknownbr0"}},
+				"parent":  "unknownbr0",
+			},
+		},
 		Name: "testFoo",
 	}
 
@@ -155,7 +158,9 @@ func (suite *containerTestSuite) TestContainer_LoadFromDB() {
 			"eth0": deviceConfig.Device{
 				"type":    "nic",
 				"nictype": "bridged",
-				"parent":  "unknownbr0"}},
+				"parent":  "unknownbr0",
+			},
+		},
 		Name: "testFoo",
 	}
 
@@ -204,7 +209,7 @@ func (suite *containerTestSuite) TestContainer_LoadFromDB() {
 	suite.Exactly(
 		apiC1,
 		apiC2,
-		"The loaded container isn't excactly the same as the created one.",
+		"The loaded container isn't exactly the same as the created one.",
 	)
 }
 
@@ -257,10 +262,16 @@ func (suite *containerTestSuite) TestContainer_IsPrivileged_Privileged() {
 }
 
 func (suite *containerTestSuite) TestContainer_AddRoutedNicValidation() {
-	eth0 := deviceConfig.Device{"name": "eth0", "type": "nic", "ipv4.gateway": "none",
-		"ipv6.gateway": "none", "nictype": "routed", "parent": "unknownbr0"}
-	eth1 := deviceConfig.Device{"name": "eth1", "type": "nic", "ipv4.gateway": "none",
-		"ipv6.gateway": "none", "nictype": "routed", "parent": "unknownbr0"}
+	eth0 := deviceConfig.Device{
+		"name": "eth0", "type": "nic", "ipv4.gateway": "none",
+		"ipv6.gateway": "none", "nictype": "routed", "parent": "unknownbr0",
+	}
+
+	eth1 := deviceConfig.Device{
+		"name": "eth1", "type": "nic", "ipv4.gateway": "none",
+		"ipv6.gateway": "none", "nictype": "routed", "parent": "unknownbr0",
+	}
+
 	eth2 := deviceConfig.Device{"name": "eth2", "type": "nic", "nictype": "bridged", "parent": "unknownbr0"}
 
 	var testProfiles []api.Profile
@@ -296,7 +307,7 @@ func (suite *containerTestSuite) TestContainer_AddRoutedNicValidation() {
 		},
 		Name: "testFoo",
 	}, true)
-	suite.Req.NoError(err, fmt.Errorf("Adding multiple routed with gateway mode ['none'] should succeed. "))
+	suite.Req.NoError(err, errors.New("Adding multiple routed with gateway mode ['none'] should succeed. "))
 
 	eth0["ipv6.gateway"] = "auto"
 	eth1["ipv6.gateway"] = ""
@@ -311,7 +322,7 @@ func (suite *containerTestSuite) TestContainer_AddRoutedNicValidation() {
 		Name: "testFoo",
 	}, true)
 	suite.Req.Error(err,
-		fmt.Errorf("Adding multiple routed nic devices with any gateway mmode ['auto',''] should throw error. "))
+		errors.New("Adding multiple routed nic devices with any gateway mmode ['auto',''] should throw error. "))
 
 	err = c.Update(db.InstanceArgs{
 		Type:     instancetype.Container,
@@ -324,7 +335,7 @@ func (suite *containerTestSuite) TestContainer_AddRoutedNicValidation() {
 		Name: "testFoo",
 	}, true)
 	suite.Req.NoError(err,
-		fmt.Errorf("Adding multiple nic devices with unicque nictype ['routed'] should throw error. "))
+		errors.New("Adding multiple nic devices with unicque nictype ['routed'] should throw error. "))
 }
 
 func (suite *containerTestSuite) TestContainer_IsPrivileged_Unprivileged() {
@@ -388,13 +399,13 @@ func (suite *containerTestSuite) TestContainer_findIdmap_isolated() {
 
 	host := suite.d.os.IdmapSet.Entries[0]
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		suite.Req.Equal(host.HostID+65536, map1.Entries[i].HostID, "hostids don't match %d", i)
 		suite.Req.Equal(int64(0), map1.Entries[i].NSID, "nsid nonzero")
 		suite.Req.Equal(int64(65536), map1.Entries[i].MapRange, "incorrect maprange")
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		suite.Req.Equal(host.HostID+65536*2, map2.Entries[i].HostID, "hostids don't match")
 		suite.Req.Equal(int64(0), map2.Entries[i].NSID, "nsid nonzero")
 		suite.Req.Equal(int64(65536), map2.Entries[i].MapRange, "incorrect maprange")
@@ -431,13 +442,13 @@ func (suite *containerTestSuite) TestContainer_findIdmap_mixed() {
 
 	host := suite.d.os.IdmapSet.Entries[0]
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		suite.Req.Equal(host.HostID, map1.Entries[i].HostID, "hostids don't match %d", i)
 		suite.Req.Equal(int64(0), map1.Entries[i].NSID, "nsid nonzero")
 		suite.Req.Equal(host.MapRange, map1.Entries[i].MapRange, "incorrect maprange")
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		suite.Req.Equal(host.HostID+65536, map2.Entries[i].HostID, "hostids don't match")
 		suite.Req.Equal(int64(0), map2.Entries[i].NSID, "nsid nonzero")
 		suite.Req.Equal(int64(65536), map2.Entries[i].MapRange, "incorrect maprange")
@@ -482,7 +493,7 @@ func (suite *containerTestSuite) TestContainer_findIdmap_raw() {
 func (suite *containerTestSuite) TestContainer_findIdmap_maxed() {
 	maps := []*idmap.Set{}
 
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		c, op, _, err := instance.CreateInternal(suite.d.State(), db.InstanceArgs{
 			Type: instancetype.Container,
 			Name: fmt.Sprintf("isol-%d", i),
@@ -522,5 +533,5 @@ func (suite *containerTestSuite) TestContainer_findIdmap_maxed() {
 }
 
 func TestContainerTestSuite(t *testing.T) {
-	suite.Run(t, new(containerTestSuite))
+	suite.Run(t, &containerTestSuite{})
 }

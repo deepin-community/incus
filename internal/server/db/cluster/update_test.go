@@ -3,6 +3,7 @@ package cluster_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -607,7 +608,7 @@ func TestUpdateFromV19(t *testing.T) {
 
 	assert.Equal(t, expectedArch, arch)
 
-	// Trying to create a row without specififying the architecture results
+	// Trying to create a row without specifying the architecture results
 	// in an error.
 	_, err = db.Exec(`
 INSERT INTO nodes(id, name, description, address, schema, api_extensions, heartbeat, pending)
@@ -616,7 +617,8 @@ VALUES (2, 'n2', '', '2.2.3.4:666', 1, 32, ?, 0)`, time.Now())
 		t.Fatal("expected insertion to fail")
 	}
 
-	sqliteErr, ok := err.(sqlite3.Error)
+	var sqliteErr sqlite3.Error
+	ok := errors.As(err, &sqliteErr)
 	require.True(t, ok)
 	assert.Equal(t, sqliteErr.Code, sqlite3.ErrConstraint)
 }

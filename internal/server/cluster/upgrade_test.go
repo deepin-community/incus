@@ -2,8 +2,9 @@ package cluster_test
 
 import (
 	"context"
-	"crypto/x509"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,12 +17,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lxc/incus/v6/internal/server/certificate"
 	"github.com/lxc/incus/v6/internal/server/cluster"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/internal/server/node"
 	"github.com/lxc/incus/v6/internal/server/state"
 	localtls "github.com/lxc/incus/v6/shared/tls"
+	"github.com/lxc/incus/v6/shared/tls/tlstest"
 )
 
 // A node can unblock other nodes that were waiting for a cluster upgrade to
@@ -72,8 +73,8 @@ func TestMaybeUpdate_Upgrade(t *testing.T) {
 	// Create a stub upgrade script that just touches a stamp file.
 	stamp := filepath.Join(dir, "stamp")
 	script := filepath.Join(dir, "cluster-upgrade")
-	data := []byte(fmt.Sprintf("#!/bin/sh\ntouch %s\n", stamp))
-	err = os.WriteFile(script, data, 0755)
+	data := fmt.Appendf(nil, "#!/bin/sh\ntouch %s\n", stamp)
+	err = os.WriteFile(script, data, 0o755)
 	require.NoError(t, err)
 
 	state, cleanup := state.NewTestState(t)
@@ -125,8 +126,8 @@ func TestMaybeUpdate_NothingToDo(t *testing.T) {
 	// Create a stub upgrade script that just touches a stamp file.
 	stamp := filepath.Join(dir, "stamp")
 	script := filepath.Join(dir, "cluster-upgrade")
-	data := []byte(fmt.Sprintf("#!/bin/sh\ntouch %s\n", stamp))
-	err = os.WriteFile(script, data, 0755)
+	data := fmt.Appendf(nil, "#!/bin/sh\ntouch %s\n", stamp)
+	err = os.WriteFile(script, data, 0o755)
 	require.NoError(t, err)
 
 	state, cleanup := state.NewTestState(t)
@@ -138,14 +139,14 @@ func TestMaybeUpdate_NothingToDo(t *testing.T) {
 	_ = cluster.MaybeUpdate(state)
 
 	_, err = os.Stat(stamp)
-	require.True(t, os.IsNotExist(err))
+	require.True(t, errors.Is(err, fs.ErrNotExist))
 }
 
 func TestUpgradeMembersWithoutRole(t *testing.T) {
 	state, cleanup := state.NewTestState(t)
 	defer cleanup()
 
-	serverCert := localtls.TestingKeyPair()
+	serverCert := tlstest.TestingKeyPair(t)
 	mux := http.NewServeMux()
 	server := newServer(serverCert, mux)
 	defer server.Close()
@@ -157,10 +158,6 @@ func TestUpgradeMembersWithoutRole(t *testing.T) {
 
 	gateway := newGateway(t, state.DB.Node, serverCert, state)
 	defer func() { _ = gateway.Shutdown() }()
-
-	trustedCerts := func() map[certificate.Type]map[string]x509.Certificate {
-		return nil
-	}
 
 	for path, handler := range gateway.HandlerFuncs(nil, trustedCerts) {
 		mux.HandleFunc(path, handler)

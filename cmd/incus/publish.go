@@ -1,13 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	"github.com/lxc/incus/v6/internal/instance"
@@ -23,8 +24,10 @@ type cmdPublish struct {
 	flagMakePublic           bool
 	flagForce                bool
 	flagReuse                bool
+	flagFormat               string
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdPublish) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("publish", i18n.G("[<remote>:]<instance>[/<snapshot>] [<remote>:] [flags] [key=value...]"))
@@ -39,14 +42,15 @@ func (c *cmdPublish) Command() *cobra.Command {
 	cmd.Flags().StringVar(&c.flagCompressionAlgorithm, "compression", "", i18n.G("Compression algorithm to use (`none` for uncompressed)"))
 	cmd.Flags().StringVar(&c.flagExpiresAt, "expire", "", i18n.G("Image expiration date (format: rfc3339)")+"``")
 	cmd.Flags().BoolVar(&c.flagReuse, "reuse", false, i18n.G("If the image alias already exists, delete and create a new one"))
+	cmd.Flags().StringVar(&c.flagFormat, "format", "unified", i18n.G("Image format")+"``")
 
-	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return c.global.cmpInstancesAndSnapshots(toComplete)
 		}
 
 		if len(args) == 1 {
-			return c.global.cmpRemotes(false)
+			return c.global.cmpRemotes(toComplete, false)
 		}
 
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -55,6 +59,7 @@ func (c *cmdPublish) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdPublish) Run(cmd *cobra.Command, args []string) error {
 	conf := c.global.conf
 
@@ -64,7 +69,7 @@ func (c *cmdPublish) Run(cmd *cobra.Command, args []string) error {
 	firstprop := 1 // first property is arg[2] if arg[1] is image remote, else arg[1]
 
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, -1)
+	exit, err := c.global.checkArgs(cmd, args, 1, -1)
 	if exit {
 		return err
 	}
@@ -88,11 +93,11 @@ func (c *cmdPublish) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	if cName == "" {
-		return fmt.Errorf(i18n.G("Instance name is mandatory"))
+		return errors.New(i18n.G("Instance name is mandatory"))
 	}
 
 	if iName != "" {
-		return fmt.Errorf(i18n.G("There is no \"image name\".  Did you want an alias?"))
+		return errors.New(i18n.G("There is no \"image name\".  Did you want an alias?"))
 	}
 
 	d, err := conf.GetInstanceServer(iRemote)
@@ -119,7 +124,7 @@ func (c *cmdPublish) Run(cmd *cobra.Command, args []string) error {
 
 		if wasRunning {
 			if !c.flagForce {
-				return fmt.Errorf(i18n.G("The instance is currently running. Use --force to have it stopped and restarted"))
+				return errors.New(i18n.G("The instance is currently running. Use --force to have it stopped and restarted"))
 			}
 
 			if ct.Ephemeral {
@@ -150,7 +155,7 @@ func (c *cmdPublish) Run(cmd *cobra.Command, args []string) error {
 
 			err = op.Wait()
 			if err != nil {
-				return fmt.Errorf(i18n.G("Stopping instance failed!"))
+				return errors.New(i18n.G("Stopping instance failed!"))
 			}
 
 			// Start the instance back up on exit.
@@ -254,6 +259,8 @@ func (c *cmdPublish) Run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf(i18n.G("Aliases already exists: %s"), strings.Join(names, ", "))
 	}
 
+	req.Format = c.flagFormat
+
 	op, err := s.CreateImage(req, nil)
 	if err != nil {
 		return err
@@ -283,7 +290,10 @@ func (c *cmdPublish) Run(cmd *cobra.Command, args []string) error {
 	opAPI := op.Get()
 
 	// Grab the fingerprint
-	fingerprint := opAPI.Metadata["fingerprint"].(string)
+	fingerprint, ok := opAPI.Metadata["fingerprint"].(string)
+	if !ok {
+		return errors.New("Bad fingerprint")
+	}
 
 	// For remote publish, copy to target now
 	if cRemote != iRemote {
@@ -313,40 +323,10 @@ func (c *cmdPublish) Run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Delete images if necessary
-	if c.flagReuse && len(existingAliases) > 0 {
-		visitedImages := make(map[string]interface{})
-		for _, alias := range existingAliases {
-			image, _, _ := d.GetImage(alias.Target)
-
-			// If the image has already been visited then continue
-			if image != nil {
-				_, found := visitedImages[image.Fingerprint]
-				if found {
-					continue
-				}
-
-				visitedImages[image.Fingerprint] = nil
-			}
-
-			// An image can have multiple aliases. If an image being published
-			// reuses all the aliases from an existing image then that existing image is removed.
-			// In other case only specific aliases should be removed. E.g.
-			// 1. If image with 'foo' and 'bar' aliases already exists and new image is published
-			//    with aliases 'foo' and 'bar' (and flag '--reuse'). Old image should be removed.
-			// 2. If image with 'foo' and 'bar' aliases already exists and new image is published
-			//    with alias 'foo' (and flag '--reuse'). Old image should be kept with alias 'bar'
-			//    and new image will have 'foo' alias.
-			if image != nil && IsAliasesSubset(image.Aliases, aliases) {
-				op, err := d.DeleteImage(alias.Target)
-				if err != nil {
-					return err
-				}
-
-				err = op.Wait()
-				if err != nil {
-					return err
-				}
-			}
+	if c.flagReuse {
+		err = deleteImagesByAliases(d, aliases)
+		if err != nil {
+			return err
 		}
 	}
 

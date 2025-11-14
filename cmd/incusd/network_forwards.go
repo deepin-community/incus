@@ -9,9 +9,11 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/lxc/incus/v6/internal/filter"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	clusterRequest "github.com/lxc/incus/v6/internal/server/cluster/request"
 	"github.com/lxc/incus/v6/internal/server/db"
+	dbCluster "github.com/lxc/incus/v6/internal/server/db/cluster"
 	"github.com/lxc/incus/v6/internal/server/lifecycle"
 	"github.com/lxc/incus/v6/internal/server/network"
 	"github.com/lxc/incus/v6/internal/server/project"
@@ -55,6 +57,11 @@ var networkForwardCmd = APIEndpoint{
 //      description: Project name
 //      type: string
 //      example: default
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
 //  responses:
 //    "200":
 //      description: API endpoints
@@ -91,47 +98,53 @@ var networkForwardCmd = APIEndpoint{
 
 // swagger:operation GET /1.0/networks/{networkName}/forwards?recursion=1 network-forwards network_forward_get_recursion1
 //
-//	Get the network address forwards
+//  Get the network address forwards
 //
-//	Returns a list of network address forwards (structs).
+//  Returns a list of network address forwards (structs).
 //
-//	---
-//	produces:
-//	  - application/json
-//	parameters:
-//	  - in: query
-//	    name: project
-//	    description: Project name
-//	    type: string
-//	    example: default
-//	responses:
-//	  "200":
-//	    description: API endpoints
-//	    schema:
-//	      type: object
-//	      description: Sync response
-//	      properties:
-//	        type:
-//	          type: string
-//	          description: Response type
-//	          example: sync
-//	        status:
-//	          type: string
-//	          description: Status description
-//	          example: Success
-//	        status_code:
-//	          type: integer
-//	          description: Status code
-//	          example: 200
-//	        metadata:
-//	          type: array
-//	          description: List of network address forwards
-//	          items:
-//	            $ref: "#/definitions/NetworkForward"
-//	  "403":
-//	    $ref: "#/responses/Forbidden"
-//	  "500":
-//	    $ref: "#/responses/InternalServerError"
+//  ---
+//  produces:
+//    - application/json
+//  parameters:
+//    - in: query
+//      name: project
+//      description: Project name
+//      type: string
+//      example: default
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
+//  responses:
+//    "200":
+//      description: API endpoints
+//      schema:
+//        type: object
+//        description: Sync response
+//        properties:
+//          type:
+//            type: string
+//            description: Response type
+//            example: sync
+//          status:
+//            type: string
+//            description: Status description
+//            example: Success
+//          status_code:
+//            type: integer
+//            description: Status code
+//            example: 200
+//          metadata:
+//            type: array
+//            description: List of network address forwards
+//            items:
+//              $ref: "#/definitions/NetworkForward"
+//    "403":
+//      $ref: "#/responses/Forbidden"
+//    "500":
+//      $ref: "#/responses/InternalServerError"
+
 func networkForwardsGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
@@ -159,13 +172,41 @@ func networkForwardsGet(d *Daemon, r *http.Request) response.Response {
 		return response.BadRequest(fmt.Errorf("Network driver %q does not support forwards", n.Type()))
 	}
 
-	memberSpecific := false // Get forwards for all cluster members.
+	recursion := localUtil.IsRecursionRequest(r)
 
-	if localUtil.IsRecursionRequest(r) {
+	// Parse filter value.
+	filterStr := r.FormValue("filter")
+	clauses, err := filter.Parse(filterStr, filter.QueryOperatorSet())
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid filter: %w", err))
+	}
+
+	mustLoadObjects := recursion || (clauses != nil && len(clauses.Clauses) > 0)
+
+	linkResults := make([]string, 0)
+	fullResults := make([]api.NetworkForward, 0)
+
+	if mustLoadObjects {
 		var records map[int64]*api.NetworkForward
 
 		err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-			records, err = tx.GetNetworkForwards(ctx, n.ID(), memberSpecific)
+			networkID := n.ID()
+			dbRecords, err := dbCluster.GetNetworkForwards(ctx, tx.Tx(), dbCluster.NetworkForwardFilter{
+				NetworkID: &networkID,
+			})
+			if err != nil {
+				return err
+			}
+
+			records = make(map[int64]*api.NetworkForward)
+			for _, dbRecord := range dbRecords {
+				forward, err := dbRecord.ToAPI(ctx, tx.Tx())
+				if err != nil {
+					return err
+				}
+
+				records[dbRecord.ID] = forward
+			}
 
 			return err
 		})
@@ -173,31 +214,55 @@ func networkForwardsGet(d *Daemon, r *http.Request) response.Response {
 			return response.SmartError(fmt.Errorf("Failed loading network forwards: %w", err))
 		}
 
-		forwards := make([]*api.NetworkForward, 0, len(records))
 		for _, record := range records {
-			forwards = append(forwards, record)
+
+			if clauses != nil && len(clauses.Clauses) > 0 {
+				match, err := filter.Match(*record, *clauses)
+				if err != nil {
+					return response.SmartError(err)
+				}
+
+				if !match {
+					continue
+				}
+			}
+
+			fullResults = append(fullResults, *record)
+			linkResults = append(linkResults, fmt.Sprintf("/%s/networks/%s/forwards/%s", version.APIVersion, url.PathEscape(n.Name()), url.PathEscape(record.ListenAddress)))
+		}
+	} else {
+		var listenAddresses map[int64]string
+
+		err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
+			networkID := n.ID()
+			dbRecords, err := dbCluster.GetNetworkForwards(ctx, tx.Tx(), dbCluster.NetworkForwardFilter{
+				NetworkID: &networkID,
+			})
+			if err != nil {
+				return err
+			}
+
+			listenAddresses = make(map[int64]string)
+			for _, dbRecord := range dbRecords {
+				listenAddresses[dbRecord.ID] = dbRecord.ListenAddress
+			}
+
+			return err
+		})
+		if err != nil {
+			return response.SmartError(fmt.Errorf("Failed loading network forwards: %w", err))
 		}
 
-		return response.SyncResponse(true, forwards)
+		for _, listenAddress := range listenAddresses {
+			linkResults = append(linkResults, fmt.Sprintf("/%s/networks/%s/forwards/%s", version.APIVersion, url.PathEscape(n.Name()), url.PathEscape(listenAddress)))
+		}
 	}
 
-	var listenAddresses map[int64]string
-
-	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-		listenAddresses, err = tx.GetNetworkForwardListenAddresses(ctx, n.ID(), memberSpecific)
-
-		return err
-	})
-	if err != nil {
-		return response.SmartError(fmt.Errorf("Failed loading network forwards: %w", err))
+	if recursion {
+		return response.SyncResponse(true, fullResults)
 	}
 
-	forwardURLs := make([]string, 0, len(listenAddresses))
-	for _, listenAddress := range listenAddresses {
-		forwardURLs = append(forwardURLs, fmt.Sprintf("/%s/networks/%s/forwards/%s", version.APIVersion, url.PathEscape(n.Name()), url.PathEscape(listenAddress)))
-	}
-
-	return response.SyncResponse(true, forwardURLs)
+	return response.SyncResponse(true, linkResults)
 }
 
 // swagger:operation POST /1.0/networks/{networkName}/forwards network-forwards network_forwards_post
@@ -442,9 +507,39 @@ func networkForwardGet(d *Daemon, r *http.Request) response.Response {
 	var forward *api.NetworkForward
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-		_, forward, err = tx.GetNetworkForward(ctx, n.ID(), memberSpecific, listenAddress)
+		networkID := n.ID()
+		dbRecords, err := dbCluster.GetNetworkForwards(ctx, tx.Tx(), dbCluster.NetworkForwardFilter{
+			NetworkID:     &networkID,
+			ListenAddress: &listenAddress,
+		})
+		if err != nil {
+			return err
+		}
 
-		return err
+		filteredRecords := make([]dbCluster.NetworkForward, 0, len(dbRecords))
+		for _, dbRecord := range dbRecords {
+			// Include all records if memberSpecific is turned off
+			// Otherwise, filter based offed of dbRecords with same node id
+			if !memberSpecific || (!dbRecord.NodeID.Valid || (dbRecord.NodeID.Int64 == tx.GetNodeID())) {
+				filteredRecords = append(filteredRecords, dbRecord)
+			}
+		}
+
+		if len(filteredRecords) == 0 {
+			return api.StatusErrorf(http.StatusNotFound, "Network forward not found")
+		}
+
+		if len(filteredRecords) > 1 {
+			return api.StatusErrorf(http.StatusConflict, "Network forward found on more than one cluster member. Please target a specific member")
+		}
+
+		dbNetworkForward := filteredRecords[0]
+		forward, err = dbNetworkForward.ToAPI(ctx, tx.Tx())
+		if err != nil {
+			return err
+		}
+
+		return nil
 	})
 	if err != nil {
 		return response.SmartError(err)
@@ -573,9 +668,39 @@ func networkForwardPut(d *Daemon, r *http.Request) response.Response {
 		var forward *api.NetworkForward
 
 		err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-			_, forward, err = tx.GetNetworkForward(ctx, n.ID(), memberSpecific, listenAddress)
+			networkID := n.ID()
+			dbRecords, err := dbCluster.GetNetworkForwards(ctx, tx.Tx(), dbCluster.NetworkForwardFilter{
+				NetworkID:     &networkID,
+				ListenAddress: &listenAddress,
+			})
+			if err != nil {
+				return err
+			}
 
-			return err
+			filteredRecords := make([]dbCluster.NetworkForward, 0, len(dbRecords))
+			for _, dbRecord := range dbRecords {
+				// Include all records if memberSpecific is turned off
+				// Otherwise, filter based offed of dbRecords with same node id
+				if !memberSpecific || (!dbRecord.NodeID.Valid || (dbRecord.NodeID.Int64 == tx.GetNodeID())) {
+					filteredRecords = append(filteredRecords, dbRecord)
+				}
+			}
+
+			if len(filteredRecords) == 0 {
+				return api.StatusErrorf(http.StatusNotFound, "Network forward not found")
+			}
+
+			if len(filteredRecords) > 1 {
+				return api.StatusErrorf(http.StatusConflict, "Network forward found on more than one cluster member. Please target a specific member")
+			}
+
+			dbNetworkForward := filteredRecords[0]
+			forward, err = dbNetworkForward.ToAPI(ctx, tx.Tx())
+			if err != nil {
+				return err
+			}
+
+			return nil
 		})
 		if err != nil {
 			return response.SmartError(err)

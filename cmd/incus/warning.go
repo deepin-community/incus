@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -22,6 +24,7 @@ type cmdWarning struct {
 	global *cmdGlobal
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdWarning) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("warning")
@@ -48,7 +51,7 @@ func (c *cmdWarning) Command() *cobra.Command {
 
 	// Workaround for subcommand usage errors. See: https://github.com/spf13/cobra/issues/706
 	cmd.Args = cobra.NoArgs
-	cmd.Run = func(cmd *cobra.Command, args []string) { _ = cmd.Usage() }
+	cmd.Run = func(cmd *cobra.Command, _ []string) { _ = cmd.Usage() }
 	return cmd
 }
 
@@ -64,6 +67,7 @@ type cmdWarningList struct {
 
 const defaultWarningColumns = "utSscpLl"
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdWarningList) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("list", i18n.G("[<remote>:]"))
@@ -91,15 +95,20 @@ Column shorthand chars:
     t - Type`))
 
 	cmd.Flags().StringVarP(&c.flagColumns, "columns", "c", defaultWarningColumns, i18n.G("Columns")+"``")
-	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G("Format (csv|json|table|yaml|compact)")+"``")
+	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", c.global.defaultListFormat(), i18n.G(`Format (csv|json|table|yaml|compact|markdown), use suffix ",noheader" to disable headers and ",header" to enable it if missing, e.g. csv,header`)+"``")
 	cmd.Flags().BoolVarP(&c.flagAll, "all", "a", false, i18n.G("List all warnings")+"``")
+
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		return cli.ValidateFlagFormatForListOutput(cmd.Flag("format").Value.String())
+	}
 
 	cmd.RunE = c.Run
 
 	return cmd
 }
 
-func (c *cmdWarningList) Run(cmd *cobra.Command, args []string) error {
+// Run runs the actual command logic.
+func (c *cmdWarningList) Run(_ *cobra.Command, args []string) error {
 	// Parse remote
 	remote := ""
 	if len(args) > 0 {
@@ -166,7 +175,7 @@ func (c *cmdWarningList) Run(cmd *cobra.Command, args []string) error {
 		headers = append(headers, column.Name)
 	}
 
-	return cli.RenderTable(c.flagFormat, headers, data, rawData)
+	return cli.RenderTable(os.Stdout, c.flagFormat, headers, data, rawData)
 }
 
 func (c *cmdWarningList) countColumnData(warning api.Warning) string {
@@ -222,10 +231,10 @@ func (c *cmdWarningList) parseColumns(clustered bool) ([]warningColumn, error) {
 	} else {
 		if c.flagColumns != defaultWarningColumns {
 			if strings.ContainsAny(c.flagColumns, "L") {
-				return nil, fmt.Errorf(i18n.G("Can't specify column L when not clustered"))
+				return nil, errors.New(i18n.G("Can't specify column L when not clustered"))
 			}
 		}
-		c.flagColumns = strings.Replace(c.flagColumns, "L", "", -1)
+		c.flagColumns = strings.ReplaceAll(c.flagColumns, "L", "")
 	}
 
 	columnList := strings.Split(c.flagColumns, ",")
@@ -238,11 +247,11 @@ func (c *cmdWarningList) parseColumns(clustered bool) ([]warningColumn, error) {
 
 		for _, columnRune := range columnEntry {
 			column, ok := columnsShorthandMap[columnRune]
-			if ok {
-				columns = append(columns, column)
-			} else {
+			if !ok {
 				return nil, fmt.Errorf(i18n.G("Unknown column shorthand char '%c' in '%s'"), columnRune, columnEntry)
 			}
+
+			columns = append(columns, column)
 		}
 	}
 
@@ -255,6 +264,7 @@ type cmdWarningAcknowledge struct {
 	warning *cmdWarning
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdWarningAcknowledge) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("acknowledge", i18n.G("[<remote>:]<warning-uuid>"))
@@ -268,9 +278,10 @@ func (c *cmdWarningAcknowledge) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdWarningAcknowledge) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 1)
+	exit, err := c.global.checkArgs(cmd, args, 1, 1)
 	if exit {
 		return err
 	}
@@ -297,6 +308,7 @@ type cmdWarningShow struct {
 	warning *cmdWarning
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdWarningShow) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("show", i18n.G("[<remote>:]<warning-uuid>"))
@@ -309,9 +321,10 @@ func (c *cmdWarningShow) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdWarningShow) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 1)
+	exit, err := c.global.checkArgs(cmd, args, 1, 1)
 	if exit {
 		return err
 	}
@@ -350,10 +363,11 @@ type cmdWarningDelete struct {
 	flagAll bool
 }
 
+// Command returns a cobra.Command for use with (*cobra.Command).AddCommand.
 func (c *cmdWarningDelete) Command() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Use = usage("delete", i18n.G("[<remote>:]<warning-uuid>"))
-	cmd.Aliases = []string{"rm"}
+	cmd.Aliases = []string{"rm", "remove"}
 	cmd.Short = i18n.G("Delete warning")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Delete warning`))
@@ -365,9 +379,10 @@ func (c *cmdWarningDelete) Command() *cobra.Command {
 	return cmd
 }
 
+// Run runs the actual command logic.
 func (c *cmdWarningDelete) Run(cmd *cobra.Command, args []string) error {
 	// Quick checks.
-	exit, err := c.global.CheckArgs(cmd, args, 1, 1)
+	exit, err := c.global.checkArgs(cmd, args, 1, 1)
 	if exit {
 		return err
 	}

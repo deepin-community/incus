@@ -452,6 +452,7 @@ import "C"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -484,13 +485,15 @@ import (
 	"github.com/lxc/incus/v6/shared/util"
 )
 
-const incusSeccompNotifyMknod = C.INCUS_SECCOMP_NOTIFY_MKNOD
-const incusSeccompNotifyMknodat = C.INCUS_SECCOMP_NOTIFY_MKNODAT
-const incusSeccompNotifySetxattr = C.INCUS_SECCOMP_NOTIFY_SETXATTR
-const incusSeccompNotifyMount = C.INCUS_SECCOMP_NOTIFY_MOUNT
-const incusSeccompNotifyBpf = C.INCUS_SECCOMP_NOTIFY_BPF
-const incusSeccompNotifySchedSetscheduler = C.INCUS_SECCOMP_NOTIFY_SCHED_SETSCHEDULER
-const incusSeccompNotifySysinfo = C.INCUS_SECCOMP_NOTIFY_SYSINFO
+const (
+	incusSeccompNotifyMknod             = C.INCUS_SECCOMP_NOTIFY_MKNOD
+	incusSeccompNotifyMknodat           = C.INCUS_SECCOMP_NOTIFY_MKNODAT
+	incusSeccompNotifySetxattr          = C.INCUS_SECCOMP_NOTIFY_SETXATTR
+	incusSeccompNotifyMount             = C.INCUS_SECCOMP_NOTIFY_MOUNT
+	incusSeccompNotifyBpf               = C.INCUS_SECCOMP_NOTIFY_BPF
+	incusSeccompNotifySchedSetscheduler = C.INCUS_SECCOMP_NOTIFY_SCHED_SETSCHEDULER
+	incusSeccompNotifySysinfo           = C.INCUS_SECCOMP_NOTIFY_SYSINFO
+)
 
 const seccompHeader = `2
 `
@@ -516,6 +519,7 @@ mknod notify [1,24576,SCMP_CMP_MASKED_EQ,61440]
 mknodat notify [2,8192,SCMP_CMP_MASKED_EQ,61440]
 mknodat notify [2,24576,SCMP_CMP_MASKED_EQ,61440]
 `
+
 const seccompNotifySetxattr = `setxattr notify [3,1,SCMP_CMP_EQ]
 `
 
@@ -624,7 +628,7 @@ type Instance interface {
 	CGroup() (*cgroup.CGroup, error)
 	CurrentIdmap() (*idmap.Set, error)
 	DiskIdmap() (*idmap.Set, error)
-	IdmappedStorage(path string, fstype string) idmap.IdmapStorageType
+	IdmappedStorage(path string, fstype string) idmap.StorageType
 	InsertSeccompUnixDevice(prefix string, m deviceConfig.Device, pid int) error
 }
 
@@ -700,7 +704,7 @@ func InstanceNeedsIntercept(s *state.State, c Instance) (bool, error) {
 
 	config := c.ExpandedConfig()
 
-	var keys = map[string]func(state *state.State) error{
+	keys := map[string]func(*state.State) error{
 		"security.syscalls.intercept.mknod":              lxcSupportSeccompNotify,
 		"security.syscalls.intercept.sched_setscheduler": lxcSupportSeccompNotify,
 		"security.syscalls.intercept.setxattr":           lxcSupportSeccompNotify,
@@ -870,12 +874,12 @@ func CreateProfile(s *state.State, c Instance) error {
 		return err
 	}
 
-	err = os.MkdirAll(seccompPath, 0700)
+	err = os.MkdirAll(seccompPath, 0o700)
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(ProfilePath(c), []byte(profile), 0600)
+	return os.WriteFile(ProfilePath(c), []byte(profile), 0o600)
 }
 
 // DeleteProfile removes a seccomp profile.
@@ -1045,7 +1049,7 @@ retry:
 func NewSeccompServer(s *state.State, path string, findPID func(pid int32, state *state.State) (Instance, error)) (*Server, error) {
 	ret := C.seccomp_notify_get_sizes(&C.expected_sizes)
 	if ret < 0 {
-		return nil, fmt.Errorf("Failed to query kernel for seccomp notifier sizes")
+		return nil, errors.New("Failed to query kernel for seccomp notifier sizes")
 	}
 
 	// Cleanup existing sockets
@@ -1063,7 +1067,7 @@ func NewSeccompServer(s *state.State, path string, findPID func(pid int32, state
 	}
 
 	// Restrict access
-	err = os.Chmod(path, 0700)
+	err = os.Chmod(path, 0o700)
 	if err != nil {
 		return nil, err
 	}
@@ -1320,7 +1324,8 @@ func (s *Server) doDeviceSyscall(c Instance, args *MknodArgs, siov *Iovec) int {
 
 // HandleMknodSyscall handles a mknod syscall.
 func (s *Server) HandleMknodSyscall(c Instance, siov *Iovec) int {
-	ctx := logger.Ctx{"container": c.Name(),
+	ctx := logger.Ctx{
+		"container":             c.Name(),
 		"project":               c.Project().Name,
 		"syscall_number":        siov.req.data.nr,
 		"audit_architecture":    siov.req.data.arch,
@@ -1371,7 +1376,8 @@ func (s *Server) HandleMknodSyscall(c Instance, siov *Iovec) int {
 
 // HandleMknodatSyscall handles a mknodat syscall.
 func (s *Server) HandleMknodatSyscall(c Instance, siov *Iovec) int {
-	ctx := logger.Ctx{"container": c.Name(),
+	ctx := logger.Ctx{
+		"container":             c.Name(),
 		"project":               c.Project().Name,
 		"syscall_number":        siov.req.data.nr,
 		"audit_architecture":    siov.req.data.arch,
@@ -1450,7 +1456,8 @@ type SetxattrArgs struct {
 
 // HandleSetxattrSyscall handles setxattr syscalls.
 func (s *Server) HandleSetxattrSyscall(c Instance, siov *Iovec) int {
-	ctx := logger.Ctx{"container": c.Name(),
+	ctx := logger.Ctx{
+		"container":             c.Name(),
 		"project":               c.Project().Name,
 		"syscall_number":        siov.req.data.nr,
 		"audit_architecture":    siov.req.data.arch,
@@ -1602,7 +1609,8 @@ type SchedSetschedulerArgs struct {
 
 // HandleSchedSetschedulerSyscall handles sched_setscheduler syscalls.
 func (s *Server) HandleSchedSetschedulerSyscall(c Instance, siov *Iovec) int {
-	ctx := logger.Ctx{"container": c.Name(),
+	ctx := logger.Ctx{
+		"container":             c.Name(),
 		"project":               c.Project().Name,
 		"syscall_number":        siov.req.data.nr,
 		"audit_architecture":    siov.req.data.arch,
@@ -1907,7 +1915,7 @@ type MountArgs struct {
 	flags     int
 	data      string
 	pid       int
-	idmapType idmap.IdmapStorageType
+	idmapType idmap.StorageType
 	uid       int64
 	gid       int64
 	fsuid     int64
@@ -1978,7 +1986,7 @@ func mountFlagsToOpts(flags C.ulong) string {
 }
 
 // mountHandleHugetlbfsArgs adds user namespace root uid and gid to the
-// hugetlbfs mount options to make it useable in unprivileged containers.
+// hugetlbfs mount options to make it usable in unprivileged containers.
 func (s *Server) mountHandleHugetlbfsArgs(c Instance, args *MountArgs, nsuid int64, nsgid int64) error {
 	if args.fstype != "hugetlbfs" {
 		return nil
@@ -2004,13 +2012,13 @@ func (s *Server) mountHandleHugetlbfsArgs(c Instance, args *MountArgs, nsuid int
 			if len(uidFields) > 1 {
 				n, err := strconv.ParseInt(uidFields[1], 10, 64)
 				if err != nil {
-					// If the user specified garbage, let the kernel tell em whats what.
+					// If the user specified garbage, let the kernel tell em what's what.
 					return nil
 				}
 
 				uidOpt, _ = idmapset.ShiftIntoNS(n, 0)
 				if uidOpt < 0 {
-					// If the user specified garbage, let the kernel tell em whats what.
+					// If the user specified garbage, let the kernel tell em what's what.
 					return nil
 				}
 
@@ -2021,13 +2029,13 @@ func (s *Server) mountHandleHugetlbfsArgs(c Instance, args *MountArgs, nsuid int
 			if len(gidFields) > 1 {
 				n, err := strconv.ParseInt(gidFields[1], 10, 64)
 				if err != nil {
-					// If the user specified garbage, let the kernel tell em whats what.
+					// If the user specified garbage, let the kernel tell em what's what.
 					return nil
 				}
 
 				gidOpt, _ = idmapset.ShiftIntoNS(n, 0)
 				if gidOpt < 0 {
-					// If the user specified garbage, let the kernel tell em whats what.
+					// If the user specified garbage, let the kernel tell em what's what.
 					return nil
 				}
 
@@ -2045,13 +2053,14 @@ func (s *Server) mountHandleHugetlbfsArgs(c Instance, args *MountArgs, nsuid int
 	}
 
 	args.data = strings.Join(optStrings, ",")
-	args.idmapType = idmap.IdmapStorageNone
+	args.idmapType = idmap.StorageTypeNone
 	return nil
 }
 
 // HandleMountSyscall handles mount syscalls.
 func (s *Server) HandleMountSyscall(c Instance, siov *Iovec) int {
-	ctx := logger.Ctx{"container": c.Name(),
+	ctx := logger.Ctx{
+		"container":             c.Name(),
 		"project":               c.Project().Name,
 		"syscall_number":        siov.req.data.nr,
 		"audit_architecture":    siov.req.data.arch,
@@ -2264,7 +2273,8 @@ func (s *Server) HandleMountSyscall(c Instance, siov *Iovec) int {
 
 // HandleBpfSyscall handles mount syscalls.
 func (s *Server) HandleBpfSyscall(c Instance, siov *Iovec) int {
-	ctx := logger.Ctx{"container": c.Name(),
+	ctx := logger.Ctx{
+		"container":             c.Name(),
 		"project":               c.Project().Name,
 		"syscall_number":        siov.req.data.nr,
 		"audit_architecture":    siov.req.data.arch,
@@ -2300,7 +2310,7 @@ func (s *Server) HandleBpfSyscall(c Instance, siov *Iovec) int {
 	}
 
 	// Locking to a thread shouldn't be necessary but it still makes me
-	// queezy that Go could just wander off to somehwere.
+	// queezy that Go could just wander off to somewhere.
 	runtime.LockOSThread()
 	ret := C.handle_bpf_syscall(
 		C.pid_t(siov.req.pid),
@@ -2389,7 +2399,7 @@ func lxcSupportSeccompNotifyContinue(state *state.State) error {
 	}
 
 	if !state.OS.SeccompListenerContinue {
-		return fmt.Errorf("Seccomp notify doesn't support continuing syscalls")
+		return errors.New("Seccomp notify doesn't support continuing syscalls")
 	}
 
 	return nil
@@ -2402,11 +2412,11 @@ func lxcSupportSeccompNotifyAddfd(state *state.State) error {
 	}
 
 	if !state.OS.SeccompListenerContinue {
-		return fmt.Errorf("Seccomp notify doesn't support continuing syscalls")
+		return errors.New("Seccomp notify doesn't support continuing syscalls")
 	}
 
 	if !state.OS.SeccompListenerAddfd {
-		return fmt.Errorf("Seccomp notify doesn't support adding file descriptors")
+		return errors.New("Seccomp notify doesn't support adding file descriptors")
 	}
 
 	return nil
@@ -2414,16 +2424,16 @@ func lxcSupportSeccompNotifyAddfd(state *state.State) error {
 
 func lxcSupportSeccompNotify(state *state.State) error {
 	if !state.OS.SeccompListener {
-		return fmt.Errorf("Seccomp notify not supported")
+		return errors.New("Seccomp notify not supported")
 	}
 
 	if !state.OS.LXCFeatures["seccomp_notify"] {
-		return fmt.Errorf("LXC doesn't support seccomp notify")
+		return errors.New("LXC doesn't support seccomp notify")
 	}
 
 	c, err := liblxc.NewContainer("test-seccomp", state.OS.LxcPath)
 	if err != nil {
-		return fmt.Errorf("Failed to load seccomp notify test container")
+		return errors.New("Failed to load seccomp notify test container")
 	}
 
 	err = c.SetConfigItem("lxc.seccomp.notify.proxy", fmt.Sprintf("unix:%s", internalUtil.RunPath("seccomp.socket")))
@@ -2502,11 +2512,11 @@ func (s *Server) MountSyscallValid(c Instance, args *MountArgs) (bool, string) {
 }
 
 // MountSyscallShift checks whether this mount syscall needs shifting.
-func (s *Server) MountSyscallShift(c Instance, path string, fsType string) idmap.IdmapStorageType {
+func (s *Server) MountSyscallShift(c Instance, path string, fsType string) idmap.StorageType {
 	if util.IsTrue(c.ExpandedConfig()["security.syscalls.intercept.mount.shift"]) {
 		diskIdmap, err := c.DiskIdmap()
 		if err != nil {
-			return idmap.IdmapStorageNone
+			return idmap.StorageTypeNone
 		}
 
 		if diskIdmap == nil {
@@ -2514,7 +2524,7 @@ func (s *Server) MountSyscallShift(c Instance, path string, fsType string) idmap
 		}
 	}
 
-	return idmap.IdmapStorageNone
+	return idmap.StorageTypeNone
 }
 
 var pageSize = 4096

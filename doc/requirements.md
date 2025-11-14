@@ -3,7 +3,7 @@
 (requirements-go)=
 ## Go
 
-Incus requires Go 1.22 or higher and is only tested with the Golang compiler.
+Incus requires Go 1.23 or higher and is only tested with the Golang compiler.
 
 We recommend having at least 2GiB of RAM to allow the build to complete.
 
@@ -21,7 +21,7 @@ Incus requires a kernel with support for:
 The following optional features also require extra kernel options:
 
 * Namespaces (`user` and `cgroup`)
-* AppArmor (including Ubuntu patch for mount mediation)
+* AppArmor
 * Control Groups (`blkio`, `cpuset`, `devices`, `memory` and `pids`)
 * CRIU (exact details to be found with CRIU upstream)
 
@@ -34,12 +34,13 @@ Incus requires LXC 5.0.0 or higher with the following build options:
 * `apparmor` (if using Incus' AppArmor support)
 * `seccomp`
 
-To run recent version of various distributions, including Ubuntu, LXCFS
-should also be installed.
+LXCFS is strongly recommended to properly report resource consumption inside the container.
 
 ## QEMU
 
 For virtual machines, QEMU 6.0 or higher is required.
+
+When using `virtiofsd`, only the [Rust rewrite](https://gitlab.com/virtio-fs/virtiofsd) of `virtiofsd` is supported.
 
 ## Additional libraries (and development headers)
 

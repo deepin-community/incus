@@ -3,11 +3,11 @@ package network
 import (
 	"fmt"
 
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/cluster/request"
 	"github.com/lxc/incus/v6/internal/server/db"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/validate"
 )
 
@@ -22,12 +22,46 @@ func (n *macvlan) DBType() db.NetworkType {
 }
 
 // Validate network config.
-func (n *macvlan) Validate(config map[string]string) error {
+func (n *macvlan) Validate(config map[string]string, clientType request.ClientType) error {
 	rules := map[string]func(value string) error{
+		// gendoc:generate(entity=network_macvlan, group=common, key=parent)
+		//
+		// ---
+		//  type: string
+		//  condition: -
+		//  shortdesc: Parent interface to create macvlan NICs on
 		"parent": validate.Required(validate.IsNotEmpty, validate.IsInterfaceName),
-		"mtu":    validate.Optional(validate.IsNetworkMTU),
-		"vlan":   validate.Optional(validate.IsNetworkVLAN),
-		"gvrp":   validate.Optional(validate.IsBool),
+
+		// gendoc:generate(entity=network_macvlan, group=common, key=mtu)
+		//
+		// ---
+		//  type: int
+		//  condition: -
+		//  shortdesc: The MTU of the new interface
+		"mtu": validate.Optional(validate.IsNetworkMTU),
+
+		// gendoc:generate(entity=network_macvlan, group=common, key=vlan)
+		//
+		// ---
+		//  type: int
+		//  condition: -
+		//  shortdesc: The VLAN ID to attach to
+		"vlan": validate.Optional(validate.IsNetworkVLAN),
+
+		// gendoc:generate(entity=network_macvlan, group=common, key=gvrp)
+		//
+		// ---
+		//  type: bool
+		//  condition: -
+		//  default: `false`
+		//  shortdesc: Register VLAN using GARP VLAN Registration Protocol
+		"gvrp": validate.Optional(validate.IsBool),
+
+		// gendoc:generate(entity=network_macvlan, group=common, key=user.*)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: User-provided free-form key/value pairs
 	}
 
 	err := n.validate(config, rules)
@@ -62,16 +96,16 @@ func (n *macvlan) Rename(newName string) error {
 func (n *macvlan) Start() error {
 	n.logger.Debug("Start")
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
-	revert.Add(func() { n.setUnavailable() })
+	reverter.Add(func() { n.setUnavailable() })
 
 	if !InterfaceExists(n.config["parent"]) {
 		return fmt.Errorf("Parent interface %q not found", n.config["parent"])
 	}
 
-	revert.Success()
+	reverter.Success()
 
 	// Ensure network is marked as available now its started.
 	n.setAvailable()
@@ -107,21 +141,22 @@ func (n *macvlan) Update(newNetwork api.NetworkPut, targetNode string, clientTyp
 		return n.common.update(newNetwork, targetNode, clientType)
 	}
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Define a function which reverts everything.
-	revert.Add(func() {
+	reverter.Add(func() {
 		// Reset changes to all nodes and database.
 		_ = n.common.update(oldNetwork, targetNode, clientType)
 	})
 
-	// Apply changes to all nodes and databse.
+	// Apply changes to all nodes and database.
 	err = n.common.update(newNetwork, targetNode, clientType)
 	if err != nil {
 		return err
 	}
 
-	revert.Success()
+	reverter.Success()
+
 	return nil
 }

@@ -9,12 +9,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
-	"strings"
 
 	"github.com/gorilla/mux"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/internal/filter"
 	"github.com/lxc/incus/v6/internal/jmap"
 	"github.com/lxc/incus/v6/internal/server/auth"
 	"github.com/lxc/incus/v6/internal/server/cluster"
@@ -32,6 +31,7 @@ import (
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/util"
+	"github.com/lxc/incus/v6/shared/validate"
 )
 
 var profilesCmd = APIEndpoint{
@@ -71,6 +71,11 @@ var profileCmd = APIEndpoint{
 //      description: Retrieve profiles from all projects
 //      type: boolean
 //      example: true
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
 //  responses:
 //    "200":
 //      description: API endpoints
@@ -107,52 +112,58 @@ var profileCmd = APIEndpoint{
 
 // swagger:operation GET /1.0/profiles?recursion=1 profiles profiles_get_recursion1
 //
-//	Get the profiles
+//  Get the profiles
 //
-//	Returns a list of profiles (structs).
+//  Returns a list of profiles (structs).
 //
-//	---
-//	produces:
-//	  - application/json
-//	parameters:
-//	  - in: query
-//	    name: project
-//	    description: Project name
-//	    type: string
-//	    example: default
-//	  - in: query
-//	    name: all-projects
-//	    description: Retrieve profiles from all projects
-//	    type: boolean
-//	    example: true
-//	responses:
-//	  "200":
-//	    description: API endpoints
-//	    schema:
-//	      type: object
-//	      description: Sync response
-//	      properties:
-//	        type:
-//	          type: string
-//	          description: Response type
-//	          example: sync
-//	        status:
-//	          type: string
-//	          description: Status description
-//	          example: Success
-//	        status_code:
-//	          type: integer
-//	          description: Status code
-//	          example: 200
-//	        metadata:
-//	          type: array
-//	          description: List of profiles
-//	          items:
-//	            $ref: "#/definitions/Profile"
-//	  "403":
-//	    $ref: "#/responses/Forbidden"
-//	  "500":
-//	    $ref: "#/responses/InternalServerError"
+//  ---
+//  produces:
+//    - application/json
+//  parameters:
+//    - in: query
+//      name: project
+//      description: Project name
+//      type: string
+//      example: default
+//    - in: query
+//      name: all-projects
+//      description: Retrieve profiles from all projects
+//      type: boolean
+//      example: true
+//    - in: query
+//      name: filter
+//      description: Collection filter
+//      type: string
+//      example: default
+//  responses:
+//    "200":
+//      description: API endpoints
+//      schema:
+//        type: object
+//        description: Sync response
+//        properties:
+//          type:
+//            type: string
+//            description: Response type
+//            example: sync
+//          status:
+//            type: string
+//            description: Status description
+//            example: Success
+//          status_code:
+//            type: integer
+//            description: Status code
+//            example: 200
+//          metadata:
+//            type: array
+//            description: List of profiles
+//            items:
+//              $ref: "#/definitions/Profile"
+//    "403":
+//      $ref: "#/responses/Forbidden"
+//    "500":
+//      $ref: "#/responses/InternalServerError"
+
 func profilesGet(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
@@ -162,6 +173,16 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	recursion := localUtil.IsRecursionRequest(r)
+
+	// Parse filter value.
+	filterStr := r.FormValue("filter")
+	clauses, err := filter.Parse(filterStr, filter.QueryOperatorSet())
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid filter: %w", err))
+	}
+
+	mustLoadObjects := recursion || (clauses != nil && len(clauses.Clauses) > 0)
+
 	allProjects := util.IsTrue(request.QueryParam(r, "all-projects"))
 
 	userHasPermission, err := s.Authorizer.GetPermissionChecker(r.Context(), r, auth.EntitlementCanView, auth.ObjectTypeProfile)
@@ -169,7 +190,8 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 		return response.InternalError(err)
 	}
 
-	var result any
+	fullResults := make([]api.Profile, 0)
+	linkResults := make([]string, 0)
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
 		var profiles []dbCluster.Profile
@@ -189,19 +211,23 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 			}
 		}
 
-		if recursion {
-			profileDevices, err := dbCluster.GetDevices(ctx, tx.Tx(), "profile")
+		if mustLoadObjects {
+			profileConfigs, err := dbCluster.GetAllProfileConfigs(ctx, tx.Tx())
 			if err != nil {
 				return err
 			}
 
-			apiProfiles := make([]*api.Profile, 0, len(profiles))
+			profileDevices, err := dbCluster.GetAllProfileDevices(ctx, tx.Tx())
+			if err != nil {
+				return err
+			}
+
 			for _, profile := range profiles {
 				if !userHasPermission(auth.ObjectProfile(p.Name, profile.Name)) {
 					continue
 				}
 
-				apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileDevices)
+				apiProfile, err := profile.ToAPI(ctx, tx.Tx(), profileConfigs, profileDevices)
 				if err != nil {
 					return err
 				}
@@ -212,22 +238,30 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 				}
 
 				apiProfile.UsedBy = project.FilterUsedBy(s.Authorizer, r, apiProfile.UsedBy)
-				apiProfiles = append(apiProfiles, apiProfile)
-			}
 
-			result = apiProfiles
+				if clauses != nil && len(clauses.Clauses) > 0 {
+					match, err := filter.Match(*apiProfile, *clauses)
+					if err != nil {
+						return err
+					}
+
+					if !match {
+						continue
+					}
+				}
+
+				fullResults = append(fullResults, *apiProfile)
+				linkResults = append(linkResults, apiProfile.URL(version.APIVersion, profile.Project).String())
+			}
 		} else {
-			urls := make([]string, 0, len(profiles))
 			for _, profile := range profiles {
 				if !userHasPermission(auth.ObjectProfile(p.Name, profile.Name)) {
 					continue
 				}
 
 				apiProfile := api.Profile{Name: profile.Name}
-				urls = append(urls, apiProfile.URL(version.APIVersion, profile.Project).String())
+				linkResults = append(linkResults, apiProfile.URL(version.APIVersion, profile.Project).String())
 			}
-
-			result = urls
 		}
 
 		return err
@@ -236,7 +270,11 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	return response.SyncResponse(true, result)
+	if recursion {
+		return response.SyncResponse(true, fullResults)
+	}
+
+	return response.SyncResponse(true, linkResults)
 }
 
 // profileUsedBy returns all the instance URLs that are using the given profile.
@@ -303,15 +341,12 @@ func profilesPost(d *Daemon, r *http.Request) response.Response {
 
 	// Quick checks.
 	if req.Name == "" {
-		return response.BadRequest(fmt.Errorf("No name provided"))
+		return response.BadRequest(errors.New("No name provided"))
 	}
 
-	if strings.Contains(req.Name, "/") {
-		return response.BadRequest(fmt.Errorf("Profile names may not contain slashes"))
-	}
-
-	if slices.Contains([]string{".", ".."}, req.Name) {
-		return response.BadRequest(fmt.Errorf("Invalid profile name %q", req.Name))
+	err = validate.IsAPIName(req.Name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid profile name: %w", err))
 	}
 
 	err = instance.ValidConfig(d.os, req.Config, false, instancetype.Any)
@@ -334,7 +369,7 @@ func profilesPost(d *Daemon, r *http.Request) response.Response {
 
 		current, _ := dbCluster.GetProfile(ctx, tx.Tx(), p.Name, req.Name)
 		if current != nil {
-			return fmt.Errorf("The profile already exists")
+			return errors.New("The profile already exists")
 		}
 
 		profile := dbCluster.Profile{
@@ -437,12 +472,17 @@ func profileGet(d *Daemon, r *http.Request) response.Response {
 			return fmt.Errorf("Fetch profile: %w", err)
 		}
 
-		profileDevices, err := dbCluster.GetDevices(ctx, tx.Tx(), "profile")
+		profileConfigs, err := dbCluster.GetAllProfileConfigs(ctx, tx.Tx())
 		if err != nil {
 			return err
 		}
 
-		resp, err = profile.ToAPI(ctx, tx.Tx(), profileDevices)
+		profileDevices, err := dbCluster.GetAllProfileDevices(ctx, tx.Tx())
+		if err != nil {
+			return err
+		}
+
+		resp, err = profile.ToAPI(ctx, tx.Tx(), profileConfigs, profileDevices)
 		if err != nil {
 			return err
 		}
@@ -524,7 +564,6 @@ func profilePut(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	var id int64
 	var profile *api.Profile
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -533,12 +572,10 @@ func profilePut(d *Daemon, r *http.Request) response.Response {
 			return fmt.Errorf("Failed to retrieve profile %q: %w", name, err)
 		}
 
-		profile, err = current.ToAPI(ctx, tx.Tx(), nil)
+		profile, err = current.ToAPI(ctx, tx.Tx(), nil, nil)
 		if err != nil {
 			return err
 		}
-
-		id = int64(current.ID)
 
 		return nil
 	})
@@ -559,7 +596,7 @@ func profilePut(d *Daemon, r *http.Request) response.Response {
 		return response.BadRequest(err)
 	}
 
-	err = doProfileUpdate(r.Context(), s, *p, name, id, profile, req)
+	err = doProfileUpdate(r.Context(), s, *p, name, profile, req)
 
 	if err == nil && !isClusterNotification(r) {
 		// Notify all other nodes. If a node is down, it will be ignored.
@@ -629,7 +666,6 @@ func profilePatch(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	var id int64
 	var profile *api.Profile
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -638,12 +674,10 @@ func profilePatch(d *Daemon, r *http.Request) response.Response {
 			return fmt.Errorf("Failed to retrieve profile=%q: %w", name, err)
 		}
 
-		profile, err = current.ToAPI(ctx, tx.Tx(), nil)
+		profile, err = current.ToAPI(ctx, tx.Tx(), nil, nil)
 		if err != nil {
 			return err
 		}
-
-		id = int64(current.ID)
 
 		return nil
 	})
@@ -711,7 +745,7 @@ func profilePatch(d *Daemon, r *http.Request) response.Response {
 	requestor := request.CreateRequestor(r)
 	s.Events.SendLifecycle(p.Name, lifecycle.ProfileUpdated.Event(name, p.Name, requestor, nil))
 
-	return response.SmartError(doProfileUpdate(r.Context(), s, *p, name, id, profile, req))
+	return response.SmartError(doProfileUpdate(r.Context(), s, *p, name, profile, req))
 }
 
 // swagger:operation POST /1.0/profiles/{name} profiles profile_post
@@ -771,15 +805,12 @@ func profilePost(d *Daemon, r *http.Request) response.Response {
 
 	// Quick checks.
 	if req.Name == "" {
-		return response.BadRequest(fmt.Errorf("No name provided"))
+		return response.BadRequest(errors.New("No name provided"))
 	}
 
-	if strings.Contains(req.Name, "/") {
-		return response.BadRequest(fmt.Errorf("Profile names may not contain slashes"))
-	}
-
-	if slices.Contains([]string{".", ".."}, req.Name) {
-		return response.BadRequest(fmt.Errorf("Invalid profile name %q", req.Name))
+	err = validate.IsAPIName(req.Name, false)
+	if err != nil {
+		return response.BadRequest(fmt.Errorf("Invalid profile name: %w", err))
 	}
 
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -866,7 +897,7 @@ func profileDelete(d *Daemon, r *http.Request) response.Response {
 		}
 
 		if len(usedBy) > 0 {
-			return fmt.Errorf("Profile is currently in use")
+			return errors.New("Profile is currently in use")
 		}
 
 		return dbCluster.DeleteProfile(ctx, tx.Tx(), p.Name, name)

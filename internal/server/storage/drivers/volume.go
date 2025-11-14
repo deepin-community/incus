@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	internalInstance "github.com/lxc/incus/v6/internal/instance"
-	"github.com/lxc/incus/v6/internal/revert"
 	"github.com/lxc/incus/v6/internal/server/locking"
 	"github.com/lxc/incus/v6/internal/server/operations"
 	"github.com/lxc/incus/v6/internal/server/refcount"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/units"
 	"github.com/lxc/incus/v6/shared/util"
 )
@@ -27,7 +28,7 @@ const isoVolSuffix = ".iso"
 // DefaultBlockSize is the default size of block volumes.
 const DefaultBlockSize = "10GiB"
 
-// DefaultFilesystem filesytem to use for block devices by default.
+// DefaultFilesystem filesystem to use for block devices by default.
 const DefaultFilesystem = "ext4"
 
 // defaultFilesystemMountOpts mount options to use for filesystem block devices by default.
@@ -71,7 +72,7 @@ const VolumeTypeVM = VolumeType("virtual-machines")
 // ContentType indicates the format of the volume.
 type ContentType string
 
-// ContentTypeFS indicates the volume will be populated with a mountabble filesystem.
+// ContentTypeFS indicates the volume will be populated with a mountable filesystem.
 const ContentTypeFS = ContentType("filesystem")
 
 // ContentTypeBlock indicates the volume will be a block device and its contents and we do not
@@ -149,7 +150,7 @@ func (v Volume) ExpandedConfig(key string) string {
 // NewSnapshot instantiates a new Volume struct representing a snapshot of the parent volume.
 func (v Volume) NewSnapshot(snapshotName string) (Volume, error) {
 	if v.IsSnapshot() {
-		return Volume{}, fmt.Errorf("Cannot create a snapshot volume from a snapshot")
+		return Volume{}, errors.New("Cannot create a snapshot volume from a snapshot")
 	}
 
 	fullSnapName := GetSnapshotVolumeName(v.name, snapshotName)
@@ -208,11 +209,12 @@ func (v Volume) MountInUse() bool {
 
 // EnsureMountPath creates the volume's mount path if missing, then sets the correct permission for the type.
 // If permission setting fails and the volume is a snapshot then the error is ignored as snapshots are read only.
-func (v Volume) EnsureMountPath() error {
+// The boolean flag indicates whether this is being called during volume creation.
+func (v Volume) EnsureMountPath(creation bool) error {
 	volPath := v.MountPath()
 
-	revert := revert.New()
-	defer revert.Fail()
+	reverter := revert.New()
+	defer reverter.Fail()
 
 	// Create volume's mount path if missing, with any created directories set to 0711.
 	if !util.PathExists(volPath) {
@@ -225,41 +227,84 @@ func (v Volume) EnsureMountPath() error {
 			}
 		}
 
-		err := os.Mkdir(volPath, 0711)
+		err := os.Mkdir(volPath, 0o711)
 		if err != nil {
 			return fmt.Errorf("Failed to create mount directory %q: %w", volPath, err)
 		}
 
-		revert.Add(func() { _ = os.Remove(volPath) })
+		reverter.Add(func() { _ = os.Remove(volPath) })
 	}
 
-	// Set very restrictive mode 0100 for non-custom, non-bucket and non-image volumes.
-	mode := os.FileMode(0711)
-	if v.volType != VolumeTypeCustom && v.volType != VolumeTypeImage && v.volType != VolumeTypeBucket {
-		mode = os.FileMode(0100)
-	}
+	// If dealing with a custom volume and part of volume creation, apply initial mode and owner.
+	if v.volType == VolumeTypeCustom && v.contentType == ContentTypeFS && creation {
+		initialMode := v.ExpandedConfig("initial.mode")
+		mode := os.FileMode(0o711)
+		if initialMode != "" {
+			m, err := strconv.ParseInt(initialMode, 8, 0)
+			if err != nil {
+				return err
+			}
 
-	fInfo, err := os.Lstat(volPath)
-	if err != nil {
-		return fmt.Errorf("Error getting mount directory info %q: %w", volPath, err)
-	}
+			mode = os.FileMode(m)
+		}
 
-	// We expect the mount path to be a directory, so use this for comparison.
-	compareMode := os.ModeDir | mode
+		err := os.Chmod(volPath, mode)
+		if err != nil {
+			return err
+		}
 
-	// Set mode of actual volume's mount path if needed.
-	if fInfo.Mode() != compareMode {
-		err = os.Chmod(volPath, mode)
+		uid, gid := 0, 0
+		initialUID := v.ExpandedConfig("initial.uid")
+		if initialUID != "" {
+			uid, err = strconv.Atoi(initialUID)
+			if err != nil {
+				return err
+			}
+		}
 
-		// If the chmod failed, return the error as long as the volume is not a snapshot.
-		// If the volume is a snapshot, we must ignore the error as snapshots are readonly and cannot be
-		// modified after they are taken, such that any permission error is not fixable at mount time.
-		if err != nil && !v.IsSnapshot() {
-			return fmt.Errorf("Failed to chmod mount directory %q (%04o): %w", volPath, mode, err)
+		initialGID := v.ExpandedConfig("initial.gid")
+		if initialGID != "" {
+			gid, err = strconv.Atoi(initialGID)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Set the owner of a custom volume if uid or gid have been set.
+		if uid != 0 || gid != 0 {
+			err = os.Chown(volPath, uid, gid)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
-	revert.Success()
+	// Set very restrictive mode 0100 for non-custom, non-bucket and non-image volumes.
+	if v.volType != VolumeTypeCustom && v.volType != VolumeTypeImage && v.volType != VolumeTypeBucket {
+		mode := os.FileMode(0o100)
+
+		fInfo, err := os.Lstat(volPath)
+		if err != nil {
+			return fmt.Errorf("Error getting mount directory info %q: %w", volPath, err)
+		}
+
+		// We expect the mount path to be a directory, so use this for comparison.
+		compareMode := os.ModeDir | mode
+
+		// Set mode of actual volume's mount path if needed.
+		if fInfo.Mode() != compareMode {
+			err = os.Chmod(volPath, mode)
+
+			// If the chmod failed, return the error as long as the volume is not a snapshot.
+			// If the volume is a snapshot, we must ignore the error as snapshots are readonly and cannot be
+			// modified after they are taken, such that any permission error is not fixable at mount time.
+			if err != nil && !v.IsSnapshot() {
+				return fmt.Errorf("Failed to chmod mount directory %q (%04o): %w", volPath, mode, err)
+			}
+		}
+	}
+
+	reverter.Success()
 	return nil
 }
 
@@ -334,7 +379,7 @@ func (v Volume) UnmountTask(task func(op *operations.Operation) error, keepBlock
 // Snapshots returns a list of snapshots for the volume (in no particular order).
 func (v Volume) Snapshots(op *operations.Operation) ([]Volume, error) {
 	if v.IsSnapshot() {
-		return nil, fmt.Errorf("Volume is a snapshot")
+		return nil, errors.New("Volume is a snapshot")
 	}
 
 	snapshots, err := v.driver.VolumeSnapshots(v, op)
@@ -359,7 +404,7 @@ func (v Volume) Snapshots(op *operations.Operation) ([]Volume, error) {
 // necessarily in the same order).
 func (v Volume) SnapshotsMatch(snapNames []string, op *operations.Operation) error {
 	if v.IsSnapshot() {
-		return fmt.Errorf("Volume is a snapshot")
+		return errors.New("Volume is a snapshot")
 	}
 
 	snapshots, err := v.driver.VolumeSnapshots(v, op)
@@ -577,16 +622,10 @@ func (v *Volume) SetHasSource(hasSource bool) {
 // Clone returns a copy of the volume.
 func (v Volume) Clone() Volume {
 	// Copy the config map to avoid internal modifications affecting external state.
-	newConfig := make(map[string]string, len(v.config))
-	for k, v := range v.config {
-		newConfig[k] = v
-	}
+	newConfig := util.CloneMap(v.config)
 
 	// Copy the pool config map to avoid internal modifications affecting external state.
-	newPoolConfig := make(map[string]string, len(v.poolConfig))
-	for k, v := range v.poolConfig {
-		newPoolConfig[k] = v
-	}
+	newPoolConfig := util.CloneMap(v.poolConfig)
 
 	return NewVolume(v.driver, v.pool, v.volType, v.contentType, v.name, newConfig, newPoolConfig)
 }

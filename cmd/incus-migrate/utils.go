@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -15,7 +16,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/internal/linux"
 	"github.com/lxc/incus/v6/internal/migration"
 	"github.com/lxc/incus/v6/internal/ports"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
@@ -25,7 +27,22 @@ import (
 	"github.com/lxc/incus/v6/shared/ws"
 )
 
-func transferRootfs(ctx context.Context, dst incus.InstanceServer, op incus.Operation, rootfs string, rsyncArgs string, instanceType api.InstanceType) error {
+// MigrationType represents the type of the migration.
+type MigrationType string
+
+// MigrationTypeContainer defines the migration type value for a container.
+const MigrationTypeContainer = MigrationType("container")
+
+// MigrationTypeVM defines the migration type value for a virtual-machine.
+const MigrationTypeVM = MigrationType("virtual-machine")
+
+// MigrationTypeVolumeFilesystem defines the migration type value for a custom volume of type filesystem.
+const MigrationTypeVolumeFilesystem = MigrationType("volume-filesystem")
+
+// MigrationTypeVolumeBlock defines the migration type value for a custom volume of type block.
+const MigrationTypeVolumeBlock = MigrationType("volume-block")
+
+func transferRootfs(ctx context.Context, op incus.Operation, rootfs string, rsyncArgs string, migrationType MigrationType) error {
 	opAPI := op.Get()
 
 	// Connect to the websockets
@@ -48,7 +65,7 @@ func transferRootfs(ctx context.Context, dst incus.InstanceServer, op incus.Oper
 	var fs migration.MigrationFSType
 	var rsyncHasFeature bool
 
-	if instanceType == api.InstanceTypeVM {
+	if migrationType == MigrationTypeVM || migrationType == MigrationTypeVolumeBlock {
 		fs = migration.MigrationFSType_BLOCK_AND_RSYNC
 		rsyncHasFeature = false
 	} else {
@@ -65,13 +82,13 @@ func transferRootfs(ctx context.Context, dst incus.InstanceServer, op incus.Oper
 		Fs: &fs,
 	}
 
-	if instanceType == api.InstanceTypeVM {
-		stat, err := os.Stat(filepath.Join(rootfs, "root.img"))
+	if migrationType == MigrationTypeVM || migrationType == MigrationTypeVolumeBlock {
+		sourcePath := filepath.Join(rootfs, "root.img")
+		size, err := BlockDiskSizeBytes(sourcePath)
 		if err != nil {
 			return abort(err)
 		}
 
-		size := stat.Size()
 		offerHeader.VolumeSize = &size
 		rootfs = internalUtil.AddSlash(rootfs)
 	}
@@ -95,13 +112,15 @@ func transferRootfs(ctx context.Context, dst incus.InstanceServer, op incus.Oper
 	}
 
 	// Send the filesystem
-	err = rsyncSend(ctx, wsFs, rootfs, rsyncArgs, instanceType)
-	if err != nil {
-		return abort(fmt.Errorf("Failed sending filesystem volume: %w", err))
+	if migrationType != MigrationTypeVolumeBlock {
+		err = rsyncSend(ctx, wsFs, rootfs, rsyncArgs, migrationType)
+		if err != nil {
+			return abort(fmt.Errorf("Failed sending filesystem volume: %w", err))
+		}
 	}
 
-	// Send block volume
-	if instanceType == api.InstanceTypeVM {
+	if migrationType == MigrationTypeVM || migrationType == MigrationTypeVolumeBlock {
+		// Send block volume
 		f, err := os.Open(filepath.Join(rootfs, "root.img"))
 		if err != nil {
 			return abort(err)
@@ -137,7 +156,7 @@ func transferRootfs(ctx context.Context, dst incus.InstanceServer, op incus.Oper
 	}
 
 	if !msg.GetSuccess() {
-		return fmt.Errorf(msg.GetMessage())
+		return errors.New(msg.GetMessage())
 	}
 
 	return nil
@@ -150,7 +169,7 @@ func (m *cmdMigrate) connectLocal() (incus.InstanceServer, error) {
 	return incus.ConnectIncusUnix("", &args)
 }
 
-func (m *cmdMigrate) connectTarget(url string, certPath string, keyPath string, authType string, token string) (incus.InstanceServer, string, error) {
+func (m *cmdMigrate) connectTarget(uri string, certPath string, keyPath string, authType string, token string) (incus.InstanceServer, string, error) {
 	args := incus.ConnectionArgs{
 		AuthType: authType,
 	}
@@ -199,12 +218,12 @@ func (m *cmdMigrate) connectTarget(url string, certPath string, keyPath string, 
 
 	// Attempt to connect using the system CA
 	args.UserAgent = fmt.Sprintf("LXC-MIGRATE %s", version.Version)
-	c, err := incus.ConnectIncus(url, &args)
+	c, err := incus.ConnectIncus(uri, &args)
 
 	var certificate *x509.Certificate
 	if err != nil {
 		// Failed to connect using the system CA, so retrieve the remote certificate
-		certificate, err = localtls.GetRemoteCertificate(url, args.UserAgent)
+		certificate, err = localtls.GetRemoteCertificate(uri, args.UserAgent)
 		if err != nil {
 			return nil, "", err
 		}
@@ -216,7 +235,7 @@ func (m *cmdMigrate) connectTarget(url string, certPath string, keyPath string, 
 		args.TLSServerCert = string(serverCrt)
 
 		// Setup a new connection, this time with the remote certificate
-		c, err = incus.ConnectIncus(url, &args)
+		c, err = incus.ConnectIncus(uri, &args)
 		if err != nil {
 			return nil, "", err
 		}
@@ -269,7 +288,7 @@ func (m *cmdMigrate) connectTarget(url string, certPath string, keyPath string, 
 	}
 
 	if srv.Auth == "untrusted" {
-		return nil, "", fmt.Errorf("Server doesn't trust us after authentication")
+		return nil, "", errors.New("Server doesn't trust us after authentication")
 	}
 
 	fmt.Printf("\nRemote server:\n  Hostname: %s\n  Version: %s\n\n", srv.Environment.ServerName, srv.Environment.ServerVersion)
@@ -304,23 +323,53 @@ func setupSource(path string, mounts []string) error {
 }
 
 func parseURL(URL string) (string, error) {
-	u, err := url.Parse(URL)
+	uri, err := url.Parse(URL)
 	if err != nil {
 		return "", err
 	}
 
 	// Create a URL with scheme and hostname since it wasn't provided
-	if u.Scheme == "" && u.Host == "" && u.Path != "" {
-		u, err = url.Parse(fmt.Sprintf("https://%s", u.Path))
+	if uri.Scheme == "" && uri.Host == "" && uri.Path != "" {
+		uri, err = url.Parse(fmt.Sprintf("https://%s", uri.Path))
 		if err != nil {
 			return "", err
 		}
 	}
 
 	// If no port was provided, use default port
-	if u.Port() == "" {
-		u.Host = fmt.Sprintf("%s:%d", u.Hostname(), ports.HTTPSDefaultPort)
+	if uri.Port() == "" {
+		uri.Host = fmt.Sprintf("%s:%d", uri.Hostname(), ports.HTTPSDefaultPort)
 	}
 
-	return u.String(), nil
+	return uri.String(), nil
+}
+
+// BlockDiskSizeBytes returns the size of a block disk (path can be either block device or raw file).
+func BlockDiskSizeBytes(blockDiskPath string) (int64, error) {
+	if linux.IsBlockdevPath(blockDiskPath) {
+		// Attempt to open the device path.
+		f, err := os.Open(blockDiskPath)
+		if err != nil {
+			return -1, err
+		}
+
+		defer func() { _ = f.Close() }()
+		fd := int(f.Fd())
+
+		// Retrieve the block device size.
+		res, err := unix.IoctlGetInt(fd, unix.BLKGETSIZE64)
+		if err != nil {
+			return -1, err
+		}
+
+		return int64(res), nil
+	}
+
+	// Block device is assumed to be a raw file.
+	fi, err := os.Lstat(blockDiskPath)
+	if err != nil {
+		return -1, err
+	}
+
+	return fi.Size(), nil
 }

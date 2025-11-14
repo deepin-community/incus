@@ -2,12 +2,15 @@ package filter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+const stringMultiValueDelimiter = ","
 
 // Match returns true if the given object matches the given filter.
 func Match(obj any, set ClauseSet) (bool, error) {
@@ -55,7 +58,7 @@ func Match(obj any, set ClauseSet) (bool, error) {
 		case set.Ops.Or:
 			match = match || clauseMatch
 		default:
-			return false, fmt.Errorf("unexpected clause operator")
+			return false, errors.New("unexpected clause operator")
 		}
 	}
 
@@ -118,10 +121,13 @@ func (s ClauseSet) match(c Clause, objValue any) (bool, error) {
 	kind := valInfo.Kind()
 	switch kind {
 	case reflect.String:
-		valueRegexp, _ = s.ParseRegexp(c)
+		valueStr, err = s.ParseString(c)
+		if !strings.Contains(valueStr, ",") {
+			valueRegexp, _ = s.ParseRegexp(c)
 
-		if valueRegexp == nil {
-			valueStr, err = s.ParseString(c)
+			if valueRegexp != nil {
+				valueStr = ""
+			}
 		}
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -154,6 +160,12 @@ func (s ClauseSet) match(c Clause, objValue any) (bool, error) {
 		switch val := objValue.(type) {
 		case string:
 			// Comparison is case insensitive.
+			for _, curValue := range strings.Split(valueStr, stringMultiValueDelimiter) {
+				if strings.EqualFold(val, curValue) {
+					return true, nil
+				}
+			}
+
 			return strings.EqualFold(val, valueStr), nil
 		case int, int8, int16, int32, int64:
 			return objValue == valueInt, nil
@@ -187,6 +199,12 @@ func (s ClauseSet) match(c Clause, objValue any) (bool, error) {
 		switch val := objValue.(type) {
 		case string:
 			// Comparison is case insensitive.
+			for _, curValue := range strings.Split(valueStr, stringMultiValueDelimiter) {
+				if !strings.EqualFold(val, curValue) {
+					return true, nil
+				}
+			}
+
 			return !strings.EqualFold(val, valueStr), nil
 		case int, int8, int16, int32, int64:
 			return objValue != valueInt, nil
@@ -253,7 +271,7 @@ func (s ClauseSet) match(c Clause, objValue any) (bool, error) {
 		}
 
 	default:
-		return false, fmt.Errorf("Unsupported operation")
+		return false, errors.New("Unsupported operation")
 	}
 
 	return false, fmt.Errorf("Unsupported filter type %q for field %q", kind.String(), c.Field)

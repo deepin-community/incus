@@ -1,8 +1,0 @@
-# The only access is checking if /var/lib/dpkg/info/lxd.list exists, rather than spawning a dpkg process
-incus-tools: uses-dpkg-database-directly
-
-# Flagged spelling errors come from other golang packages
-incus-tools: spelling-error-in-binary
-
-# Ignore error about long field length
-incus-tools: field-too-long

@@ -2,28 +2,31 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/user"
 	"path"
-	"path/filepath"
 	"slices"
 
+	"github.com/kballard/go-shellquote"
 	"github.com/spf13/cobra"
 
-	"github.com/lxc/incus/v6/client"
+	incus "github.com/lxc/incus/v6/client"
 	cli "github.com/lxc/incus/v6/internal/cmd"
 	"github.com/lxc/incus/v6/internal/i18n"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/internal/version"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/ask"
 	config "github.com/lxc/incus/v6/shared/cliconfig"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
 type cmdGlobal struct {
-	asker cli.Asker
+	asker ask.Asker
 
 	conf     *config.Config
 	confPath string
@@ -70,14 +73,28 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 `
 }
 
-func main() {
-	// Process aliases
-	err := execIfAliases()
+func aliases() []string {
+	c, err := config.LoadConfig("")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return nil
 	}
 
+	aliases := make([]string, 0, len(defaultAliases)+len(c.Aliases))
+
+	// Add default aliases
+	for alias := range defaultAliases {
+		aliases = append(aliases, alias)
+	}
+
+	// Add user-defined aliases
+	for alias := range c.Aliases {
+		aliases = append(aliases, alias)
+	}
+
+	return aliases
+}
+
+func createApp() (*cobra.Command, *cmdGlobal, error) {
 	// Setup the parser
 	app := &cobra.Command{}
 	app.Use = "incus"
@@ -92,10 +109,19 @@ Custom commands can be defined through aliases, use "incus alias" to control tho
 	app.SilenceUsage = true
 	app.SilenceErrors = true
 	app.CompletionOptions = cobra.CompletionOptions{HiddenDefaultCmd: true}
+	app.ValidArgs = aliases()
 
-	// Global flags
-	globalCmd := cmdGlobal{cmd: app, asker: cli.NewAsker(bufio.NewReader(os.Stdin))}
+	// Global struct.
+	globalCmd := cmdGlobal{cmd: app, asker: ask.NewAsker(bufio.NewReader(os.Stdin))}
 
+	conf, err := config.LoadConfig("")
+	if err != nil {
+		return nil, nil, fmt.Errorf(i18n.G("Failed to load configuration: %s"), err)
+	}
+
+	globalCmd.conf = conf
+
+	// Global flags.
 	app.PersistentFlags().BoolVar(&globalCmd.flagVersion, "version", false, i18n.G("Print version number"))
 	app.PersistentFlags().BoolVarP(&globalCmd.flagHelp, "help", "h", false, i18n.G("Print help"))
 	app.PersistentFlags().BoolVar(&globalCmd.flagForceLocal, "force-local", false, i18n.G("Force using the local unix socket"))
@@ -265,6 +291,14 @@ Custom commands can be defined through aliases, use "incus alias" to control tho
 	warningCmd := cmdWarning{global: &globalCmd}
 	app.AddCommand(warningCmd.Command())
 
+	// webui sub-command
+	webuiCmd := cmdWebui{global: &globalCmd}
+	app.AddCommand(webuiCmd.Command())
+
+	// debug sub-command
+	debugCmd := cmdDebug{global: &globalCmd}
+	app.AddCommand(debugCmd.Command())
+
 	// Get help command
 	app.InitDefaultHelpCmd()
 	var help *cobra.Command
@@ -279,7 +313,17 @@ Custom commands can be defined through aliases, use "incus alias" to control tho
 	app.Flags().BoolVar(&globalCmd.flagHelpAll, "all", false, i18n.G("Show less common commands"))
 	help.Flags().BoolVar(&globalCmd.flagHelpAll, "all", false, i18n.G("Show less common commands"))
 
-	// Deal with --all flag and --sub-commands flag
+	return app, &globalCmd, nil
+}
+
+func main() {
+	app, globalCmd, err := createApp()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Deal with --all and --sub-commands flags as well as process aliases.
 	err = app.ParseFlags(os.Args[1:])
 	if err == nil {
 		if globalCmd.flagHelpAll {
@@ -298,12 +342,19 @@ Custom commands can be defined through aliases, use "incus alias" to control tho
 		}
 	}
 
+	// Process aliases
+	err = execIfAliases(app)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Run the main command and handle errors
 	err = app.Execute()
 	if err != nil {
 		// Handle non-Linux systems
-		if err == config.ErrNotLinux {
-			fmt.Fprintf(os.Stderr, i18n.G(`This client hasn't been configured to use a remote server yet.
+		if errors.Is(err, config.ErrNotLinux) {
+			fmt.Fprintf(os.Stderr, "%s", i18n.G(`This client hasn't been configured to use a remote server yet.
 As your platform can't run native Linux instances, you must connect to a remote server.
 
 If you already added a remote server, make it the default with "incus remote switch NAME".`)+"\n")
@@ -311,7 +362,11 @@ If you already added a remote server, make it the default with "incus remote swi
 		}
 
 		// Default error handling
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if os.Getenv("INCUS_ALIASES") == "1" {
+			fmt.Fprintf(os.Stderr, i18n.G("Error while executing alias expansion: %s\n"), shellquote.Join(os.Args...))
+		}
+
+		fmt.Fprintf(os.Stderr, i18n.G("Error: %v\n"), err)
 
 		// If custom exit status not set, use default error status.
 		if globalCmd.ret == 0 {
@@ -324,29 +379,13 @@ If you already added a remote server, make it the default with "incus remote swi
 	}
 }
 
-func (c *cmdGlobal) PreRun(cmd *cobra.Command, args []string) error {
+// PreRun runs for every command and pre-configures the CLI.
+func (c *cmdGlobal) PreRun(cmd *cobra.Command, _ []string) error {
 	var err error
 
 	// If calling the help, skip pre-run
 	if cmd.Name() == "help" {
 		return nil
-	}
-
-	// Figure out the config directory and config path
-	var configDir string
-	if os.Getenv("INCUS_CONF") != "" {
-		configDir = os.Getenv("INCUS_CONF")
-	} else if os.Getenv("HOME") != "" && util.PathExists(os.Getenv("HOME")) {
-		configDir = path.Join(os.Getenv("HOME"), ".config", "incus")
-	} else {
-		user, err := user.Current()
-		if err != nil {
-			return err
-		}
-
-		if util.PathExists(user.HomeDir) {
-			configDir = path.Join(user.HomeDir, ".config", "incus")
-		}
 	}
 
 	// Figure out a potential cache path.
@@ -367,30 +406,18 @@ func (c *cmdGlobal) PreRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if cachePath != "" {
-		err := os.MkdirAll(cachePath, 0700)
+		err := os.MkdirAll(cachePath, 0o700)
 		if err != nil && !os.IsExist(err) {
 			cachePath = ""
 		}
 	}
 
-	// If no homedir could be found, treat as if --force-local was passed.
-	if configDir == "" {
+	// If no config dir could be found, treat as if --force-local was passed.
+	if c.conf.ConfigDir == "" {
 		c.flagForceLocal = true
 	}
 
-	c.confPath = os.ExpandEnv(path.Join(configDir, "config.yml"))
-
-	// Load the configuration
-	if c.flagForceLocal {
-		c.conf = config.NewConfig("", true)
-	} else if util.PathExists(c.confPath) {
-		c.conf, err = config.LoadConfig(c.confPath)
-		if err != nil {
-			return err
-		}
-	} else {
-		c.conf = config.NewConfig(filepath.Dir(c.confPath), true)
-	}
+	c.confPath = c.conf.ConfigPath("config.yml")
 
 	// Set cache directory in config.
 	c.conf.CacheDir = cachePath
@@ -404,7 +431,7 @@ func (c *cmdGlobal) PreRun(cmd *cobra.Command, args []string) error {
 
 	// Setup password helper
 	c.conf.PromptPassword = func(filename string) (string, error) {
-		return cli.AskPasswordOnce(fmt.Sprintf(i18n.G("Password for %s: "), filename)), nil
+		return c.asker.AskPasswordOnce(fmt.Sprintf(i18n.G("Password for %s: "), filename)), nil
 	}
 
 	// If the user is running a command that may attempt to connect to the local daemon
@@ -413,7 +440,7 @@ func (c *cmdGlobal) PreRun(cmd *cobra.Command, args []string) error {
 	// does not exist (server missing), as the user may be targeting a remote daemon.
 	if !c.flagForceLocal && !util.PathExists(c.confPath) {
 		// Create the config dir so that we don't get in here again for this user.
-		err = os.MkdirAll(c.conf.ConfigDir, 0750)
+		err = os.MkdirAll(c.conf.ConfigDir, 0o750)
 		if err != nil {
 			return err
 		}
@@ -443,18 +470,21 @@ func (c *cmdGlobal) PreRun(cmd *cobra.Command, args []string) error {
 
 			flush := false
 			if runInit && (cmd.Name() != "init" || cmd.Parent() == nil || cmd.Parent().Name() != "admin") {
-				fmt.Fprintf(os.Stderr, i18n.G("If this is your first time running Incus on this machine, you should also run: incus admin init")+"\n")
+				fmt.Fprint(os.Stderr, i18n.G("If this is your first time running Incus on this machine, you should also run: incus admin init")+"\n")
 				flush = true
 			}
 
 			if !slices.Contains([]string{"admin", "create", "launch"}, cmd.Name()) && (cmd.Parent() == nil || cmd.Parent().Name() != "admin") {
-				fmt.Fprintf(os.Stderr, i18n.G(`To start your first container, try: incus launch images:ubuntu/22.04
-Or for a virtual machine: incus launch images:ubuntu/22.04 --vm`)+"\n")
+				images := []string{"debian/12", "fedora/42", "opensuse/tumbleweed", "ubuntu/24.04"}
+				image := images[rand.Intn(len(images))]
+
+				fmt.Fprintf(os.Stderr, i18n.G(`To start your first container, try: incus launch images:%s
+Or for a virtual machine: incus launch images:%s --vm`)+"\n", image, image)
 				flush = true
 			}
 
 			if flush {
-				fmt.Fprintf(os.Stderr, "\n")
+				fmt.Fprint(os.Stderr, "\n")
 			}
 		}
 
@@ -477,7 +507,8 @@ Or for a virtual machine: incus launch images:ubuntu/22.04 --vm`)+"\n")
 	return nil
 }
 
-func (c *cmdGlobal) PostRun(cmd *cobra.Command, args []string) error {
+// PostRun runs after a successful command.
+func (c *cmdGlobal) PostRun(_ *cobra.Command, _ []string) error {
 	if c.conf != nil && util.PathExists(c.confPath) {
 		// Save OIDC tokens on exit
 		c.conf.SaveOIDCTokens()
@@ -492,7 +523,7 @@ type remoteResource struct {
 	name   string
 }
 
-func (c *cmdGlobal) ParseServers(remotes ...string) ([]remoteResource, error) {
+func (c *cmdGlobal) parseServers(remotes ...string) ([]remoteResource, error) {
 	servers := map[string]incus.InstanceServer{}
 	resources := []remoteResource{}
 
@@ -531,7 +562,7 @@ func (c *cmdGlobal) ParseServers(remotes ...string) ([]remoteResource, error) {
 	return resources, nil
 }
 
-func (c *cmdGlobal) CheckArgs(cmd *cobra.Command, args []string, minArgs int, maxArgs int) (bool, error) {
+func (c *cmdGlobal) checkArgs(cmd *cobra.Command, args []string, minArgs int, maxArgs int) (bool, error) {
 	if len(args) < minArgs || (maxArgs != -1 && len(args) > maxArgs) {
 		_ = cmd.Help()
 
@@ -539,8 +570,36 @@ func (c *cmdGlobal) CheckArgs(cmd *cobra.Command, args []string, minArgs int, ma
 			return true, nil
 		}
 
-		return true, fmt.Errorf(i18n.G("Invalid number of arguments"))
+		return true, errors.New(i18n.G("Invalid number of arguments"))
 	}
 
 	return false, nil
+}
+
+// Return the default list format if the user configured it, otherwise just return "table".
+func (c *cmdGlobal) defaultListFormat() string {
+	if c.conf == nil || c.conf.Defaults.ListFormat == "" {
+		return "table"
+	}
+
+	return c.conf.Defaults.ListFormat
+}
+
+// Return "vga" if preferred console type is VGA, otherwise return "console".
+func (c *cmdGlobal) defaultConsoleType() string {
+	if c.conf == nil || c.conf.Defaults.ConsoleType == "" {
+		return "console"
+	}
+
+	return c.conf.Defaults.ConsoleType
+}
+
+// Return the default console type if the user configured it, otherwise just return "console".
+func (c *cmdGlobal) defaultConsoleSpiceCommand() string {
+	// Alternative SPICE command.
+	if c.conf == nil || c.conf.Defaults.ConsoleSpiceCommand == "" {
+		return ""
+	}
+
+	return c.conf.Defaults.ConsoleSpiceCommand
 }
